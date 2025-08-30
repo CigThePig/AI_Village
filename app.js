@@ -287,8 +287,8 @@ const setDbg = (s)=> dbg.textContent = s;
 
 function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();
-  const sx = (px - rect.left) * DPR;
-  const sy = (py - rect.top)  * DPR;
+  const sx = (px - rect.left) * (canvas.width  / rect.width);
+  const sy = (py - rect.top)  * (canvas.height / rect.height);
   return {
     x: (sx + cam.x) / (TILE * cam.z),
     y: (sy + cam.y) / (TILE * cam.z)
