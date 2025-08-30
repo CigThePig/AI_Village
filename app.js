@@ -83,6 +83,7 @@ const PF = {
 /* ==================== Canvas & Camera ==================== */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', { alpha:false });
+canvas.style.touchAction = 'none';
 let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 let W=0, H=0;
 let cam = { x:0, y:0, z:2.2 }; // x,y in device pixels; draw scales by z
@@ -273,9 +274,10 @@ document.addEventListener('click', (e)=>{
   toggleSheet('sheetPrior', false);
 });
 
-/* ==================== Pan/Pinch ==================== */
-let drag={active:false,sx:0,sy:0,camx:0,camy:0};
-let pinch={active:false,startDist:0,startZ:0,midx:0,midy:0};
+/* ==================== Pointer Input ==================== */
+const activePointers = new Map();
+let primaryPointer = null;
+let pinch = null;
 
 function screenToWorld(px,py){
   const rect = canvas.getBoundingClientRect();
@@ -284,52 +286,84 @@ function screenToWorld(px,py){
   return { x, y };
 }
 
-canvas.addEventListener('mousedown', (e)=>{
-  drag.active=true; drag.sx=e.clientX; drag.sy=e.clientY; drag.camx=cam.x; drag.camy=cam.y;
-  if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-  if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
-});
-canvas.addEventListener('mousemove', (e)=>{
-  if(drag.active && ui.mode!=='zones'){ const dx=(e.clientX-drag.sx)*DPR, dy=(e.clientY-drag.sy)*DPR; cam.x=drag.camx - dx; cam.y=drag.camy - dy; clampCam(); }
-  else if(ui.mode==='zones' && drag.active){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); }
-  if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0}; }
-  else brushPreview=null;
-});
-canvas.addEventListener('mouseup', ()=> drag.active=false);
-canvas.addEventListener('mouseleave', ()=> drag.active=false);
+canvas.addEventListener('pointerdown', (e)=>{
+  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY, type:e.pointerType});
+  canvas.setPointerCapture(e.pointerId);
+  if(e.pointerType==='touch' && activePointers.size===2){
+    const pts = Array.from(activePointers.values());
+    pinch = {
+      startDist: Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y),
+      startZ: cam.z,
+      midx: (pts[0].x+pts[1].x)/2,
+      midy: (pts[0].y+pts[1].y)/2
+    };
+    primaryPointer = null;
+  } else if(!primaryPointer){
+    primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
+    if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
+    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
+  }
+  e.preventDefault();
+},{passive:false});
+
+canvas.addEventListener('pointermove', (e)=>{
+  if(!activePointers.has(e.pointerId)) return;
+  const p = activePointers.get(e.pointerId);
+  p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
+
+  if(pinch && activePointers.size===2){
+    const pts = Array.from(activePointers.values());
+    const dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
+    const before = screenToWorld(pinch.midx,pinch.midy);
+    cam.z = clamp((dist/(pinch.startDist||1))*pinch.startZ, MIN_Z, MAX_Z);
+    const after = screenToWorld(pinch.midx,pinch.midy);
+    cam.x += (after.x-before.x)*(TILE*cam.z);
+    cam.y += (after.y-before.y)*(TILE*cam.z);
+    const midx=(pts[0].x+pts[1].x)/2, midy=(pts[0].y+pts[1].y)/2;
+    cam.x -= (midx-pinch.midx)*DPR;
+    cam.y -= (midy-pinch.midy)*DPR;
+    pinch.midx=midx; pinch.midy=midy;
+    clampCam();
+  } else if(primaryPointer && e.pointerId===primaryPointer.id){
+    if(ui.mode!=='zones'){
+      const dx=(e.clientX-primaryPointer.sx)*DPR;
+      const dy=(e.clientY-primaryPointer.sy)*DPR;
+      cam.x = primaryPointer.camx - dx;
+      cam.y = primaryPointer.camy - dy;
+      clampCam();
+    } else {
+      const w=screenToWorld(e.clientX,e.clientY);
+      paintZoneAt(w.x|0,w.y|0);
+    }
+  }
+
+  if(ui.mode==='zones'){
+    const ptr = primaryPointer ? activePointers.get(primaryPointer.id) : activePointers.values().next().value;
+    if(ptr){
+      const w=screenToWorld(ptr.x, ptr.y);
+      brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0};
+    }
+  } else {
+    brushPreview=null;
+  }
+},{passive:false});
+
+function endPointer(e){
+  activePointers.delete(e.pointerId);
+  if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
+  if(activePointers.size<2) pinch=null;
+  if(activePointers.size===0) brushPreview=null;
+}
+
+canvas.addEventListener('pointerup', endPointer, {passive:false});
+canvas.addEventListener('pointercancel', endPointer, {passive:false});
+canvas.addEventListener('pointerleave', endPointer, {passive:false});
 
 canvas.addEventListener('wheel', (e)=>{
   const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
   const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
   cam.x += (after.x-before.x)*(TILE*cam.z); cam.y += (after.y-before.y)*(TILE*cam.z); clampCam();
 });
-
-canvas.addEventListener('touchstart', (e)=>{
-  if(e.touches.length===1){
-    const t=e.touches[0]; drag.active=true; drag.sx=t.clientX; drag.sy=t.clientY; drag.camx=cam.x; drag.camy=cam.y;
-    if(ui.mode==='build'){ const w=screenToWorld(t.clientX,t.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-    if(ui.mode==='zones'){ const w=screenToWorld(t.clientX,t.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
-  } else if(e.touches.length===2){
-    pinch.active=true; const t0=e.touches[0], t1=e.touches[1]; pinch.startDist=Math.hypot(t1.clientX-t0.clientX,t1.clientY-t0.clientY); pinch.startZ=cam.z; pinch.midx=(t0.clientX+t1.clientX)/2; pinch.midy=(t0.clientY+t1.clientY)/2;
-  }
-  e.preventDefault();
-},{passive:false});
-canvas.addEventListener('touchmove', (e)=>{
-  if(pinch.active && e.touches.length===2){
-    const t0=e.touches[0], t1=e.touches[1]; const dist=Math.hypot(t1.clientX-t0.clientX,t1.clientY-t0.clientY);
-    const before=screenToWorld(pinch.midx,pinch.midy); cam.z=clamp((dist/(pinch.startDist||1))*pinch.startZ, MIN_Z, MAX_Z); const after=screenToWorld(pinch.midx,pinch.midy);
-    cam.x += (after.x-before.x)*(TILE*cam.z); cam.y += (after.y-before.y)*(TILE*cam.z);
-    const midx=(t0.clientX+t1.clientX)/2, midy=(t0.clientY+t1.clientY)/2; cam.x -= (midx-pinch.midx)*DPR; cam.y -= (midy-pinch.midy)*DPR; pinch.midx=midx; pinch.midy=midy; clampCam();
-  } else if(drag.active){
-    const t=e.touches[0];
-    if(ui.mode!=='zones'){ const dx=(t.clientX-drag.sx)*DPR, dy=(t.clientY-drag.sy)*DPR; cam.x=drag.camx - dx; cam.y=drag.camy - dy; clampCam(); }
-    else { const w=screenToWorld(t.clientX,t.clientY); paintZoneAt(w.x|0,w.y|0); }
-  }
-  if(ui.mode==='zones' && e.touches.length>0){ const w=screenToWorld(e.touches[0].clientX,e.touches[0].clientY); brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0}; }
-  else if(ui.mode!=='zones'){ brushPreview=null; }
-  e.preventDefault();
-},{passive:false});
-canvas.addEventListener('touchend', (e)=>{ if(e.touches.length<2) pinch.active=false; if(e.touches.length===0) drag.active=false; e.preventDefault(); },{passive:false});
 
 /* ==================== Zones/Build/Helpers ==================== */
 document.getElementById('sheetZones').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; const z=t.getAttribute('data-zone'); ui.zonePaint=z==='farm'?ZONES.FARM:z==='cut'?ZONES.CUT:z==='mine'?ZONES.MINE:ZONES.NONE; Toast.show('Zone: '+(z==='erase'?'Clear':z.toUpperCase())); });
