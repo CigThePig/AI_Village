@@ -100,6 +100,69 @@
 (function(){
 'use strict';
 
+// ---- Safe storage wrapper ----
+const Storage = (() => {
+  let available = false;
+  try {
+    const k = '__aiv_test__' + Math.random();
+    window.localStorage.setItem(k, '1');
+    window.localStorage.removeItem(k);
+    available = true;
+  } catch (e) {
+    available = false;
+  }
+  function get(key, def=null) {
+    if (!available) return def;
+    try {
+      const v = window.localStorage.getItem(key);
+      return v === null ? def : v;
+    } catch (e) { return def; }
+  }
+  function set(key, value) {
+    if (!available) return false;
+    try { window.localStorage.setItem(key, value); return true; }
+    catch (e) { return false; }
+  }
+  function del(key) {
+    if (!available) return false;
+    try { window.localStorage.removeItem(key); return true; }
+    catch (e) { return false; }
+  }
+  return { available, get, set, del };
+})();
+
+function showFatalOverlay(err) {
+  let div = document.getElementById('fatal-overlay');
+  if (!div) {
+    div = document.createElement('div');
+    div.id = 'fatal-overlay';
+    div.style.cssText = `
+      position:fixed;left:12px;right:12px;top:12px;z-index:9999;
+      background:rgba(20,24,33,0.96);color:#e9f1ff;border:1px solid rgba(255,255,255,0.15);
+      border-radius:12px;padding:12px;font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      box-shadow:0 10px 30px rgba(0,0,0,.6)
+    `;
+    document.body.appendChild(div);
+  }
+  div.innerHTML = `<b>Startup error</b><br><pre style="white-space:pre-wrap">${(err && (err.stack||err.message||String(err)))}</pre>
+    <button id="btnContinueNoSave" style="margin-top:8px">Continue (no save)</button>`;
+  const btn = document.getElementById('btnContinueNoSave');
+  btn.onclick = () => {
+    // Try to recover by disabling storage and starting the loop if needed
+    if (typeof Storage !== 'undefined') {
+      Storage.available = false;
+      const bs=document.getElementById('btnSave');
+      if(bs){ bs.disabled=true; bs.title='Saving unavailable in this context'; }
+    }
+    div.remove();
+    try { requestAnimationFrame(update); } catch(e){}
+  };
+}
+
+// Surface any unhandled error
+window.addEventListener('error', (e) => { showFatalOverlay(e.error || e.message); });
+window.addEventListener('unhandledrejection', (e) => { showFatalOverlay(e.reason || e); });
+
 /* ==================== Constants & Types ==================== */
 const TILE = 32, MAP_W = 96, MAP_H = 96;
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7 };
@@ -138,6 +201,10 @@ let R = Math.random;
 const irnd=(a,b)=> (R()*(b-a+1)|0)+a;
 const rnd=(a,b)=> R()*(b-a)+a;
 const clamp=(v,mi,ma)=>v<mi?mi:(v>ma?ma:v);
+function uid() {
+  try { return (crypto.getRandomValues(new Uint32Array(1))[0]>>>0); }
+  catch { return Math.floor(Math.random()*2**31); }
+}
 
 /* ==================== Tileset (pixel art generated in code) ==================== */
 const Tileset = { base:{}, waterOverlay:[], zoneGlyphs:{}, villagerSprites:{} };
@@ -156,7 +223,18 @@ function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); re
 function drawSproutOn(g,stage){ const s=Math.min(3,Math.floor(stage)); if(s<=0) return; const gx=8, gy=10; g.fillStyle='#86c06c'; g.fillRect(gx,gy,2,2); if(s>=2){ g.fillRect(gx-2,gy+2,6,2); } if(s>=3){ g.fillRect(gx-1,gy-2,4,2); } }
 function makeZoneGlyphs(){ const farm=makeCanvas(8,8), f=farm.getContext('2d'); rect(f,0,0,8,8,'rgba(0,0,0,0)'); px(f,3,6,'#9dd47a'); px(f,4,6,'#9dd47a'); px(f,3,5,'#73b85d'); px(f,4,5,'#73b85d'); px(f,3,4,'#5aa34b'); const cut=makeCanvas(8,8), c=cut.getContext('2d'); rect(c,0,0,8,8,'rgba(0,0,0,0)'); rect(c,2,2,4,1,'#caa56a'); rect(c,3,1,2,1,'#8f6934'); const mine=makeCanvas(8,8), m=mine.getContext('2d'); rect(m,0,0,8,8,'rgba(0,0,0,0)'); rect(m,2,2,4,1,'#9aa3ad'); rect(m,3,3,2,1,'#6d7782'); Tileset.zoneGlyphs={farm,cut,mine}; }
 function makeVillagerFrames(){ function role(shirt,hat){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(16,16), g=c.getContext('2d'); rect(g,7,4,2,2,'#f1d4b6'); if(hat){ rect(g,6,3,4,1,hat); rect(g,6,2,4,1,hat); } rect(g,6,6,4,4,shirt); if(f===0){ rect(g,5,6,1,3,shirt); rect(g,10,6,1,2,shirt); } if(f===1){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,3,shirt); } if(f===2){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,2,shirt); } rect(g,6,10,1,4,'#3f3f4f'); rect(g,9,10,1,4,'#3f3f4f'); frames.push(c);} return frames; } Tileset.villagerSprites.farmer=role('#3aa357','#d6cf74'); Tileset.villagerSprites.worker=role('#a36b3a','#8f7440'); Tileset.villagerSprites.explorer=role('#3a6aa3',null); Tileset.villagerSprites.sleepy=role('#777','#444'); }
-function buildTileset(){ Tileset.base.grass=makeGrass(); Tileset.base.fertile=makeFertile(); Tileset.base.sand=makeSand(); Tileset.base.snow=makeSnow(); Tileset.base.rock=makeRock(); Tileset.base.water=makeWaterBase(); Tileset.base.farmland=makeFarmland(); Tileset.waterOverlay=makeWaterOverlayFrames(); makeZoneGlyphs(); makeVillagerFrames(); }
+function buildTileset(){
+  try { Tileset.base.grass = makeGrass(); } catch(e){ console.warn('grass', e); }
+  try { Tileset.base.fertile = makeFertile(); } catch(e){ console.warn('fertile', e); }
+  try { Tileset.base.sand = makeSand(); } catch(e){ console.warn('sand', e); }
+  try { Tileset.base.snow = makeSnow(); } catch(e){ console.warn('snow', e); }
+  try { Tileset.base.rock = makeRock(); } catch(e){ console.warn('rock', e); }
+  try { Tileset.base.water = makeWaterBase(); } catch(e){ console.warn('water', e); }
+  try { Tileset.base.farmland = makeFarmland(); } catch(e){ console.warn('farmland', e); }
+  try { Tileset.waterOverlay = makeWaterOverlayFrames(); } catch(e){ console.warn('waterOverlay', e); Tileset.waterOverlay = []; }
+  try { makeZoneGlyphs(); } catch(e){ console.warn('zones', e); }
+  try { makeVillagerFrames(); } catch(e){ console.warn('villagers', e); }
+}
 
 /* ==================== World State ==================== */
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0};
@@ -183,8 +261,8 @@ function newWorld(seed=Date.now()|0){
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
-function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:crypto.getRandomValues(new Uint32Array(1))[0]>>>0, x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role }; }
-function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:crypto.getRandomValues(new Uint32Array(1))[0]>>>0, kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
+function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role }; }
+function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
 
 /* ==================== UI & Sheets ==================== */
 const el=(id)=>document.getElementById(id);
@@ -196,9 +274,11 @@ el('chipBuild').addEventListener('click', ()=> { openMode('build'); sheetBuild(t
 el('chipPrior').addEventListener('click', ()=> { openMode('prior'); sheetPrior(true); });
 el('btnPause').addEventListener('click', ()=> { paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; });
 el('btnSpeed').addEventListener('click', ()=> { speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; });
-el('btnSave').addEventListener('click', ()=> { saveGame(); toast('Saved.'); });
+const btnSave=el('btnSave');
+if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
+btnSave.addEventListener('click', ()=>{ if(!Storage.available){ toast('Saving disabled in this context'); return; } saveGame(); toast('Saved.'); });
 el('btnNew').addEventListener('click', ()=> { newWorld(); });
-el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; localStorage.setItem('aiv_help_px3','1'); });
+el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; Storage.set('aiv_help_px3','1'); });
 function sheetZones(o){ document.getElementById('sheetZones').setAttribute('data-open',o?'true':'false'); }
 function sheetBuild(o){ document.getElementById('sheetBuild').setAttribute('data-open',o?'true':'false'); }
 function sheetPrior(o){ document.getElementById('sheetPrior').setAttribute('data-open',o?'true':'false'); }
@@ -268,7 +348,7 @@ function paintZoneAt(cx,cy){ if(cx<0||cy<0||cx>=MAP_W||cy>=MAP_H) return; const 
 function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ toast('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ toast('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); toast('Blueprint placed.'); }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
-function addJob(job){ job.id=crypto.getRandomValues(new Uint32Array(1))[0]>>>0; job.assigned=0; jobs.push(job); return job; }
+function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
 function generateJobs(){ for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; const z=world.zone[i];
   if(z===ZONES.FARM){ if(world.tiles[i]!==TILES.WATER && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)) addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6}); }
   else if(z===ZONES.CUT){ if(world.trees[i]>0 && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
@@ -308,8 +388,8 @@ function pathfind(sx,sy,tx,ty,limit=400){ if(sx===tx&&sy===ty) return [{x:tx,y:t
 function seasonTick(){ world.tSeason++; const SEASON_LEN=60*10; if(world.tSeason>=SEASON_LEN){ world.tSeason=0; world.season=(world.season+1)%4; } for(let i=0;i<world.growth.length;i++){ if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0 && world.growth[i]<240){ world.growth[i]+=1; if(world.growth[i]===160){ const y=(i/MAP_W)|0, x=i%MAP_W; if(!jobs.some(j=>j.type==='harvest'&&j.x===x&&j.y===y)) addJob({type:'harvest',x,y, prio:0.65+priorities.food*0.6}); } } } }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role})) }; localStorage.setItem('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=localStorage.getItem('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming' }); }); toast('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
+function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming' }); }); toast('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
@@ -329,10 +409,13 @@ function render(){
   ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height, -cam.x, -cam.y, staticCanvas.width*cam.z, staticCanvas.height*cam.z);
 
   // animated water overlay
-  const frame=Math.floor((tick/10)%Tileset.waterOverlay.length);
-  for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
-    ctx.drawImage(Tileset.waterOverlay[frame], 0,0,TILE,TILE, -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z );
-  } } }
+  const frames = Tileset.waterOverlay || [];
+  const frame = frames.length ? Math.floor((tick/10)%frames.length) : 0;
+  if(frames.length){
+    for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
+      ctx.drawImage(frames[frame], 0,0,TILE,TILE, -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z );
+    } } }
+  }
 
   // zones glyphs
   ctx.globalAlpha=0.25;
@@ -391,7 +474,23 @@ let last=performance.now(), acc=0; const TICK_MS=1000/6;
 function update(){ if(paused){ render(); requestAnimationFrame(update); return; } const now=performance.now(); let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(tick%20===0) generateJobs(); if(tick%10===0) seasonTick(); for(const v of villagers){ if(!v.inv){ for(let k=0;k<itemsOnGround.length;k++){ const it=itemsOnGround[k]; if((v.x|0)===it.x && (v.y|0)===it.y){ v.inv={type:it.type,qty:it.qty}; itemsOnGround.splice(k,1); k--; break; } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
 
 /* ==================== Boot ==================== */
-function boot(){ buildTileset(); if(!loadGame()){ newWorld(); } openMode('inspect'); if(!localStorage.getItem('aiv_help_px3')) el('help').style.display='block'; requestAnimationFrame(update); }
+function boot(){
+  try {
+    buildTileset();                 // must not be fatal
+    const loaded = loadGame();      // may fail safely
+    if(!loaded) newWorld();         // always create a world
+    openMode('inspect');            // UI init
+    if(!Storage.get('aiv_help_px3')){
+      el('help').style.display='block';
+    }
+  } catch (e){
+    showFatalOverlay(e);
+  } finally {
+    // Ensure the loop starts no matter what
+    try { requestAnimationFrame(update); }
+    catch (e){ showFatalOverlay(e); }
+  }
+}
 boot();
 
 })();</script>
