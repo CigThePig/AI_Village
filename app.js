@@ -277,7 +277,12 @@ document.addEventListener('click', (e)=>{
 let drag={active:false,sx:0,sy:0,camx:0,camy:0};
 let pinch={active:false,startDist:0,startZ:0,midx:0,midy:0};
 
-function screenToWorld(px,py){ return { x: ((px*DPR) - cam.x) / (TILE*cam.z), y: ((py*DPR) - cam.y) / (TILE*cam.z) }; }
+function screenToWorld(px,py){
+  const rect = canvas.getBoundingClientRect();
+  const x = (((px - rect.left) * DPR) - cam.x) / (TILE*cam.z);
+  const y = (((py - rect.top) * DPR) - cam.y) / (TILE*cam.z);
+  return { x, y };
+}
 
 canvas.addEventListener('mousedown', (e)=>{
   drag.active=true; drag.sx=e.clientX; drag.sy=e.clientY; drag.camx=cam.x; drag.camy=cam.y;
