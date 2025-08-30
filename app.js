@@ -287,9 +287,9 @@ document.body.appendChild(dbg);
 const setDbg = (s)=> dbg.textContent = s;
 
 function screenToWorld(px, py){
-  const rect = canvas.getBoundingClientRect();
-  const sx = (px - rect.left) * (canvas.width  / rect.width);
-  const sy = (py - rect.top)  * (canvas.height / rect.height);
+  const rect = canvas.getBoundingClientRect();       // CSS pixels
+  const sx = (px - rect.left) * DPR;                 // device pixels
+  const sy = (py - rect.top)  * DPR;
   return {
     x: (sx + cam.x) / (TILE * cam.z),
     y: (sy + cam.y) / (TILE * cam.z)
