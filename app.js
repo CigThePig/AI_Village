@@ -91,10 +91,11 @@ const MIN_Z=1.2, MAX_Z=4.5;
 
 function resize(){
   DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  W = Math.floor(window.innerWidth * DPR);
-  H = Math.floor(window.innerHeight * DPR);
-  canvas.width = W; canvas.height = H;
-  canvas.style.width = '100vw'; canvas.style.height = '100vh';
+  const rect = canvas.getBoundingClientRect();
+  W = Math.floor(rect.width * DPR);
+  H = Math.floor(rect.height * DPR);
+  canvas.width = W;
+  canvas.height = H;
 }
 resize(); window.addEventListener('resize', resize);
 function clampCam(){
