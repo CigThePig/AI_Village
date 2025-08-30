@@ -287,12 +287,12 @@ const setDbg = (s)=> dbg.textContent = s;
 
 function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();
-  // Use the real backing-store scale instead of DPR guesses
+  // Use the canvas's real backing scale to be robust to any CSS/DPR quirks
   const sx = (px - rect.left) * (canvas.width  / rect.width);
   const sy = (py - rect.top)  * (canvas.height / rect.height);
   return {
-    x: (sx - cam.x) / (TILE * cam.z),
-    y: (sy - cam.y) / (TILE * cam.z)
+    x: (sx + cam.x) / (TILE * cam.z),
+    y: (sy + cam.y) / (TILE * cam.z)
   };
 }
 
