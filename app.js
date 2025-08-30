@@ -279,11 +279,15 @@ const activePointers = new Map();
 let primaryPointer = null;
 let pinch = null;
 
-function screenToWorld(px,py){
+function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();
-  const x = (((px - rect.left) * DPR) - cam.x) / (TILE*cam.z);
-  const y = (((py - rect.top) * DPR) - cam.y) / (TILE*cam.z);
-  return { x, y };
+  // Use the real backing-store scale instead of DPR guesses
+  const sx = (px - rect.left) * (canvas.width  / rect.width);
+  const sy = (py - rect.top)  * (canvas.height / rect.height);
+  return {
+    x: (sx - cam.x) / (TILE * cam.z),
+    y: (sy - cam.y) / (TILE * cam.z)
+  };
 }
 
 canvas.addEventListener('pointerdown', (e)=>{
@@ -301,7 +305,7 @@ canvas.addEventListener('pointerdown', (e)=>{
   } else if(!primaryPointer){
     primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
     if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
+    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); }
   }
   e.preventDefault();
 },{passive:false});
@@ -352,7 +356,10 @@ function endPointer(e){
   activePointers.delete(e.pointerId);
   if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
   if(activePointers.size<2) pinch=null;
-  if(activePointers.size===0) brushPreview=null;
+  if(activePointers.size===0){
+    brushPreview=null;
+    if(ui.mode==='zones') generateJobs();  // ← regen once when painting stops
+  }
 }
 
 canvas.addEventListener('pointerup', endPointer, {passive:false});
@@ -366,9 +373,23 @@ canvas.addEventListener('wheel', (e)=>{
 });
 
 /* ==================== Zones/Build/Helpers ==================== */
-document.getElementById('sheetZones').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; const z=t.getAttribute('data-zone'); ui.zonePaint=z==='farm'?ZONES.FARM:z==='cut'?ZONES.CUT:z==='mine'?ZONES.MINE:ZONES.NONE; Toast.show('Zone: '+(z==='erase'?'Clear':z.toUpperCase())); });
+document.getElementById('sheetZones').addEventListener('click', (e)=>{
+  const t = e.target.closest('.tile'); if (!t) return;
+  const z = t.getAttribute('data-zone');
+  ui.zonePaint = z==='farm' ? ZONES.FARM
+               : z==='cut'  ? ZONES.CUT
+               : z==='mine' ? ZONES.MINE
+               : ZONES.NONE;
+  toggleSheet('sheetZones', false);           // ← close sheet so canvas gets taps
+  Toast.show('Zone: ' + (z==='erase' ? 'Clear' : z.toUpperCase()));
+});
 document.getElementById('brushSize').addEventListener('input', (e)=> ui.brush=parseInt(e.target.value||'2'));
-document.getElementById('sheetBuild').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; ui.buildKind=t.getAttribute('data-build'); Toast.show('Tap map to place: '+ui.buildKind); });
+document.getElementById('sheetBuild').addEventListener('click', (e)=>{
+  const t = e.target.closest('.tile'); if (!t) return;
+  ui.buildKind = t.getAttribute('data-build');
+  toggleSheet('sheetBuild', false);           // ← close sheet so canvas gets taps
+  Toast.show('Tap map to place: ' + ui.buildKind);
+});
 const priorities={ food:0.7, build:0.5, explore:0.3 };
 document.getElementById('prioFood').addEventListener('input', e=> priorities.food=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioBuild').addEventListener('input', e=> priorities.build=(parseInt(e.target.value,10)||0)/100 );
@@ -376,7 +397,17 @@ document.getElementById('prioExplore').addEventListener('input', e=> priorities.
 function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x; }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){ cam.z=2.2; cam.x=x*TILE*cam.z - W*0.5; cam.y=y*TILE*cam.z - H*0.5; clampCam(); }
-function paintZoneAt(cx,cy){ if(cx<0||cy<0||cx>=MAP_W||cy>=MAP_H) return; const r=ui.brush|0; for(let y=cy-r;y<=cy+r;y++){ for(let x=cx-r;x<=cx+r;x++){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) continue; world.zone[y*MAP_W+x]=ui.zonePaint; } } generateJobs(); }
+function paintZoneAt(cx, cy){
+  if (cx<0 || cy<0 || cx>=MAP_W || cy>=MAP_H) return;
+  const r = ui.brush|0, z = ui.zonePaint|0;
+  for (let y = cy - r; y <= cy + r; y++){
+    for (let x = cx - r; x <= cx + r; x++){
+      if (x<0 || y<0 || x>=MAP_W || y>=MAP_H) continue;
+      world.zone[y*MAP_W + x] = z;         // paint immediately
+    }
+  }
+  brushPreview = {x:cx, y:cy, r};
+}
 function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ Toast.show('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); markStaticDirty(); Toast.show('Blueprint placed.'); }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
