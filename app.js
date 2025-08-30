@@ -321,6 +321,9 @@ canvas.addEventListener('pointermove', (e)=>{
   if(!activePointers.has(e.pointerId)) return;
   const p = activePointers.get(e.pointerId);
   p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
+  const rect  = canvas.getBoundingClientRect();
+  const scaleX = canvas.width  / rect.width;
+  const scaleY = canvas.height / rect.height;
   if (ui.mode==='zones' && primaryPointer){
     const w = screenToWorld(e.clientX, e.clientY);
     setDbg(`paint ${w.x|0},${w.y|0}`);
@@ -336,14 +339,14 @@ canvas.addEventListener('pointermove', (e)=>{
     cam.y += (after.y - before.y);
     const midx = (pts[0].x + pts[1].x) / 2,
           midy = (pts[0].y + pts[1].y) / 2;
-    cam.x -= (midx - pinch.midx) * DPR / (TILE * cam.z);
-    cam.y -= (midy - pinch.midy) * DPR / (TILE * cam.z);
+    cam.x -= (midx - pinch.midx) * scaleX / (TILE * cam.z);
+    cam.y -= (midy - pinch.midy) * scaleY / (TILE * cam.z);
     pinch.midx = midx; pinch.midy = midy;
     clampCam();
   } else if(primaryPointer && e.pointerId===primaryPointer.id){
     if(ui.mode!=='zones'){
-      const dx=(e.clientX-primaryPointer.sx)*DPR;
-      const dy=(e.clientY-primaryPointer.sy)*DPR;
+      const dx=(e.clientX-primaryPointer.sx)*scaleX;
+      const dy=(e.clientY-primaryPointer.sy)*scaleY;
       const dtX = dx / (TILE * cam.z);
       const dtY = dy / (TILE * cam.z);
       cam.x = primaryPointer.camx - dtX;
