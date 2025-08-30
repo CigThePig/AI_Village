@@ -177,30 +177,98 @@ function newWorld(seed=Date.now()|0){
   for(let k=0;k<200;k++){ const x=(MAP_W>>1)+irnd(-8,8), y=(MAP_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
   addBuilding('campfire',sx,sy,{built:1}); addBuilding('storage',sx+1,sy,{built:1});
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
-  toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
+  Toast.show('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0 }; }
 function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
 
 /* ==================== UI & Sheets ==================== */
 const el=(id)=>document.getElementById(id);
-function toast(msg,ms=1500){ const t=el('toast'); t.textContent=msg; t.setAttribute('data-show','true'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.removeAttribute('data-show'),ms); }
+
+// --- Toast system (top center, queued, auto-dismiss) ---
+const Toast = (() => {
+  const host = document.createElement('div');
+  host.id = 'toastHost';
+  host.style.cssText = `
+    position:fixed; top:72px; left:50%; transform:translateX(-50%);
+    display:flex; flex-direction:column; gap:8px; z-index:5000; pointer-events:none;
+  `;
+  document.body.appendChild(host);
+
+  const q=[];
+  let showing=0;
+
+  function show(text, ms=2200){
+    q.push({text, ms});
+    if(!showing) next();
+  }
+  function next(){
+    if(!q.length){ showing=0; return; }
+    showing=1;
+    const {text, ms}=q.shift();
+    const el=document.createElement('div');
+    el.className='toast';
+    el.textContent=text;
+    el.style.cssText=`
+      background: rgba(20,24,33,0.96);
+      border:1px solid rgba(255,255,255,0.12);
+      color:#e9f1ff; font-weight:700; font-size:14px;
+      border-radius:12px; padding:10px 14px; box-shadow:0 6px 18px rgba(0,0,0,.35);
+    `;
+    host.appendChild(el);
+    setTimeout(()=>{
+      el.style.transition='opacity .2s ease, transform .2s ease';
+      el.style.opacity='0'; el.style.transform='translateY(-6px)';
+      setTimeout(()=>{ el.remove(); next(); },220);
+    }, ms);
+  }
+  return { show };
+})();
+
 let ui={ mode:'inspect', zonePaint:ZONES.FARM, buildKind:null, brush:2 };
+let brushPreview=null;
+
 el('chipInspect').addEventListener('click', ()=> openMode('inspect'));
-el('chipZones').addEventListener('click', ()=> { openMode('zones'); sheetZones(true); });
-el('chipBuild').addEventListener('click', ()=> { openMode('build'); sheetBuild(true); });
-el('chipPrior').addEventListener('click', ()=> { openMode('prior'); sheetPrior(true); });
+el('chipZones').addEventListener('click', ()=> openMode('zones'));
+el('chipBuild').addEventListener('click', ()=> openMode('build'));
+el('chipPrior').addEventListener('click', ()=> openMode('prior'));
 el('btnPause').addEventListener('click', ()=> { paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; });
 el('btnSpeed').addEventListener('click', ()=> { speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; });
 const btnSave=el('btnSave');
 if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
-btnSave.addEventListener('click', ()=>{ if(!Storage.available){ toast('Saving disabled in this context'); return; } saveGame(); toast('Saved.'); });
+btnSave.addEventListener('click', ()=>{ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); });
 el('btnNew').addEventListener('click', ()=> { newWorld(); });
 el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; Storage.set('aiv_help_px3','1'); });
-function sheetZones(o){ document.getElementById('sheetZones').setAttribute('data-open',o?'true':'false'); }
-function sheetBuild(o){ document.getElementById('sheetBuild').setAttribute('data-open',o?'true':'false'); }
-function sheetPrior(o){ document.getElementById('sheetPrior').setAttribute('data-open',o?'true':'false'); }
-function openMode(m){ ui.mode=m; document.querySelectorAll('.chip').forEach(n=>n.removeAttribute('data-active')); el('chip'+m.charAt(0).toUpperCase()+m.slice(1)).setAttribute('data-active','true'); if(m!=='zones') sheetZones(false); if(m!=='build') sheetBuild(false); if(m!=='prior') sheetPrior(false); }
+function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
+['sheetZones','sheetBuild','sheetPrior'].forEach(id=>{ const s=document.getElementById(id); s.addEventListener('click', (e)=>{ if(e.target.closest('.sheet-close')) toggleSheet(id,false); }); });
+
+function openMode(m){
+  if(ui.mode===m){
+    ui.mode='inspect';
+    document.querySelectorAll('.chip').forEach(n=>n.removeAttribute('data-active'));
+    toggleSheet('sheetZones', false);
+    toggleSheet('sheetBuild', false);
+    toggleSheet('sheetPrior', false);
+    brushPreview=null;
+    return;
+  }
+  ui.mode=m;
+  document.querySelectorAll('.chip').forEach(n=>n.removeAttribute('data-active'));
+  const chip=document.getElementById('chip'+m.charAt(0).toUpperCase()+m.slice(1));
+  chip.setAttribute('data-active','true');
+  toggleSheet('sheetZones', m==='zones');
+  toggleSheet('sheetBuild', m==='build');
+  toggleSheet('sheetPrior', m==='prior');
+  if(m!=='zones') brushPreview=null;
+  if(m==='zones') Toast.show('Painting: '+(ui.zonePaint===ZONES.FARM?'Farm':ui.zonePaint===ZONES.CUT?'Cut Trees':'Mine'));
+}
+
+document.addEventListener('click', (e)=>{
+  if(e.target.closest('.sheet') || e.target.closest('.bar')) return;
+  toggleSheet('sheetZones', false);
+  toggleSheet('sheetBuild', false);
+  toggleSheet('sheetPrior', false);
+});
 
 /* ==================== Pan/Pinch ==================== */
 let drag={active:false,sx:0,sy:0,camx:0,camy:0};
@@ -211,11 +279,13 @@ function screenToWorld(px,py){ return { x: ((px*DPR) - cam.x) / (TILE*cam.z), y:
 canvas.addEventListener('mousedown', (e)=>{
   drag.active=true; drag.sx=e.clientX; drag.sy=e.clientY; drag.camx=cam.x; drag.camy=cam.y;
   if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-  if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); }
+  if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
 });
 canvas.addEventListener('mousemove', (e)=>{
   if(drag.active && ui.mode!=='zones'){ const dx=(e.clientX-drag.sx)*DPR, dy=(e.clientY-drag.sy)*DPR; cam.x=drag.camx - dx; cam.y=drag.camy - dy; clampCam(); }
   else if(ui.mode==='zones' && drag.active){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); }
+  if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0}; }
+  else brushPreview=null;
 });
 canvas.addEventListener('mouseup', ()=> drag.active=false);
 canvas.addEventListener('mouseleave', ()=> drag.active=false);
@@ -230,7 +300,7 @@ canvas.addEventListener('touchstart', (e)=>{
   if(e.touches.length===1){
     const t=e.touches[0]; drag.active=true; drag.sx=t.clientX; drag.sy=t.clientY; drag.camx=cam.x; drag.camy=cam.y;
     if(ui.mode==='build'){ const w=screenToWorld(t.clientX,t.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-    if(ui.mode==='zones'){ const w=screenToWorld(t.clientX,t.clientY); paintZoneAt(w.x|0,w.y|0); }
+    if(ui.mode==='zones'){ const w=screenToWorld(t.clientX,t.clientY); paintZoneAt(w.x|0,w.y|0); brushPreview={x:w.x|0,y:w.y|0,r:ui.brush|0}; }
   } else if(e.touches.length===2){
     pinch.active=true; const t0=e.touches[0], t1=e.touches[1]; pinch.startDist=Math.hypot(t1.clientX-t0.clientX,t1.clientY-t0.clientY); pinch.startZ=cam.z; pinch.midx=(t0.clientX+t1.clientX)/2; pinch.midy=(t0.clientY+t1.clientY)/2;
   }
@@ -247,14 +317,16 @@ canvas.addEventListener('touchmove', (e)=>{
     if(ui.mode!=='zones'){ const dx=(t.clientX-drag.sx)*DPR, dy=(t.clientY-drag.sy)*DPR; cam.x=drag.camx - dx; cam.y=drag.camy - dy; clampCam(); }
     else { const w=screenToWorld(t.clientX,t.clientY); paintZoneAt(w.x|0,w.y|0); }
   }
+  if(ui.mode==='zones' && e.touches.length>0){ const w=screenToWorld(e.touches[0].clientX,e.touches[0].clientY); brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0}; }
+  else if(ui.mode!=='zones'){ brushPreview=null; }
   e.preventDefault();
 },{passive:false});
 canvas.addEventListener('touchend', (e)=>{ if(e.touches.length<2) pinch.active=false; if(e.touches.length===0) drag.active=false; e.preventDefault(); },{passive:false});
 
 /* ==================== Zones/Build/Helpers ==================== */
-document.getElementById('sheetZones').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; const z=t.getAttribute('data-zone'); ui.zonePaint=z==='farm'?ZONES.FARM:z==='cut'?ZONES.CUT:z==='mine'?ZONES.MINE:ZONES.NONE; toast('Zone: '+(z==='erase'?'Clear':z.toUpperCase())); });
+document.getElementById('sheetZones').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; const z=t.getAttribute('data-zone'); ui.zonePaint=z==='farm'?ZONES.FARM:z==='cut'?ZONES.CUT:z==='mine'?ZONES.MINE:ZONES.NONE; Toast.show('Zone: '+(z==='erase'?'Clear':z.toUpperCase())); });
 document.getElementById('brushSize').addEventListener('input', (e)=> ui.brush=parseInt(e.target.value||'2'));
-document.getElementById('sheetBuild').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; ui.buildKind=t.getAttribute('data-build'); toast('Tap map to place: '+ui.buildKind); });
+document.getElementById('sheetBuild').addEventListener('click', (e)=>{ const t=e.target.closest('.tile'); if(!t) return; ui.buildKind=t.getAttribute('data-build'); Toast.show('Tap map to place: '+ui.buildKind); });
 const priorities={ food:0.7, build:0.5, explore:0.3 };
 document.getElementById('prioFood').addEventListener('input', e=> priorities.food=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioBuild').addEventListener('input', e=> priorities.build=(parseInt(e.target.value,10)||0)/100 );
@@ -263,7 +335,7 @@ function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x;
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){ cam.z=2.2; cam.x=x*TILE*cam.z - W*0.5; cam.y=y*TILE*cam.z - H*0.5; clampCam(); }
 function paintZoneAt(cx,cy){ if(cx<0||cy<0||cx>=MAP_W||cy>=MAP_H) return; const r=ui.brush|0; for(let y=cy-r;y<=cy+r;y++){ for(let x=cx-r;x<=cx+r;x++){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) continue; world.zone[y*MAP_W+x]=ui.zonePaint; } } }
-function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ toast('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ toast('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); toast('Blueprint placed.'); }
+function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ Toast.show('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); Toast.show('Blueprint placed.'); }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
 function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
@@ -353,7 +425,7 @@ function seasonTick(){ world.tSeason++; const SEASON_LEN=60*10; if(world.tSeason
 
 /* ==================== Save/Load ==================== */
 function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0 }); }); toast('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
@@ -396,12 +468,23 @@ function render(){
     } } }
   }
 
-  // zones glyphs
-  ctx.globalAlpha=0.25;
-  for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x; const z=world.zone[i]; if(z===ZONES.NONE) continue; const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
-    for(let yy=4; yy<TILE; yy+=10){ for(let xx=4; xx<TILE; xx+=10){
-      ctx.drawImage(glyph, 0,0,8,8, -cam.x+x*TILE*cam.z+xx*cam.z, -cam.y+y*TILE*cam.z+yy*cam.z, 8*cam.z, 8*cam.z);
-  } } } } ctx.globalAlpha=1;
+  // zones glyphs and wash
+  for(let y=y0;y<=y1;y++){
+    for(let x=x0;x<=x1;x++){
+      const i=y*MAP_W+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
+      const wash = z===ZONES.FARM ? 'rgba(120,220,120,0.25)'
+                 : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
+                 :                   'rgba(160,200,255,0.22)';
+      ctx.fillStyle=wash;
+      ctx.fillRect(-cam.x + x*TILE*cam.z, -cam.y + y*TILE*cam.z, TILE*cam.z, TILE*cam.z);
+      const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
+      ctx.globalAlpha=0.6;
+      for(let yy=4; yy<TILE; yy+=10){ for(let xx=4; xx<TILE; xx+=10){
+        ctx.drawImage(glyph, 0,0,8,8, -cam.x+x*TILE*cam.z+xx*cam.z, -cam.y+y*TILE*cam.z+yy*cam.z, 8*cam.z, 8*cam.z);
+      } }
+      ctx.globalAlpha=1;
+    }
+  }
 
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x;
@@ -420,6 +503,20 @@ function render(){
 
   // villagers
   for(const v of villagers){ drawVillager(v); }
+
+  if(ui.mode==='zones' && brushPreview){
+    const {x,y,r}=brushPreview;
+    ctx.strokeStyle='rgba(124,196,255,0.9)';
+    ctx.lineWidth=Math.max(1,1*cam.z);
+    for(let yy=y-r; yy<=y+r; yy++){
+      for(let xx=x-r; xx<=x+r; xx++){
+        if(xx<0||yy<0||xx>=MAP_W||yy>=MAP_H) continue;
+        const sx=-cam.x + xx*TILE*cam.z;
+        const sy=-cam.y + yy*TILE*cam.z;
+        ctx.strokeRect(sx+1, sy+1, TILE*cam.z-2, TILE*cam.z-2);
+      }
+    }
+  }
 
   // day/night tint (screen space)
   const t=dayTime/DAY_LEN; let night=(Math.cos((t*2*Math.PI))+1)/2; ctx.fillStyle=`rgba(10,18,30, ${0.25*night})`; ctx.fillRect(0,0,W,H);
