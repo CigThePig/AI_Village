@@ -177,7 +177,7 @@ function newWorld(seed=Date.now()|0){
   for(let k=0;k<200;k++){ const x=(MAP_W>>1)+irnd(-8,8), y=(MAP_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
   addBuilding('campfire',sx,sy,{built:1}); addBuilding('storage',sx+1,sy,{built:1});
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
-  Toast.show('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
+  toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0 }; }
 function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
@@ -224,6 +224,9 @@ const Toast = (() => {
   }
   return { show };
 })();
+
+// Legacy shim for old toast() calls
+window.toast = (msg, ms) => Toast.show(msg, ms);
 
 let ui={ mode:'inspect', zonePaint:ZONES.FARM, buildKind:null, brush:2 };
 let brushPreview=null;
