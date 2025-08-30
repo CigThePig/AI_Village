@@ -286,15 +286,22 @@ dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5000;color:#9cb2
 document.body.appendChild(dbg);
 const setDbg = (s)=> dbg.textContent = s;
 
+function pointerScale(){
+  const r = canvas.getBoundingClientRect();
+  return { sx: canvas.width / r.width, sy: canvas.height / r.height };
+}
+
 function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();
-  const sx = (px - rect.left) / rect.width * W;
-  const sy = (py - rect.top)  / rect.height * H;
-  return {
-    x: cam.x + sx / (TILE * cam.z),
-    y: cam.y + sy / (TILE * cam.z)
-  };
+  const sx = (px - rect.left) * (canvas.width  / rect.width);
+  const sy = (py - rect.top)  * (canvas.height / rect.height);
+  const M = window.__SCREEN_TO_WORLD__;
+  const wx = M.a * sx + M.c * sy + M.e;
+  const wy = M.b * sx + M.d * sy + M.f;
+  return { x: wx / TILE, y: wy / TILE };
 }
+
+function toTile(v){ return Math.floor(v); }
 
 canvas.addEventListener('pointerdown', (e)=>{
   setDbg(`down ${e.pointerType} mode=${ui.mode}`);
@@ -311,8 +318,8 @@ canvas.addEventListener('pointerdown', (e)=>{
     primaryPointer = null;
   } else if(!primaryPointer){
     primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
-    if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', w.x|0, w.y|0); }
-    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x|0,w.y|0); }
+    if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', toTile(w.x), toTile(w.y)); }
+    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x, w.y); }
   }
   e.preventDefault();
 },{passive:false});
@@ -321,12 +328,10 @@ canvas.addEventListener('pointermove', (e)=>{
   if(!activePointers.has(e.pointerId)) return;
   const p = activePointers.get(e.pointerId);
   p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
-  const rect  = canvas.getBoundingClientRect();
-  const scaleX = canvas.width  / rect.width;
-  const scaleY = canvas.height / rect.height;
+  const {sx:scaleX, sy:scaleY} = pointerScale();
   if (ui.mode==='zones' && primaryPointer){
     const w = screenToWorld(e.clientX, e.clientY);
-    setDbg(`paint ${w.x|0},${w.y|0}`);
+    setDbg(`paint ${toTile(w.x)},${toTile(w.y)}`);
   }
 
   if(pinch && activePointers.size===2){
@@ -354,7 +359,7 @@ canvas.addEventListener('pointermove', (e)=>{
       clampCam();
     } else {
       const w=screenToWorld(e.clientX,e.clientY);
-      paintZoneAt(w.x|0,w.y|0);
+      paintZoneAt(w.x, w.y);
     }
   }
 
@@ -362,7 +367,7 @@ canvas.addEventListener('pointermove', (e)=>{
     const ptr = primaryPointer ? activePointers.get(primaryPointer.id) : activePointers.values().next().value;
     if(ptr){
       const w=screenToWorld(ptr.x, ptr.y);
-      brushPreview={x:Math.floor(w.x), y:Math.floor(w.y), r:ui.brush|0};
+      brushPreview={x:toTile(w.x), y:toTile(w.y), r:Math.floor(ui.brush)};
     }
   } else {
     brushPreview=null;
@@ -420,17 +425,25 @@ function centerCamera(x,y){
   clampCam();
 }
 function paintZoneAt(cx, cy){
-  if (cx<0 || cy<0 || cx>=MAP_W || cy>=MAP_H) return;
-  const r = ui.brush|0, z = ui.zonePaint|0;
-  for (let y = cy - r; y <= cy + r; y++){
-    for (let x = cx - r; x <= cx + r; x++){
+  const x0 = toTile(cx), y0 = toTile(cy);
+  if (x0 < 0 || y0 < 0 || x0 >= MAP_W || y0 >= MAP_H) return;
+  const r = Math.floor(ui.brush), z = ui.zonePaint|0;
+  for (let y = y0 - r; y <= y0 + r; y++){
+    for (let x = x0 - r; x <= x0 + r; x++){
       if (x<0 || y<0 || x>=MAP_W || y>=MAP_H) continue;
       world.zone[y*MAP_W + x] = z;         // paint immediately
     }
   }
-  brushPreview = {x:cx, y:cy, r};
+  brushPreview = {x:x0, y:y0, r};
 }
-function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ Toast.show('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); markStaticDirty(); Toast.show('Blueprint placed.'); }
+function placeBlueprint(kind,x,y){
+  const tx=toTile(x), ty=toTile(y);
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return;
+  const t=getTile(tx,ty);
+  if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; }
+  if(buildings.some(b=>b.x===tx&&b.y===ty)){ Toast.show('Tile occupied.'); return; }
+  addBuilding(kind,tx,ty,{built:0}); markStaticDirty(); Toast.show('Blueprint placed.');
+}
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
 function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
@@ -545,7 +558,15 @@ function visibleTileBounds(){
 
 function render(){
   if(staticDirty) drawStatic();
-  ctx.imageSmoothingEnabled=false; ctx.fillStyle='#0a0c10'; ctx.fillRect(0,0,W,H);
+  ctx.imageSmoothingEnabled=false;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle='#0a0c10';
+  ctx.fillRect(0,0,W,H);
+  const ox=0, oy=0;
+  ctx.setTransform(cam.z,0,0,cam.z,-cam.x*TILE*cam.z + ox,-cam.y*TILE*cam.z + oy);
+  window.__WORLD_TO_SCREEN__ = ctx.getTransform();
+  window.__SCREEN_TO_WORLD__ = window.__WORLD_TO_SCREEN__.inverse();
+  ctx.setTransform(1,0,0,1,0,0);
   // base map scaled by cam.z
   ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height,
     -cam.x*TILE*cam.z, -cam.y*TILE*cam.z,
