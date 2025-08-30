@@ -279,6 +279,12 @@ const activePointers = new Map();
 let primaryPointer = null;
 let pinch = null;
 
+// tiny tap debugger to confirm events
+const dbg = document.createElement('div');
+dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5000;color:#9cb2cc;font:12px system-ui;pointer-events:none';
+document.body.appendChild(dbg);
+const setDbg = (s)=> dbg.textContent = s;
+
 function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();
   // Use the real backing-store scale instead of DPR guesses
@@ -291,6 +297,7 @@ function screenToWorld(px, py){
 }
 
 canvas.addEventListener('pointerdown', (e)=>{
+  setDbg(`down ${e.pointerType} mode=${ui.mode}`);
   activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY, type:e.pointerType});
   canvas.setPointerCapture(e.pointerId);
   if(e.pointerType==='touch' && activePointers.size===2){
@@ -314,6 +321,10 @@ canvas.addEventListener('pointermove', (e)=>{
   if(!activePointers.has(e.pointerId)) return;
   const p = activePointers.get(e.pointerId);
   p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
+  if (ui.mode==='zones' && primaryPointer){
+    const w = screenToWorld(e.clientX, e.clientY);
+    setDbg(`paint ${w.x|0},${w.y|0}`);
+  }
 
   if(pinch && activePointers.size===2){
     const pts = Array.from(activePointers.values());
@@ -357,8 +368,8 @@ function endPointer(e){
   if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
   if(activePointers.size<2) pinch=null;
   if(activePointers.size===0){
+    if(ui.mode==='zones') generateJobs(); // regen once per stroke
     brushPreview=null;
-    if(ui.mode==='zones') generateJobs();  // ← regen once when painting stops
   }
 }
 
