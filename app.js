@@ -338,7 +338,7 @@ function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x;
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){ cam.z=2.2; cam.x=x*TILE*cam.z - W*0.5; cam.y=y*TILE*cam.z - H*0.5; clampCam(); }
 function paintZoneAt(cx,cy){ if(cx<0||cy<0||cx>=MAP_W||cy>=MAP_H) return; const r=ui.brush|0; for(let y=cy-r;y<=cy+r;y++){ for(let x=cx-r;x<=cx+r;x++){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) continue; world.zone[y*MAP_W+x]=ui.zonePaint; } } generateJobs(); }
-function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ Toast.show('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); Toast.show('Blueprint placed.'); }
+function placeBlueprint(kind,x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return; const t=getTile(x,y); if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; } if(buildings.some(b=>b.x===x&&b.y===y)){ Toast.show('Tile occupied.'); return; } addBuilding(kind,x,y,{built:0}); markStaticDirty(); Toast.show('Blueprint placed.'); }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
 function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
