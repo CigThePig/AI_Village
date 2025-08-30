@@ -86,7 +86,7 @@ const ctx = canvas.getContext('2d', { alpha:false });
 canvas.style.touchAction = 'none';
 let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 let W=0, H=0;
-let cam = { x:0, y:0, z:2.2 }; // x,y in device pixels; draw scales by z
+let cam = { x:0, y:0, z:2.2 }; // x,y in tiles; draw scales by z
 const MIN_Z=1.2, MAX_Z=4.5;
 
 function resize(){
@@ -99,10 +99,10 @@ function resize(){
 }
 resize(); window.addEventListener('resize', resize);
 function clampCam(){
-  const maxX = MAP_W*TILE*cam.z - W;
-  const maxY = MAP_H*TILE*cam.z - H;
-  cam.x = Math.max(0, Math.min(cam.x, Math.max(0,maxX)));
-  cam.y = Math.max(0, Math.min(cam.y, Math.max(0,maxY)));
+  const maxX = MAP_W - W / (TILE * cam.z);
+  const maxY = MAP_H - H / (TILE * cam.z);
+  cam.x = Math.max(0, Math.min(cam.x, Math.max(0, maxX)));
+  cam.y = Math.max(0, Math.min(cam.y, Math.max(0, maxY)));
 }
 
 /* ==================== RNG ==================== */
@@ -287,12 +287,12 @@ document.body.appendChild(dbg);
 const setDbg = (s)=> dbg.textContent = s;
 
 function screenToWorld(px, py){
-  const rect = canvas.getBoundingClientRect();       // CSS pixels
-  const sx = (px - rect.left) * DPR;                 // device pixels
-  const sy = (py - rect.top)  * DPR;
+  const rect = canvas.getBoundingClientRect();
+  const sx = (px - rect.left) / rect.width * W;
+  const sy = (py - rect.top)  / rect.height * H;
   return {
-    x: (sx + cam.x) / (TILE * cam.z),
-    y: (sy + cam.y) / (TILE * cam.z)
+    x: cam.x + sx / (TILE * cam.z),
+    y: cam.y + sy / (TILE * cam.z)
   };
 }
 
@@ -329,22 +329,25 @@ canvas.addEventListener('pointermove', (e)=>{
   if(pinch && activePointers.size===2){
     const pts = Array.from(activePointers.values());
     const dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
-    const before = screenToWorld(pinch.midx,pinch.midy);
+    const before = screenToWorld(pinch.midx, pinch.midy);
     cam.z = clamp((dist/(pinch.startDist||1))*pinch.startZ, MIN_Z, MAX_Z);
-    const after = screenToWorld(pinch.midx,pinch.midy);
-    cam.x += (after.x-before.x)*(TILE*cam.z);
-    cam.y += (after.y-before.y)*(TILE*cam.z);
-    const midx=(pts[0].x+pts[1].x)/2, midy=(pts[0].y+pts[1].y)/2;
-    cam.x -= (midx-pinch.midx)*DPR;
-    cam.y -= (midy-pinch.midy)*DPR;
-    pinch.midx=midx; pinch.midy=midy;
+    const after = screenToWorld(pinch.midx, pinch.midy);
+    cam.x += (after.x - before.x);
+    cam.y += (after.y - before.y);
+    const midx = (pts[0].x + pts[1].x) / 2,
+          midy = (pts[0].y + pts[1].y) / 2;
+    cam.x -= (midx - pinch.midx) * DPR / (TILE * cam.z);
+    cam.y -= (midy - pinch.midy) * DPR / (TILE * cam.z);
+    pinch.midx = midx; pinch.midy = midy;
     clampCam();
   } else if(primaryPointer && e.pointerId===primaryPointer.id){
     if(ui.mode!=='zones'){
       const dx=(e.clientX-primaryPointer.sx)*DPR;
       const dy=(e.clientY-primaryPointer.sy)*DPR;
-      cam.x = primaryPointer.camx - dx;
-      cam.y = primaryPointer.camy - dy;
+      const dtX = dx / (TILE * cam.z);
+      const dtY = dy / (TILE * cam.z);
+      cam.x = primaryPointer.camx - dtX;
+      cam.y = primaryPointer.camy - dtY;
       clampCam();
     } else {
       const w=screenToWorld(e.clientX,e.clientY);
@@ -380,7 +383,7 @@ canvas.addEventListener('pointerleave', endPointer, {passive:false});
 canvas.addEventListener('wheel', (e)=>{
   const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
   const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
-  cam.x += (after.x-before.x)*(TILE*cam.z); cam.y += (after.y-before.y)*(TILE*cam.z); clampCam();
+cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
 });
 
 /* ==================== Zones/Build/Helpers ==================== */
@@ -407,7 +410,12 @@ document.getElementById('prioBuild').addEventListener('input', e=> priorities.bu
 document.getElementById('prioExplore').addEventListener('input', e=> priorities.explore=(parseInt(e.target.value,10)||0)/100 );
 function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x; }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
-function centerCamera(x,y){ cam.z=2.2; cam.x=x*TILE*cam.z - W*0.5; cam.y=y*TILE*cam.z - H*0.5; clampCam(); }
+function centerCamera(x,y){
+  cam.z = 2.2;
+  cam.x = x - W / (TILE * cam.z) * 0.5;
+  cam.y = y - H / (TILE * cam.z) * 0.5;
+  clampCam();
+}
 function paintZoneAt(cx, cy){
   if (cx<0 || cy<0 || cx>=MAP_W || cy>=MAP_H) return;
   const r = ui.brush|0, z = ui.zonePaint|0;
@@ -523,11 +531,12 @@ function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle=
 function drawBerry(g){ g.fillStyle='#2f6d36'; g.fillRect(8,16,16,10); g.fillStyle='#a04a5a'; g.fillRect(12,18,2,2); g.fillRect(18,20,2,2); g.fillRect(16,22,2,2); }
 
 function visibleTileBounds(){
-  const tileSize = TILE * cam.z;
-  const x0 = Math.max(0, Math.floor(cam.x / tileSize));
-  const y0 = Math.max(0, Math.floor(cam.y / tileSize));
-  const x1 = Math.min(MAP_W-1, Math.ceil((cam.x + W) / tileSize));
-  const y1 = Math.min(MAP_H-1, Math.ceil((cam.y + H) / tileSize));
+  const wTiles = W / (TILE * cam.z);
+  const hTiles = H / (TILE * cam.z);
+  const x0 = Math.max(0, Math.floor(cam.x));
+  const y0 = Math.max(0, Math.floor(cam.y));
+  const x1 = Math.min(MAP_W-1, Math.ceil(cam.x + wTiles));
+  const y1 = Math.min(MAP_H-1, Math.ceil(cam.y + hTiles));
   return {x0, y0, x1, y1};
 }
 
@@ -535,7 +544,9 @@ function render(){
   if(staticDirty) drawStatic();
   ctx.imageSmoothingEnabled=false; ctx.fillStyle='#0a0c10'; ctx.fillRect(0,0,W,H);
   // base map scaled by cam.z
-  ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height, -cam.x, -cam.y, staticCanvas.width*cam.z, staticCanvas.height*cam.z);
+  ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height,
+    -cam.x*TILE*cam.z, -cam.y*TILE*cam.z,
+    staticCanvas.width*cam.z, staticCanvas.height*cam.z);
 
   let t0,t1,t2;
   if(PERF.log) t0 = performance.now();
@@ -548,7 +559,9 @@ function render(){
   if(frames.length){
     const frame = Math.floor((tick/10)%frames.length);
     for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
-      ctx.drawImage(frames[frame], 0,0,TILE,TILE, -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z);
+      const px = (x - cam.x) * TILE * cam.z;
+      const py = (y - cam.y) * TILE * cam.z;
+      ctx.drawImage(frames[frame], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
     } } }
   }
 
@@ -560,11 +573,13 @@ function render(){
                  : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
                  :                   'rgba(160,200,255,0.22)';
       ctx.fillStyle=wash;
-      ctx.fillRect(-cam.x + x*TILE*cam.z, -cam.y + y*TILE*cam.z, TILE*cam.z, TILE*cam.z);
+      const px = (x - cam.x) * TILE * cam.z;
+      const py = (y - cam.y) * TILE * cam.z;
+      ctx.fillRect(px, py, TILE*cam.z, TILE*cam.z);
       const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
       ctx.globalAlpha=0.6;
       for(let yy=4; yy<TILE; yy+=10){ for(let xx=4; xx<TILE; xx+=10){
-        ctx.drawImage(glyph, 0,0,8,8, -cam.x+x*TILE*cam.z+xx*cam.z, -cam.y+y*TILE*cam.z+yy*cam.z, 8*cam.z, 8*cam.z);
+        ctx.drawImage(glyph, 0,0,8,8, px+xx*cam.z, py+yy*cam.z, 8*cam.z, 8*cam.z);
       } }
       ctx.globalAlpha=1;
     }
@@ -572,18 +587,40 @@ function render(){
 
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x;
-    if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){ ctx.drawImage(Tileset.sprite.tree, -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z); }
-    if(world.berries[i]>0){ ctx.drawImage(Tileset.sprite.berry, -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z); }
-    if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){ const stageIndex=Math.min(2, Math.floor(world.growth[i]/80)); ctx.drawImage(Tileset.sprite.sprout[stageIndex], -cam.x+x*TILE*cam.z, -cam.y+y*TILE*cam.z, TILE*cam.z, TILE*cam.z); }
+    if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
+      const px = (x - cam.x) * TILE * cam.z;
+      const py = (y - cam.y) * TILE * cam.z;
+      ctx.drawImage(Tileset.sprite.tree, px, py, TILE*cam.z, TILE*cam.z);
+    }
+    if(world.berries[i]>0){
+      const px = (x - cam.x) * TILE * cam.z;
+      const py = (y - cam.y) * TILE * cam.z;
+      ctx.drawImage(Tileset.sprite.berry, px, py, TILE*cam.z, TILE*cam.z);
+    }
+    if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
+      const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
+      const px = (x - cam.x) * TILE * cam.z;
+      const py = (y - cam.y) * TILE * cam.z;
+      ctx.drawImage(Tileset.sprite.sprout[stageIndex], px, py, TILE*cam.z, TILE*cam.z);
+    }
   } }
 
   if(PERF.log) t1 = performance.now();
 
   // buildings
-  for(const b of buildings){ const gx=-cam.x + b.x*TILE*cam.z, gy=-cam.y + b.y*TILE*cam.z; drawBuildingAt(gx,gy,b); }
+  for(const b of buildings){
+    const gx = (b.x - cam.x) * TILE * cam.z;
+    const gy = (b.y - cam.y) * TILE * cam.z;
+    drawBuildingAt(gx, gy, b);
+  }
 
   // items
-  for(const it of itemsOnGround){ const gx=-cam.x+it.x*TILE*cam.z, gy=-cam.y+it.y*TILE*cam.z; ctx.fillStyle = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a'; ctx.fillRect(gx+TILE*cam.z*0.5-2*cam.z, gy+TILE*cam.z*0.5-2*cam.z, 4*cam.z, 4*cam.z); }
+  for(const it of itemsOnGround){
+    const gx = (it.x - cam.x) * TILE * cam.z;
+    const gy = (it.y - cam.y) * TILE * cam.z;
+    ctx.fillStyle = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+    ctx.fillRect(gx+TILE*cam.z*0.5-2*cam.z, gy+TILE*cam.z*0.5-2*cam.z, 4*cam.z, 4*cam.z);
+  }
 
   // villagers
   for(const v of villagers){ drawVillager(v); }
@@ -595,8 +632,8 @@ function render(){
     for(let yy=y-r; yy<=y+r; yy++){
       for(let xx=x-r; xx<=x+r; xx++){
         if(xx<0||yy<0||xx>=MAP_W||yy>=MAP_H) continue;
-        const sx=-cam.x + xx*TILE*cam.z;
-        const sy=-cam.y + yy*TILE*cam.z;
+        const sx = (xx - cam.x) * TILE * cam.z;
+        const sy = (yy - cam.y) * TILE * cam.z;
         ctx.strokeRect(sx+1, sy+1, TILE*cam.z-2, TILE*cam.z-2);
       }
     }
@@ -606,7 +643,18 @@ function render(){
   const t=dayTime/DAY_LEN; let night=(Math.cos((t*2*Math.PI))+1)/2; ctx.fillStyle=`rgba(10,18,30, ${0.25*night})`; ctx.fillRect(0,0,W,H);
 
   // campfire glow (screen space but positioned via cam)
-  for(const b of buildings){ if(b.kind==='campfire'){ const gx=-cam.x+b.x*TILE*cam.z+TILE*cam.z/2, gy=-cam.y+b.y*TILE*cam.z+TILE*cam.z/2; const r= (24+4*Math.sin(tick*0.2))*cam.z; const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r); grd.addColorStop(0,'rgba(255,180,90,0.35)'); grd.addColorStop(1,'rgba(255,120,60,0)'); ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill(); } }
+  for(const b of buildings){
+    if(b.kind==='campfire'){
+      const gx = (b.x - cam.x) * TILE * cam.z + TILE*cam.z/2;
+      const gy = (b.y - cam.y) * TILE * cam.z + TILE*cam.z/2;
+      const r = (24+4*Math.sin(tick*0.2))*cam.z;
+      const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r);
+      grd.addColorStop(0,'rgba(255,180,90,0.35)');
+      grd.addColorStop(1,'rgba(255,120,60,0)');
+      ctx.fillStyle=grd;
+      ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill();
+    }
+  }
 
   // HUD counters
   el('food').textContent=storageTotals.food|0; el('wood').textContent=storageTotals.wood|0; el('stone').textContent=storageTotals.stone|0; el('pop').textContent=villagers.length|0;
@@ -629,7 +677,8 @@ function drawBuildingAt(gx,gy,b){
 function drawVillager(v){
   const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role==='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
-  const gx=-cam.x+v.x*TILE*cam.z + 8*s, gy=-cam.y+v.y*TILE*cam.z + 8*s;
+  const gx = (v.x - cam.x) * TILE * cam.z + 8*s;
+  const gy = (v.y - cam.y) * TILE * cam.z + 8*s;
   ctx.drawImage(f, 0,0,16,16, gx, gy, 16*s, 16*s);
   if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+12*s, gy+2*s, 3*s, 3*s); }
 }
