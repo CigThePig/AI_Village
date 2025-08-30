@@ -292,13 +292,14 @@ function pointerScale(){
 }
 
 function screenToWorld(px, py){
-  const rect = canvas.getBoundingClientRect();
-  const sx = (px - rect.left) * (canvas.width  / rect.width);
-  const sy = (py - rect.top)  * (canvas.height / rect.height);
-  const M = window.__SCREEN_TO_WORLD__;
-  const wx = M.a * sx + M.c * sy + M.e;
-  const wy = M.b * sx + M.d * sy + M.f;
-  return { x: wx / TILE, y: wy / TILE };
+  const rect = canvas.getBoundingClientRect();         // CSS pixels
+  const sx = (px - rect.left) * (canvas.width  / rect.width);   // device px
+  const sy = (py - rect.top)  * (canvas.height / rect.height);  // device px
+  // camera is in tiles; drawing uses (x - cam.x) * TILE * cam.z
+  return {
+    x: cam.x + sx / (TILE * cam.z),
+    y: cam.y + sy / (TILE * cam.z)
+  };
 }
 
 function toTile(v){ return Math.floor(v); }
@@ -562,11 +563,6 @@ function render(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#0a0c10';
   ctx.fillRect(0,0,W,H);
-  const ox=0, oy=0;
-  ctx.setTransform(cam.z,0,0,cam.z,-cam.x*TILE*cam.z + ox,-cam.y*TILE*cam.z + oy);
-  window.__WORLD_TO_SCREEN__ = ctx.getTransform();
-  window.__SCREEN_TO_WORLD__ = window.__WORLD_TO_SCREEN__.inverse();
-  ctx.setTransform(1,0,0,1,0,0);
   // base map scaled by cam.z
   ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height,
     -cam.x*TILE*cam.z, -cam.y*TILE*cam.z,
