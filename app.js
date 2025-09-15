@@ -31,7 +31,13 @@ const Storage = (() => {
     try { window.localStorage.removeItem(key); return true; }
     catch (e) { return false; }
   }
-  return { available, get, set, del };
+  return {
+    get available(){ return available; },
+    set available(v){ available = !!v; },
+    get,
+    set,
+    del
+  };
 })();
 
 function showFatalOverlay(err) {
@@ -448,6 +454,17 @@ function placeBlueprint(kind,x,y){
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
 function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
+function finishJob(v, remove=false){
+  const job = v.targetJob;
+  if(job){
+    job.assigned = Math.max(0, (job.assigned||0)-1);
+    if(remove){
+      const ji = jobs.indexOf(job);
+      if(ji !== -1) jobs.splice(ji,1);
+    }
+  }
+  v.targetJob=null;
+}
 function generateJobs(){ for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; const z=world.zone[i];
   if(z===ZONES.FARM){ if(world.tiles[i]!==TILES.WATER && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)) addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6}); }
   else if(z===ZONES.CUT){ if(world.trees[i]>0 && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
@@ -470,14 +487,105 @@ function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearest
 function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
 function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
 function stepAlong(v){ const next=v.path[0]; if(!next) return; const speed=v.speed*SPEEDS[speedIdx]; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
-function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy); if(v.state==='chop'){ if(world.trees[i]>0){ world.trees[i]--; dropItem(cx,cy,ITEM.WOOD,1); if(world.trees[i]===0){ world.tiles[i]=TILES.GRASS; markStaticDirty(); } v.thought='Chopped'; } v.state='idle'; v.targetJob=null; }
-else if(v.state==='mine'){ if(world.rocks[i]>0){ world.rocks[i]--; dropItem(cx,cy,ITEM.STONE,1); if(world.rocks[i]===0){ world.tiles[i]=TILES.GRASS; markStaticDirty(); } v.thought='Mined'; } v.state='idle'; v.targetJob=null; }
-else if(v.state==='forage'){ if(world.berries[v.targetI]>0){ world.berries[v.targetI]--; v.inv={type:ITEM.FOOD,qty:1}; v.thought='Got berries'; } v.state='idle'; }
-else if(v.state==='sow'){ if(world.tiles[i]!==TILES.WATER){ world.tiles[i]=TILES.FARMLAND; world.growth[i]=1; world.zone[i]=ZONES.FARM; markStaticDirty(); v.thought='Sowed'; } v.state='idle'; v.targetJob=null; }
-else if(v.state==='harvest'){ dropItem(cx,cy,ITEM.FOOD,1); world.growth[i]=0; v.state='idle'; v.thought='Harvested'; }
-else if(v.state==='build'){ const b=buildings.find(bb=>bb.id===v.targetJob?.bid); if(b){ const def=BUILDINGS[b.kind]; if(b.built<1){ const need=def.cost-(b.progress||0); let pulled=0; if(def.wood>0){ const take=Math.min(need,storageTotals.wood); storageTotals.wood-=take; pulled+=take; } if(def.stone>0){ const take=Math.min(need-pulled,storageTotals.stone); storageTotals.stone-=take; pulled+=take; } b.progress=(b.progress||0)+pulled; if(b.progress>=def.cost){ b.built=1; v.thought='Built'; } } } v.state='idle'; v.targetJob=null; }
-else if(v.state==='to_storage'){ if(v.inv){ if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty; if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty; if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty; v.inv=null; v.thought='Stored'; } v.state='idle'; }
-else if(v.state==='rest'){ v.energy += 0.4; if(v.energy>1)v.energy=1; v.thought='Rested'; v.state='idle'; } }
+function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
+if(v.state==='chop'){
+  let remove = world.trees[i]<=0;
+  if(world.trees[i]>0){
+    world.trees[i]--;
+    dropItem(cx,cy,ITEM.WOOD,1);
+    if(world.trees[i]===0){
+      world.tiles[i]=TILES.GRASS;
+      markStaticDirty();
+      remove = true;
+    }
+    v.thought='Chopped';
+  } else {
+    v.thought='Nothing to chop';
+  }
+  v.state='idle';
+  finishJob(v, remove);
+}
+else if(v.state==='mine'){
+  let remove = world.rocks[i]<=0;
+  if(world.rocks[i]>0){
+    world.rocks[i]--;
+    dropItem(cx,cy,ITEM.STONE,1);
+    if(world.rocks[i]===0){
+      world.tiles[i]=TILES.GRASS;
+      markStaticDirty();
+      remove = true;
+    }
+    v.thought='Mined';
+  } else {
+    v.thought='Nothing to mine';
+  }
+  v.state='idle';
+  finishJob(v, remove);
+}
+else if(v.state==='forage'){
+  if(world.berries[v.targetI]>0){ world.berries[v.targetI]--; v.inv={type:ITEM.FOOD,qty:1}; v.thought='Got berries'; }
+  v.state='idle';
+}
+else if(v.state==='sow'){
+  if(world.tiles[i]!==TILES.WATER){
+    world.tiles[i]=TILES.FARMLAND;
+    world.growth[i]=1;
+    world.zone[i]=ZONES.FARM;
+    markStaticDirty();
+    v.thought='Sowed';
+  } else {
+    v.thought='Too wet to sow';
+  }
+  v.state='idle';
+  finishJob(v, true);
+}
+else if(v.state==='harvest'){
+  if(world.growth[i]>0){
+    dropItem(cx,cy,ITEM.FOOD,1);
+    v.thought='Harvested';
+  } else {
+    v.thought='Nothing to harvest';
+  }
+  world.growth[i]=0;
+  v.state='idle';
+  finishJob(v, true);
+}
+else if(v.state==='build'){
+  let remove=false;
+  const b=buildings.find(bb=>bb.id===v.targetJob?.bid);
+  if(b){
+    const def=BUILDINGS[b.kind];
+    if(b.built<1){
+      const need=def.cost-(b.progress||0);
+      let pulled=0;
+      if(def.wood>0){ const take=Math.min(need,storageTotals.wood); storageTotals.wood-=take; pulled+=take; }
+      if(def.stone>0){ const take=Math.min(need-pulled,storageTotals.stone); storageTotals.stone-=take; pulled+=take; }
+      b.progress=(b.progress||0)+pulled;
+      if(b.progress>=def.cost){
+        b.built=1;
+        v.thought='Built';
+        remove=true;
+      } else {
+        v.thought = pulled>0 ? 'Building' : 'Needs supplies';
+      }
+    } else {
+      v.thought='Built';
+      remove=true;
+    }
+  } else {
+    v.thought='Site missing';
+    remove=true;
+  }
+  v.state='idle';
+  finishJob(v, remove);
+}
+else if(v.state==='to_storage'){
+  if(v.inv){ if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty; if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty; if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty; v.inv=null; v.thought='Stored'; }
+  v.state='idle';
+}
+else if(v.state==='rest'){
+  v.energy += 0.4; if(v.energy>1)v.energy=1; v.thought='Rested'; v.state='idle';
+} }
 
 /* ==================== Pathfinding ==================== */
 function passable(x,y){ const i=idx(x,y); if(i<0) return false; return WALKABLE.has(world.tiles[i]); }
