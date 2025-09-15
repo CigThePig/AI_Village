@@ -33,6 +33,7 @@
   let fpsLastTime = 0;
   let logId = 0;
   let connectionListenerAttached = false;
+  let trayCollapsed = false;
 
   const doc = document;
   const win = window;
@@ -57,22 +58,25 @@
       display: flex;
       flex-direction: column;
     }
+    #dbgTray.collapsed { max-height: none; }
     #dbgTray.collapsed #dbgBody { display: none; }
-    #dbgTray.collapsed { max-height: 160px; }
+    #dbgTray.collapsed #dbgRowB,
+    #dbgTray.collapsed #dbgRowC { display: none; }
+    #dbgTray.collapsed .dbg-aux { display: none; }
     #dbgHead {
       background: #141c2c;
       border-bottom: 1px solid #2a3550;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 10px;
+      gap: 4px;
+      padding: 8px;
       touch-action: none;
       user-select: none;
     }
     #dbgRowA, #dbgRowB, #dbgRowC {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 4px;
       align-items: center;
     }
     #dbgRowA .dbg-title {
@@ -84,7 +88,7 @@
       flex: 1;
     }
     #dbgBody {
-      max-height: 55vh;
+      max-height: 40vh;
       overflow: auto;
       padding: 10px;
       background: #0f1522;
@@ -123,12 +127,12 @@
     #dbgTray input[type="search"],
     #dbgTray input[type="number"],
     #dbgTray label {
-      min-height: 42px;
+      min-height: 34px;
       border-radius: 10px;
       border: 1px solid #2a3550;
       background: #10192b;
       color: #e8eefc;
-      padding: 6px 12px;
+      padding: 6px 10px;
       font-size: 14px;
     }
     #dbgTray button,
@@ -188,8 +192,8 @@
       flex: 1 1 auto;
     }
     #dbgHead button.small {
-      padding: 6px 10px;
-      min-width: 64px;
+      padding: 4px 10px;
+      min-width: 56px;
     }
     #dbgTray .dbg-viewport {
       font-size: 12px;
@@ -432,6 +436,8 @@
   const pill = el('div', { id: 'dbgPill', text: 'Debug' });
 
   const viewportLabel = el('span', { className: 'dbg-viewport' });
+  const collapseBtn = el('button', { className: 'small', 'aria-label': 'Collapse debug panel' }, 'Collapse');
+  const hideBtn = el('button', { className: 'small', 'aria-label': 'Hide debug panel' }, 'Hide');
   const copyBtn = el('button', null, 'Copy');
   const exportBtn = el('button', null, 'Export');
   const shareBtn = el('button', null, 'Share');
@@ -460,8 +466,16 @@
   const rectBtn = el('button', null, 'Rect');
   const shotBtn = el('button', null, 'Shot');
 
+  copyBtn.classList.add('dbg-aux');
+  exportBtn.classList.add('dbg-aux');
+  shareBtn.classList.add('dbg-aux');
+  clearBtn.classList.add('dbg-aux');
+  pauseBtn.classList.add('dbg-aux');
+
   rowA.append(
     el('span', { className: 'dbg-title', text: 'Debug' }),
+    collapseBtn,
+    hideBtn,
     copyBtn,
     exportBtn,
     shareBtn,
@@ -495,6 +509,19 @@
   tray.append(head, body);
   doc.body.appendChild(tray);
   doc.body.appendChild(pill);
+
+  function setCollapsedState(value) {
+    trayCollapsed = !!value;
+    tray.classList.toggle('collapsed', trayCollapsed);
+    collapseBtn.textContent = trayCollapsed ? 'Expand' : 'Collapse';
+    collapseBtn.setAttribute('aria-expanded', trayCollapsed ? 'false' : 'true');
+    collapseBtn.setAttribute('aria-label', trayCollapsed ? 'Expand debug panel' : 'Collapse debug panel');
+  }
+
+  setCollapsedState(false);
+  if (win.innerWidth <= 768 || win.innerHeight <= 640) {
+    setCollapsedState(true);
+  }
 
   function scheduleRender() {
     if (renderScheduled) return;
@@ -570,6 +597,14 @@
   body.addEventListener('scroll', function () {
     const nearBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 8;
     autoscroll = nearBottom;
+  });
+
+  collapseBtn.addEventListener('click', () => {
+    setCollapsedState(!trayCollapsed);
+  });
+
+  hideBtn.addEventListener('click', () => {
+    minimizeTray();
   });
 
   copyBtn.addEventListener('click', async () => {
@@ -767,7 +802,7 @@
 
   head.addEventListener('dblclick', (ev) => {
     if (ev.target && ev.target.closest('button, input, select, textarea, label, a')) return;
-    tray.classList.toggle('collapsed');
+    setCollapsedState(!trayCollapsed);
   });
 
   let longPressTimer = null;
