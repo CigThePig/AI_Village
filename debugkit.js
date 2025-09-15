@@ -1308,6 +1308,23 @@
       return xhr;
     }
     WrappedXHR.prototype = OriginalXHR.prototype;
+    try {
+      Object.getOwnPropertyNames(OriginalXHR).forEach(name => {
+        if (name === 'prototype' || name === 'name' || name === 'length') return;
+        const descriptor = Object.getOwnPropertyDescriptor(OriginalXHR, name);
+        if (descriptor) {
+          Object.defineProperty(WrappedXHR, name, descriptor);
+        }
+      });
+      if (Object.getOwnPropertySymbols) {
+        Object.getOwnPropertySymbols(OriginalXHR).forEach(symbol => {
+          const descriptor = Object.getOwnPropertyDescriptor(OriginalXHR, symbol);
+          if (descriptor) {
+            Object.defineProperty(WrappedXHR, symbol, descriptor);
+          }
+        });
+      }
+    } catch (err) {}
     win.XMLHttpRequest = WrappedXHR;
   }
 
