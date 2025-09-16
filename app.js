@@ -496,6 +496,15 @@ function placeBlueprint(kind,x,y){
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
 function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
+function moodMotivation(v){ return clamp((v.happy-0.5)*2,-1,1); }
+function moodPrefix(v){
+  if(v.happy>=0.8) return '😊 ';
+  if(v.happy>=0.6) return '🙂 ';
+  if(v.happy<=0.2) return '☹️ ';
+  if(v.happy<=0.4) return '😟 ';
+  return '';
+}
+function moodThought(v, base){ const prefix=moodPrefix(v); return prefix?`${prefix}${base}`:base; }
 function finishJob(v, remove=false){
   const job = v.targetJob;
   if(job){
@@ -519,8 +528,8 @@ const STARVE_TOAST_COOLDOWN=420;
 const HUNGER_RATE=0.00135;
 const ENERGY_DRAIN_BASE=0.0011;
 function issueStarveToast(v,text,force=false){ const ready=(v.nextStarveWarning||0)<=tick; if(force||ready){ Toast.show(text); v.nextStarveWarning=tick+STARVE_TOAST_COOLDOWN; } }
-function enterSickState(v){ if(v.condition==='sick') return; v.condition='sick'; v.sickTimer=STARVE_COLLAPSE_TICKS; v.starveStage=Math.max(3,v.starveStage||0); finishJob(v); if(v.path) v.path.length=0; v.state='sick'; v.thought='Collapsed'; issueStarveToast(v,'A villager collapsed from hunger! They need food now.',true); }
-function handleVillagerFed(v,source='food'){ const wasCritical=(v.condition==='sick')||((v.starveStage||0)>=2); v.sickTimer=0; v.starveStage=0; if(wasCritical){ v.condition='recovering'; v.recoveryTimer=STARVE_RECOVERY_TICKS; } else { v.condition='normal'; v.recoveryTimer=Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS/3)); } v.nextStarveWarning=tick+Math.floor(STARVE_TOAST_COOLDOWN*0.6); if(v.state==='sick') v.state='idle'; v.thought=wasCritical?'Recovering':'Content'; v.happy=clamp(v.happy+0.05,0,1); if(wasCritical){ const detail=source==='camp'?'camp stores':source==='pack'?'their pack':source==='berries'?'wild berries':source; issueStarveToast(v,`Villager recovered after eating ${detail}.`,true); } }
+function enterSickState(v){ if(v.condition==='sick') return; v.condition='sick'; v.sickTimer=STARVE_COLLAPSE_TICKS; v.starveStage=Math.max(3,v.starveStage||0); finishJob(v); if(v.path) v.path.length=0; v.state='sick'; v.thought=moodThought(v,'Collapsed'); issueStarveToast(v,'A villager collapsed from hunger! They need food now.',true); }
+function handleVillagerFed(v,source='food'){ const wasCritical=(v.condition==='sick')||((v.starveStage||0)>=2); v.sickTimer=0; v.starveStage=0; if(wasCritical){ v.condition='recovering'; v.recoveryTimer=STARVE_RECOVERY_TICKS; } else { v.condition='normal'; v.recoveryTimer=Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS/3)); } v.nextStarveWarning=tick+Math.floor(STARVE_TOAST_COOLDOWN*0.6); if(v.state==='sick') v.state='idle'; v.thought=moodThought(v,wasCritical?'Recovering':'Content'); v.happy=clamp(v.happy+0.05,0,1); if(wasCritical){ const detail=source==='camp'?'camp stores':source==='pack'?'their pack':source==='berries'?'wild berries':source; issueStarveToast(v,`Villager recovered after eating ${detail}.`,true); } }
 function villagerTick(v){
   if(v.condition===undefined) v.condition='normal';
   if(v.starveStage===undefined) v.starveStage=0;
@@ -530,7 +539,9 @@ function villagerTick(v){
   v.hunger += HUNGER_RATE;
   const warm=nearbyWarmth(v.x|0,v.y|0);
   let energyDelta=-ENERGY_DRAIN_BASE;
+  const moodEnergyBoost=moodMotivation(v)*0.00045;
   let happyDelta=warm?0.0008:-0.0004;
+  energyDelta+=moodEnergyBoost;
   const prevStage=v.starveStage||0;
   let stage=0;
   if(v.hunger>STARVE_THRESH.hungry) stage=1;
@@ -569,7 +580,7 @@ function villagerTick(v){
     if(v.path) v.path.length=0;
     finishJob(v);
     v.state='sick';
-    v.thought='Collapsed';
+    v.thought=moodThought(v,'Collapsed');
   }
   v.hunger=clamp(v.hunger,0,1.2);
   v.energy=clamp(v.energy+energyDelta,0,1);
@@ -578,19 +589,19 @@ function villagerTick(v){
   const urgentFood = stage>=2 || v.condition==='sick';
   const needsFood = stage>=1;
   if(urgentFood){
-    if(consumeFood(v)){ v.thought='Eating'; return; }
+    if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
   } else if(needsFood){
-    if(consumeFood(v)){ v.thought='Eating'; return; }
+    if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
   }
   if(v.energy<0.15){ if(goRest(v)) return; }
   if(v.path && v.path.length>0){ stepAlong(v); return; }
-  if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,s.x,s.y); if(p){ v.path=p; v.state='to_storage'; v.thought='Storing'; v._nextPathTick=tick+12; return; } } }
-  const j=pickJobFor(v); if(j && tick>=v._nextPathTick){ const dest={x:j.x,y:j.y}; if(j.type==='build'){ const b=buildings.find(bb=>bb.id===j.bid); if(b) dest.x=b.x, dest.y=b.y; } const p=pathfind(v.x|0,v.y|0,dest.x,dest.y); if(p){ v.path=p; v.state=j.type; v.targetJob=j; v.thought=j.type.toUpperCase(); j.assigned++; v._nextPathTick=tick+12; return; } }
-  if(stage>=2){ v.thought='Starving'; return; }
+  if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,s.x,s.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
+  const j=pickJobFor(v); if(j && tick>=v._nextPathTick){ const dest={x:j.x,y:j.y}; if(j.type==='build'){ const b=buildings.find(bb=>bb.id===j.bid); if(b) dest.x=b.x, dest.y=b.y; } const p=pathfind(v.x|0,v.y|0,dest.x,dest.y); if(p){ v.path=p; v.state=j.type; v.targetJob=j; v.thought=moodThought(v,j.type.toUpperCase()); j.assigned++; v._nextPathTick=tick+12; return; } }
+  if(stage>=2){ v.thought=moodThought(v,'Starving'); return; }
   const wanderRange=stage===1?3:4;
-  v.thought=stage===1?'Hungry':'Wandering';
+  v.thought=moodThought(v,stage===1?'Hungry':'Wandering');
   const nx=clamp((v.x|0)+irnd(-wanderRange,wanderRange),0,MAP_W-1);
   const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,MAP_H-1);
   if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
@@ -614,11 +625,11 @@ function consumeFood(v){
   }
   return false;
 }
-function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought='Foraging'; v._nextPathTick=tick+12; return true; } } return false; }
-function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought='Resting'; v._nextPathTick=tick+12; return true; } } return false; }
+function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; } } return false; }
+function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
-function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
-function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const speed=v.speed*penalty*SPEEDS[speedIdx]; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
+function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; const mood=moodMotivation(v); const prio=(j.prio||0.5); const heavy=(j.type==='chop'||j.type==='mine'||j.type==='build'); const nurture=(j.type==='sow'||j.type==='harvest'); const baseMood=mood*0.04; const roleMood=heavy?mood*0.04:(nurture?mood*0.02:0); const prioMood=mood>=0?mood*(prio*0.03):mood*((0.7-prio)*0.03); s+=baseMood+roleMood+prioMood; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
+function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const moodSpeed=0.75+v.happy*0.5; const speed=v.speed*penalty*SPEEDS[speedIdx]*moodSpeed; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
 function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
 if(v.state==='chop'){
   let remove = world.trees[i]<=0;
@@ -630,9 +641,9 @@ if(v.state==='chop'){
       markStaticDirty();
       remove = true;
     }
-    v.thought='Chopped';
+    v.thought=moodThought(v,'Chopped');
   } else {
-    v.thought='Nothing to chop';
+    v.thought=moodThought(v,'Nothing to chop');
   }
   v.state='idle';
   finishJob(v, remove);
@@ -647,9 +658,9 @@ else if(v.state==='mine'){
       markStaticDirty();
       remove = true;
     }
-    v.thought='Mined';
+    v.thought=moodThought(v,'Mined');
   } else {
-    v.thought='Nothing to mine';
+    v.thought=moodThought(v,'Nothing to mine');
   }
   v.state='idle';
   finishJob(v, remove);
@@ -661,10 +672,10 @@ else if(v.state==='forage'){
       v.hunger-=0.6;
       if(v.hunger<0) v.hunger=0;
       handleVillagerFed(v,'berries');
-      v.thought='Ate berries';
+      v.thought=moodThought(v,'Ate berries');
     } else {
       v.inv={type:ITEM.FOOD,qty:1};
-      v.thought='Got berries';
+      v.thought=moodThought(v,'Got berries');
     }
   }
   v.state='idle';
@@ -675,9 +686,9 @@ else if(v.state==='sow'){
     world.growth[i]=1;
     world.zone[i]=ZONES.FARM;
     markStaticDirty();
-    v.thought='Sowed';
+    v.thought=moodThought(v,'Sowed');
   } else {
-    v.thought='Too wet to sow';
+    v.thought=moodThought(v,'Too wet to sow');
   }
   v.state='idle';
   finishJob(v, true);
@@ -685,9 +696,9 @@ else if(v.state==='sow'){
 else if(v.state==='harvest'){
   if(world.growth[i]>0){
     dropItem(cx,cy,ITEM.FOOD,1);
-    v.thought='Harvested';
+    v.thought=moodThought(v,'Harvested');
   } else {
-    v.thought='Nothing to harvest';
+    v.thought=moodThought(v,'Nothing to harvest');
   }
   world.growth[i]=0;
   v.state='idle';
@@ -706,17 +717,17 @@ else if(v.state==='build'){
       b.progress=(b.progress||0)+pulled;
       if(b.progress>=def.cost){
         b.built=1;
-        v.thought='Built';
+        v.thought=moodThought(v,'Built');
         remove=true;
       } else {
-        v.thought = pulled>0 ? 'Building' : 'Needs supplies';
+        v.thought = moodThought(v, pulled>0 ? 'Building' : 'Needs supplies');
       }
     } else {
-      v.thought='Built';
+      v.thought=moodThought(v,'Built');
       remove=true;
     }
   } else {
-    v.thought='Site missing';
+    v.thought=moodThought(v,'Site missing');
     remove=true;
   }
   v.state='idle';
@@ -726,19 +737,19 @@ else if(v.state==='to_storage'){
   if(v.inv){
     if(v.inv.type===ITEM.FOOD && ((v.starveStage||0)>=2 || v.condition==='sick')){
       consumeFood(v);
-      v.thought='Ate supplies';
+      v.thought=moodThought(v,'Ate supplies');
     } else {
       if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty;
       if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty;
       if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty;
       v.inv=null;
-      v.thought='Stored';
+      v.thought=moodThought(v,'Stored');
     }
   }
   v.state='idle';
 }
 else if(v.state==='rest'){
-  v.energy += 0.4; if(v.energy>1)v.energy=1; v.thought='Rested'; v.state='idle';
+  v.energy += 0.4; if(v.energy>1)v.energy=1; v.thought=moodThought(v,'Rested'); v.state='idle';
 } }
 
 /* ==================== Pathfinding ==================== */
@@ -975,33 +986,45 @@ function drawVillager(v){
   ctx.drawImage(f, 0,0,16,16, gx, gy, 16*s, 16*s);
   if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+12*s, gy+2*s, 3*s, 3*s); }
   const cond=v.condition;
+  const baseCx=gx+8*s;
+  const baseCy=gy-4*cam.z;
+  let labelOffset=0;
+  function drawLabel(text,color){
+    const fontSize=Math.max(6,6*cam.z);
+    const cx=baseCx;
+    const cy=baseCy-labelOffset;
+    ctx.save();
+    ctx.font=`600 ${fontSize}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    const metrics=ctx.measureText(text);
+    const boxW=metrics.width+6*cam.z;
+    const boxH=fontSize+4*cam.z;
+    ctx.fillStyle='rgba(10,12,16,0.8)';
+    ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+    ctx.strokeStyle='rgba(255,255,255,0.25)';
+    ctx.lineWidth=Math.max(1,0.7*cam.z);
+    ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+    ctx.fillStyle=color;
+    ctx.fillText(text, cx, cy+0.2*cam.z);
+    ctx.restore();
+    labelOffset+=boxH+2*cam.z;
+  }
   if(cond && cond!=='normal'){
     let label=null, color='#ffcf66';
     if(cond==='hungry'){ label='Hungry'; color='#ffcf66'; }
     else if(cond==='starving'){ label='Starving'; color='#ff6b6b'; }
     else if(cond==='sick'){ label='Collapsed'; color='#d76bff'; }
     else if(cond==='recovering'){ label='Recovering'; color='#7cc4ff'; }
-    if(label){
-      const fontSize=Math.max(6,6*cam.z);
-      const cx=gx+8*s;
-      const cy=gy-4*cam.z;
-      ctx.save();
-      ctx.font=`600 ${fontSize}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-      ctx.textAlign='center';
-      ctx.textBaseline='middle';
-      const metrics=ctx.measureText(label);
-      const boxW=metrics.width+6*cam.z;
-      const boxH=fontSize+4*cam.z;
-      ctx.fillStyle='rgba(10,12,16,0.8)';
-      ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
-      ctx.strokeStyle='rgba(255,255,255,0.25)';
-      ctx.lineWidth=Math.max(1,0.7*cam.z);
-      ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
-      ctx.fillStyle=color;
-      ctx.fillText(label, cx, cy+0.2*cam.z);
-      ctx.restore();
-    }
+    if(label){ drawLabel(label,color); }
   }
+  const mood=v.happy;
+  let moodLabel=null, moodColor='#8fe58c';
+  if(mood>=0.8){ moodLabel='😊 Upbeat'; moodColor='#8fe58c'; }
+  else if(mood>=0.65){ moodLabel='🙂 Cheerful'; moodColor='#b9f5ae'; }
+  else if(mood<=0.2){ moodLabel='☹️ Miserable'; moodColor='#ff8c8c'; }
+  else if(mood<=0.35){ moodLabel='😟 Low spirits'; moodColor='#f5d58b'; }
+  if(moodLabel){ drawLabel(moodLabel,moodColor); }
 }
 
 /* ==================== Items & Loop ==================== */
