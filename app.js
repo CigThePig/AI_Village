@@ -163,7 +163,7 @@ function buildTileset(){
 }
 
 /* ==================== World State ==================== */
-let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0};
+let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
 const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
@@ -199,6 +199,7 @@ function newWorld(seed=Date.now()|0){
   R = mulberry32(seed>>>0);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0;
   storageTotals={food:8, wood:12, stone:0};
+  storageReserved={food:0, wood:0, stone:0};
   tick=0; dayTime=0;
   world={ seed, tiles:new Uint8Array(MAP_W*MAP_H), zone:new Uint8Array(MAP_W*MAP_H), trees:new Uint8Array(MAP_W*MAP_H), rocks:new Uint8Array(MAP_W*MAP_H), berries:new Uint8Array(MAP_W*MAP_H), growth:new Uint8Array(MAP_W*MAP_H), season:0, tSeason:0 };
   function idc(x,y){ return y*MAP_W+x; }
@@ -216,7 +217,56 @@ function newWorld(seed=Date.now()|0){
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
-function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
+function addBuilding(kind,x,y,opts={}){
+  const def=BUILDINGS[kind]||{};
+  const built=opts.built?1:0;
+  const cost=def.cost||((def.wood||0)+(def.stone||0));
+  const b={
+    id:uid(),
+    kind,x,y,
+    built:built,
+    progress:built?cost:0,
+    store:{wood:0,stone:0,food:0},
+    spent:{wood:built?(def.wood||0):0, stone:built?(def.stone||0):0},
+    pending:{wood:0,stone:0}
+  };
+  buildings.push(b);
+  return b;
+}
+
+function ensureBuildingData(b){
+  if(!b) return;
+  if(!b.store){ b.store={wood:0,stone:0,food:0}; }
+  if(!b.spent){
+    const def=BUILDINGS[b.kind]||{};
+    const cost=def.cost||((def.wood||0)+(def.stone||0));
+    const woodReq=def.wood||0;
+    const stoneReq=def.stone||0;
+    let progress=Math.max(0, b.progress||0);
+    if(b.built>=1){
+      b.spent={wood:woodReq, stone:stoneReq};
+    } else {
+      const spentWood=Math.min(progress, woodReq);
+      const spentStone=Math.min(Math.max(0, progress-spentWood), stoneReq);
+      b.spent={wood:spentWood, stone:spentStone};
+    }
+    if(b.progress===undefined) b.progress=Math.min(cost, (b.spent.wood||0)+(b.spent.stone||0));
+  } else {
+    if(typeof b.spent.wood!=='number') b.spent.wood=0;
+    if(typeof b.spent.stone!=='number') b.spent.stone=0;
+  }
+  if(!b.pending){ b.pending={wood:0,stone:0}; }
+  if(typeof b.pending.wood!=='number') b.pending.wood=0;
+  if(typeof b.pending.stone!=='number') b.pending.stone=0;
+  if(typeof b.progress!=='number') b.progress=(b.spent.wood||0)+(b.spent.stone||0);
+}
+
+function buildingResourceNeed(b, resource){
+  const def=BUILDINGS[b?.kind]||{};
+  const required=def[resource]||0;
+  const spent=b?.spent?.[resource]||0;
+  return Math.max(0, required-spent);
+}
 
 function agricultureBonusesAt(x,y){
   let growthBonus=0, harvestBonus=0, moodBonus=0;
@@ -528,6 +578,74 @@ const priorities={ food:0.7, build:0.5, explore:0.3 };
 document.getElementById('prioFood').addEventListener('input', e=> priorities.food=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioBuild').addEventListener('input', e=> priorities.build=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioExplore').addEventListener('input', e=> priorities.explore=(parseInt(e.target.value,10)||0)/100 );
+
+function availableToReserve(resource){
+  return (storageTotals[resource]||0) - (storageReserved[resource]||0);
+}
+
+function scheduleHaul(b, resource, amount){
+  if(!b || amount<=0) return;
+  ensureBuildingData(b);
+  const available=availableToReserve(resource);
+  if(available<=0) return;
+  const qty=Math.min(Math.ceil(amount), available);
+  if(qty<=0) return;
+  const storageBuilding=findNearestBuilding(b.x, b.y, 'storage');
+  if(!storageBuilding) return;
+  const job=addJob({
+    type:'haul',
+    bid:b.id,
+    resource,
+    qty,
+    prio:0.6+priorities.build*0.5,
+    x:storageBuilding.x,
+    y:storageBuilding.y
+  });
+  job.src={x:storageBuilding.x, y:storageBuilding.y};
+  job.dest={x:b.x, y:b.y};
+  job.stage='pickup';
+  storageReserved[resource]=(storageReserved[resource]||0)+qty;
+  b.pending[resource]=(b.pending[resource]||0)+qty;
+}
+
+function requestBuildHauls(b){
+  if(!b || b.built>=1) return;
+  ensureBuildingData(b);
+  const store=b.store||{};
+  const pending=b.pending||{};
+  const woodNeed=buildingResourceNeed(b,'wood');
+  const stoneNeed=buildingResourceNeed(b,'stone');
+  const woodShort=Math.max(0, woodNeed - ((store.wood||0)+(pending.wood||0)));
+  const stoneShort=Math.max(0, stoneNeed - ((store.stone||0)+(pending.stone||0)));
+  if(woodShort>0) scheduleHaul(b, ITEM.WOOD, woodShort);
+  if(stoneShort>0) scheduleHaul(b, ITEM.STONE, stoneShort);
+}
+
+function cancelHaulJobsForBuilding(b){
+  if(!b || !b.id) return;
+  ensureBuildingData(b);
+  for(let i=jobs.length-1;i>=0;i--){
+    const job=jobs[i];
+    if(job.type==='haul' && job.bid===b.id){
+      if(job.stage==='deliver'){
+        job.cancelled=true;
+        continue;
+      }
+      const res=job.resource;
+      const qty=job.qty||0;
+      storageReserved[res]=Math.max(0,(storageReserved[res]||0)-qty);
+      b.pending[res]=Math.max(0,(b.pending[res]||0)-qty);
+      for(const villager of villagers){
+        if(villager.targetJob===job){
+          villager.targetJob=null;
+          if(villager.path) villager.path.length=0;
+          villager.state='idle';
+        }
+      }
+      jobs.splice(i,1);
+    }
+  }
+}
 function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x; }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){
@@ -559,7 +677,7 @@ function placeBlueprint(kind,x,y){
   const t=getTile(tx,ty);
   if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; }
   if(buildings.some(b=>b.x===tx&&b.y===ty)){ Toast.show('Tile occupied.'); return; }
-  addBuilding(kind,tx,ty,{built:0}); markStaticDirty(); Toast.show('Blueprint placed.');
+  const b=addBuilding(kind,tx,ty,{built:0}); requestBuildHauls(b); markStaticDirty(); Toast.show('Blueprint placed.');
 }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
@@ -584,11 +702,35 @@ function finishJob(v, remove=false){
   }
   v.targetJob=null;
 }
-function generateJobs(){ for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; const z=world.zone[i];
-  if(z===ZONES.FARM){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)) addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6}); }
-  else if(z===ZONES.CUT){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
-  else if(z===ZONES.MINE){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)) addJob({type:'mine',x,y, prio:0.5+priorities.build*0.5}); }
-} } buildings.forEach(b=>{ if(b.built<1 && !jobs.some(j=>j.type==='build'&&j.bid===b.id)) addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:0.6+priorities.build*0.6}); }); }
+function generateJobs(){
+  for(let y=0;y<MAP_H;y++){
+    for(let x=0;x<MAP_W;x++){
+      const i=y*MAP_W+x;
+      const z=world.zone[i];
+      if(z===ZONES.FARM){
+        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)){
+          addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6});
+        }
+      }
+      else if(z===ZONES.CUT){
+        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)){
+          addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5});
+        }
+      }
+      else if(z===ZONES.MINE){
+        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)){
+          addJob({type:'mine',x,y, prio:0.5+priorities.build*0.5});
+        }
+      }
+    }
+  }
+  for(const b of buildings){
+    ensureBuildingData(b);
+    if(b.built<1 && !jobs.some(j=>j.type==='build'&&j.bid===b.id)){
+      addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:0.6+priorities.build*0.6});
+    }
+  }
+}
 const STARVE_THRESH={ hungry:0.78, starving:1.02, sick:1.15 };
 const STARVE_COLLAPSE_TICKS=90;
 const STARVE_RECOVERY_TICKS=240;
@@ -669,7 +811,29 @@ function villagerTick(v){
   if(v.energy<0.15){ if(goRest(v)) return; }
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,s.x,s.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
-  const j=pickJobFor(v); if(j && tick>=v._nextPathTick){ const dest={x:j.x,y:j.y}; if(j.type==='build'){ const b=buildings.find(bb=>bb.id===j.bid); if(b) dest.x=b.x, dest.y=b.y; } const p=pathfind(v.x|0,v.y|0,dest.x,dest.y); if(p){ v.path=p; v.state=j.type; v.targetJob=j; v.thought=moodThought(v,j.type.toUpperCase()); j.assigned++; v._nextPathTick=tick+12; return; } }
+  const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
+    let dest={x:j.x,y:j.y};
+    if(j.type==='build'){
+      const b=buildings.find(bb=>bb.id===j.bid);
+      if(b){ dest={x:b.x,y:b.y}; }
+    } else if(j.type==='haul'){
+      if(j.src){ dest={x:j.src.x,y:j.src.y}; }
+      else {
+        const b=buildings.find(bb=>bb.id===j.bid);
+        if(b){ dest={x:b.x,y:b.y}; }
+      }
+    }
+    const p=pathfind(v.x|0,v.y|0,dest.x,dest.y);
+    if(p){
+      v.path=p;
+      v.state=j.type==='haul'?'haul_pickup':j.type;
+      v.targetJob=j;
+      v.thought=j.type==='haul'?moodThought(v,'Hauling'):moodThought(v,j.type.toUpperCase());
+      j.assigned++;
+      v._nextPathTick=tick+12;
+      return;
+    }
+  }
   if(stage>=2){ v.thought=moodThought(v,'Starving'); return; }
   const wanderRange=stage===1?3:4;
   v.thought=moodThought(v,stage===1?'Hungry':'Wandering');
@@ -699,7 +863,7 @@ function consumeFood(v){
 function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; } } return false; }
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
-function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; const mood=moodMotivation(v); const prio=(j.prio||0.5); const heavy=(j.type==='chop'||j.type==='mine'||j.type==='build'); const nurture=(j.type==='sow'||j.type==='harvest'); const baseMood=mood*0.04; const roleMood=heavy?mood*0.04:(nurture?mood*0.02:0); const prioMood=mood>=0?mood*(prio*0.03):mood*((0.7-prio)*0.03); s+=baseMood+roleMood+prioMood; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
+function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; const mood=moodMotivation(v); const prio=(j.prio||0.5); const heavy=(j.type==='chop'||j.type==='mine'||j.type==='build'||j.type==='haul'); const nurture=(j.type==='sow'||j.type==='harvest'); const baseMood=mood*0.04; const roleMood=heavy?mood*0.04:(nurture?mood*0.02:0); const prioMood=mood>=0?mood*(prio*0.03):mood*((0.7-prio)*0.03); s+=baseMood+roleMood+prioMood; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
 function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const moodSpeed=0.75+v.happy*0.5; const speed=v.speed*penalty*SPEEDS[speedIdx]*moodSpeed; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
 function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
 if(v.state==='chop'){
@@ -788,30 +952,135 @@ else if(v.state==='build'){
   let remove=false;
   const b=buildings.find(bb=>bb.id===v.targetJob?.bid);
   if(b){
-    const def=BUILDINGS[b.kind];
+    ensureBuildingData(b);
+    const def=BUILDINGS[b.kind]||{};
+    const cost=def.cost||((def.wood||0)+(def.stone||0));
     if(b.built<1){
-      const need=def.cost-(b.progress||0);
-      let pulled=0;
-      if(def.wood>0){ const take=Math.min(need,storageTotals.wood); storageTotals.wood-=take; pulled+=take; }
-      if(def.stone>0){ const take=Math.min(need-pulled,storageTotals.stone); storageTotals.stone-=take; pulled+=take; }
-      b.progress=(b.progress||0)+pulled;
-      if(b.progress>=def.cost){
+      const store=b.store||{};
+      const spent=b.spent||{wood:0,stone:0};
+      let used=0;
+      if(def.wood){
+        const needWood=Math.max(0, (def.wood||0)-(spent.wood||0));
+        if(needWood>0 && (store.wood||0)>0){
+          const take=Math.min(needWood, store.wood);
+          store.wood-=take;
+          spent.wood=(spent.wood||0)+take;
+          used+=take;
+        }
+      }
+      if(def.stone){
+        const needStone=Math.max(0, (def.stone||0)-(spent.stone||0));
+        if(needStone>0 && (store.stone||0)>0){
+          const take=Math.min(needStone, store.stone);
+          store.stone-=take;
+          spent.stone=(spent.stone||0)+take;
+          used+=take;
+        }
+      }
+      b.progress=(spent.wood||0)+(spent.stone||0);
+      if(b.progress>=cost){
         b.built=1;
+        spent.wood=def.wood||0;
+        spent.stone=def.stone||0;
+        b.progress=cost;
+        cancelHaulJobsForBuilding(b);
         v.thought=moodThought(v,'Built');
         remove=true;
       } else {
-        v.thought = moodThought(v, pulled>0 ? 'Building' : 'Needs supplies');
+        requestBuildHauls(b);
+        v.thought=moodThought(v, used>0 ? 'Building' : 'Needs supplies');
       }
     } else {
       v.thought=moodThought(v,'Built');
+      cancelHaulJobsForBuilding(b);
       remove=true;
     }
   } else {
+    const bid=v.targetJob?.bid;
+    if(bid){ cancelHaulJobsForBuilding({id:bid}); }
     v.thought=moodThought(v,'Site missing');
     remove=true;
   }
   v.state='idle';
   finishJob(v, remove);
+}
+else if(v.state==='haul_pickup'){
+  const job=v.targetJob;
+  const res=job?.resource;
+  const qty=job?.qty||0;
+  const b=job?buildings.find(bb=>bb.id===job.bid):null;
+  if(!job || job.type!=='haul' || !res || qty<=0){
+    if(job && job.type==='haul' && job.stage==='pickup'){ const r=job.resource; storageReserved[r]=Math.max(0,(storageReserved[r]||0)-qty); if(b){ ensureBuildingData(b); b.pending[r]=Math.max(0,(b.pending[r]||0)-qty); } }
+    v.thought=moodThought(v,'Idle');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  ensureBuildingData(b);
+  if(!b || b.built>=1){
+    storageReserved[res]=Math.max(0,(storageReserved[res]||0)-qty);
+    if(b){ b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
+    v.thought=moodThought(v,'Site stocked');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  const available=storageTotals[res]||0;
+  if(available>=qty){
+    storageTotals[res]-=qty;
+    storageReserved[res]=Math.max(0,(storageReserved[res]||0)-qty);
+    v.inv={type:res,qty};
+    job.stage='deliver';
+    v.thought=moodThought(v,'Loaded supplies');
+    const dest=job.dest||{x:b.x,y:b.y};
+    const p=pathfind(cx,cy,dest.x,dest.y);
+    if(p){
+      v.path=p;
+      v.state='haul_deliver';
+      return;
+    }
+    storageTotals[res]+=qty;
+    v.inv=null;
+    b.pending[res]=Math.max(0,(b.pending[res]||0)-qty);
+    v.thought=moodThought(v,'Path blocked');
+    v.state='idle';
+    finishJob(v, true);
+  } else {
+    storageReserved[res]=Math.max(0,(storageReserved[res]||0)-qty);
+    b.pending[res]=Math.max(0,(b.pending[res]||0)-qty);
+    v.thought=moodThought(v,'Needs supplies');
+    v.state='idle';
+    finishJob(v, true);
+  }
+}
+else if(v.state==='haul_deliver'){
+  const job=v.targetJob;
+  const res=job?.resource;
+  const carrying=v.inv;
+  const b=job?buildings.find(bb=>bb.id===job.bid):null;
+  v.thought=moodThought(v,'Idle');
+  if(job && job.type==='haul' && carrying && carrying.type===res){
+    const qty=carrying.qty||0;
+    v.inv=null;
+    if(b){ ensureBuildingData(b); }
+    if(b && b.built<1 && !job?.cancelled){
+      b.store[res]=(b.store[res]||0)+qty;
+      requestBuildHauls(b);
+      v.thought=moodThought(v,'Delivered supplies');
+    } else {
+      storageTotals[res]=(storageTotals[res]||0)+qty;
+      v.thought=moodThought(v,'Returned supplies');
+    }
+    if(b){ b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
+  } else if(job && job.type==='haul' && job.stage==='pickup'){
+    const qty=job.qty||0;
+    if(res){
+      storageReserved[res]=Math.max(0,(storageReserved[res]||0)-qty);
+      if(b){ ensureBuildingData(b); b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
+    }
+  }
+  v.state='idle';
+  finishJob(v, true);
 }
 else if(v.state==='to_storage'){
   if(v.inv){
@@ -917,8 +1186,8 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
+function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>{ ensureBuildingData(b); buildings.push(b); }); storageTotals=d.storageTotals||{food:0,wood:0,stone:0}; storageReserved=d.storageReserved||{food:0,wood:0,stone:0}; villagers.length=0; d.villagers.forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
