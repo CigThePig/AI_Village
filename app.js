@@ -212,7 +212,29 @@ function newWorld(seed=Date.now()|0){
   } }
   let sx=MAP_W>>1, sy=MAP_H>>1;
   for(let k=0;k<200;k++){ const x=(MAP_W>>1)+irnd(-8,8), y=(MAP_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
-  addBuilding('campfire',sx,sy,{built:1}); addBuilding('storage',sx+1,sy,{built:1});
+  addBuilding('campfire',sx,sy,{built:1});
+  let storageX=sx, storageY=sy;
+  {
+    const visited=new Uint8Array(MAP_W*MAP_H);
+    const queue=[[sx,sy,0]];
+    visited[idc(sx,sy)]=1;
+    let qi=0, found=false;
+    while(qi<queue.length){
+      const [x,y,d]=queue[qi++];
+      if(d>0 && world.tiles[idc(x,y)]!==TILES.WATER){ storageX=x; storageY=y; found=true; break; }
+      for(const [dx,dy] of DIR4){
+        const nx=x+dx, ny=y+dy;
+        if(nx<0||ny<0||nx>=MAP_W||ny>=MAP_H) continue;
+        const idx=idc(nx,ny);
+        if(visited[idx]) continue;
+        if(world.tiles[idx]===TILES.WATER) continue;
+        visited[idx]=1;
+        queue.push([nx,ny,d+1]);
+      }
+    }
+    if(!found){ storageX=sx; storageY=sy; }
+  }
+  addBuilding('storage',storageX,storageY,{built:1});
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
