@@ -187,7 +187,7 @@ function newWorld(seed=Date.now()|0){
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
-function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0 }; }
+function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
 function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
 
 /* ==================== UI & Sheets ==================== */
@@ -512,23 +512,113 @@ function generateJobs(){ for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ con
   else if(z===ZONES.CUT){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
   else if(z===ZONES.MINE){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)) addJob({type:'mine',x,y, prio:0.5+priorities.build*0.5}); }
 } } buildings.forEach(b=>{ if(b.built<1 && !jobs.some(j=>j.type==='build'&&j.bid===b.id)) addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:0.6+priorities.build*0.6}); }); }
+const STARVE_THRESH={ hungry:0.78, starving:1.02, sick:1.15 };
+const STARVE_COLLAPSE_TICKS=90;
+const STARVE_RECOVERY_TICKS=240;
+const STARVE_TOAST_COOLDOWN=420;
+const HUNGER_RATE=0.00135;
+const ENERGY_DRAIN_BASE=0.0011;
+function issueStarveToast(v,text,force=false){ const ready=(v.nextStarveWarning||0)<=tick; if(force||ready){ Toast.show(text); v.nextStarveWarning=tick+STARVE_TOAST_COOLDOWN; } }
+function enterSickState(v){ if(v.condition==='sick') return; v.condition='sick'; v.sickTimer=STARVE_COLLAPSE_TICKS; v.starveStage=Math.max(3,v.starveStage||0); finishJob(v); if(v.path) v.path.length=0; v.state='sick'; v.thought='Collapsed'; issueStarveToast(v,'A villager collapsed from hunger! They need food now.',true); }
+function handleVillagerFed(v,source='food'){ const wasCritical=(v.condition==='sick')||((v.starveStage||0)>=2); v.sickTimer=0; v.starveStage=0; if(wasCritical){ v.condition='recovering'; v.recoveryTimer=STARVE_RECOVERY_TICKS; } else { v.condition='normal'; v.recoveryTimer=Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS/3)); } v.nextStarveWarning=tick+Math.floor(STARVE_TOAST_COOLDOWN*0.6); if(v.state==='sick') v.state='idle'; v.thought=wasCritical?'Recovering':'Content'; v.happy=clamp(v.happy+0.05,0,1); if(wasCritical){ const detail=source==='camp'?'camp stores':source==='pack'?'their pack':source==='berries'?'wild berries':source; issueStarveToast(v,`Villager recovered after eating ${detail}.`,true); } }
 function villagerTick(v){
-  v.hunger += 0.0015; v.energy -= 0.0012; v.happy += nearbyWarmth(v.x|0,v.y|0)?0.0008:-0.0004;
-  v.hunger=clamp(v.hunger,0,1.2); v.energy=clamp(v.energy,0,1); v.happy=clamp(v.happy,0,1);
-  if(v.hunger>0.9){ if(consumeFood(v)){ v.thought='Eating'; return; } if(foragingJob(v)) return; }
+  if(v.condition===undefined) v.condition='normal';
+  if(v.starveStage===undefined) v.starveStage=0;
+  if(v.nextStarveWarning===undefined) v.nextStarveWarning=0;
+  if(v.sickTimer===undefined) v.sickTimer=0;
+  if(v.recoveryTimer===undefined) v.recoveryTimer=0;
+  v.hunger += HUNGER_RATE;
+  const warm=nearbyWarmth(v.x|0,v.y|0);
+  let energyDelta=-ENERGY_DRAIN_BASE;
+  let happyDelta=warm?0.0008:-0.0004;
+  const prevStage=v.starveStage||0;
+  let stage=0;
+  if(v.hunger>STARVE_THRESH.hungry) stage=1;
+  if(v.hunger>STARVE_THRESH.starving) stage=2;
+  if(v.hunger>STARVE_THRESH.sick) stage=3;
+  if(v.recoveryTimer>0){
+    v.recoveryTimer--;
+    energyDelta*=0.6;
+    happyDelta+=0.0006;
+    if(v.recoveryTimer===0 && stage===0) v.condition='normal';
+  } else if(v.condition==='recovering' && stage===0){
+    v.condition='normal';
+  }
+  if(stage>=1) energyDelta-=0.00025;
+  if(stage>=2){ energyDelta-=0.00045; happyDelta-=0.0006; }
+  if(stage>=3){ energyDelta-=0.0006; happyDelta-=0.001; }
+  if(stage>prevStage){
+    if(stage===1){ if(v.condition!=='sick') v.condition='hungry'; }
+    else if(stage===2){ if(v.condition!=='sick') v.condition='starving'; issueStarveToast(v,'A villager is starving! Set up food or gather berries.'); }
+    else if(stage>=3){ enterSickState(v); }
+  } else if(stage<prevStage){
+    if(prevStage>=2 && stage<=1 && v.condition!=='recovering') issueStarveToast(v,'Villager ate and is stabilizing.',true);
+    if(stage===0 && v.recoveryTimer<=0) v.condition='normal';
+    else if(stage===1 && v.condition!=='sick' && v.recoveryTimer<=0) v.condition='hungry';
+  } else if(stage===0 && v.recoveryTimer<=0 && v.condition!=='normal' && v.condition!=='recovering'){
+    v.condition='normal';
+  }
+  if(v.condition==='sick' && v.sickTimer<=0 && stage<3){
+    v.condition=stage>=2?'starving':stage===1?'hungry':'normal';
+  }
+  v.starveStage=stage;
+  if(v.condition==='sick' && v.sickTimer>0){
+    v.sickTimer--;
+    energyDelta-=0.0006;
+    happyDelta-=0.0008;
+    if(v.path) v.path.length=0;
+    finishJob(v);
+    v.state='sick';
+    v.thought='Collapsed';
+  }
+  v.hunger=clamp(v.hunger,0,1.2);
+  v.energy=clamp(v.energy+energyDelta,0,1);
+  v.happy=clamp(v.happy+happyDelta,0,1);
+  if(v.condition==='sick' && v.sickTimer>0){ return; }
+  const urgentFood = stage>=2 || v.condition==='sick';
+  const needsFood = stage>=1;
+  if(urgentFood){
+    if(consumeFood(v)){ v.thought='Eating'; return; }
+    if(foragingJob(v)) return;
+  } else if(needsFood){
+    if(consumeFood(v)){ v.thought='Eating'; return; }
+    if(foragingJob(v)) return;
+  }
   if(v.energy<0.15){ if(goRest(v)) return; }
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,s.x,s.y); if(p){ v.path=p; v.state='to_storage'; v.thought='Storing'; v._nextPathTick=tick+12; return; } } }
   const j=pickJobFor(v); if(j && tick>=v._nextPathTick){ const dest={x:j.x,y:j.y}; if(j.type==='build'){ const b=buildings.find(bb=>bb.id===j.bid); if(b) dest.x=b.x, dest.y=b.y; } const p=pathfind(v.x|0,v.y|0,dest.x,dest.y); if(p){ v.path=p; v.state=j.type; v.targetJob=j; v.thought=j.type.toUpperCase(); j.assigned++; v._nextPathTick=tick+12; return; } }
-  v.thought='Wandering'; const nx=clamp((v.x|0)+irnd(-4,4),0,MAP_W-1), ny=clamp((v.y|0)+irnd(-4,4),0,MAP_H-1); if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
+  if(stage>=2){ v.thought='Starving'; return; }
+  const wanderRange=stage===1?3:4;
+  v.thought=stage===1?'Hungry':'Wandering';
+  const nx=clamp((v.x|0)+irnd(-wanderRange,wanderRange),0,MAP_W-1);
+  const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,MAP_H-1);
+  if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
 }
 function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && Math.abs(b.x-x)+Math.abs(b.y-y)<=2); }
-function consumeFood(v){ if(v.inv&&v.inv.type===ITEM.FOOD){ v.hunger-=0.6; if(v.hunger<0)v.hunger=0; v.inv=null; return true; } if(storageTotals.food>0){ storageTotals.food--; v.hunger-=0.6; if(v.hunger<0)v.hunger=0; return true; } return false; }
+function consumeFood(v){
+  let source=null;
+  if(v.inv && v.inv.type===ITEM.FOOD){
+    v.hunger-=0.6;
+    v.inv=null;
+    source='pack';
+  } else if(storageTotals.food>0){
+    storageTotals.food--;
+    v.hunger-=0.6;
+    source='camp';
+  }
+  if(source){
+    if(v.hunger<0) v.hunger=0;
+    handleVillagerFed(v, source);
+    return true;
+  }
+  return false;
+}
 function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought='Foraging'; v._nextPathTick=tick+12; return true; } } return false; }
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought='Resting'; v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
 function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
-function stepAlong(v){ const next=v.path[0]; if(!next) return; const speed=v.speed*SPEEDS[speedIdx]; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
+function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const speed=v.speed*penalty*SPEEDS[speedIdx]; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
 function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
 if(v.state==='chop'){
   let remove = world.trees[i]<=0;
@@ -565,7 +655,18 @@ else if(v.state==='mine'){
   finishJob(v, remove);
 }
 else if(v.state==='forage'){
-  if(world.berries[v.targetI]>0){ world.berries[v.targetI]--; v.inv={type:ITEM.FOOD,qty:1}; v.thought='Got berries'; }
+  if(world.berries[v.targetI]>0){
+    world.berries[v.targetI]--;
+    if((v.starveStage||0)>=2 || v.condition==='sick'){
+      v.hunger-=0.6;
+      if(v.hunger<0) v.hunger=0;
+      handleVillagerFed(v,'berries');
+      v.thought='Ate berries';
+    } else {
+      v.inv={type:ITEM.FOOD,qty:1};
+      v.thought='Got berries';
+    }
+  }
   v.state='idle';
 }
 else if(v.state==='sow'){
@@ -622,7 +723,18 @@ else if(v.state==='build'){
   finishJob(v, remove);
 }
 else if(v.state==='to_storage'){
-  if(v.inv){ if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty; if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty; if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty; v.inv=null; v.thought='Stored'; }
+  if(v.inv){
+    if(v.inv.type===ITEM.FOOD && ((v.starveStage||0)>=2 || v.condition==='sick')){
+      consumeFood(v);
+      v.thought='Ate supplies';
+    } else {
+      if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty;
+      if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty;
+      if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty;
+      v.inv=null;
+      v.thought='Stored';
+    }
+  }
   v.state='idle';
 }
 else if(v.state==='rest'){
@@ -683,8 +795,8 @@ function pathfind(sx,sy,tx,ty,limit=400){
 function seasonTick(){ world.tSeason++; const SEASON_LEN=60*10; if(world.tSeason>=SEASON_LEN){ world.tSeason=0; world.season=(world.season+1)%4; } for(let i=0;i<world.growth.length;i++){ if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0 && world.growth[i]<240){ world.growth[i]+=1; if(world.growth[i]===160){ const y=(i/MAP_W)|0, x=i%MAP_W; if(!jobs.some(j=>j.type==='harvest'&&j.x===x&&j.y===y)) addJob({type:'harvest',x,y, prio:0.65+priorities.food*0.6}); } } } }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
+function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>buildings.push(b)); storageTotals=d.storageTotals; villagers.length=0; d.villagers.forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
@@ -862,6 +974,34 @@ function drawVillager(v){
   const gy = (v.y - cam.y) * TILE * cam.z + 8*s;
   ctx.drawImage(f, 0,0,16,16, gx, gy, 16*s, 16*s);
   if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+12*s, gy+2*s, 3*s, 3*s); }
+  const cond=v.condition;
+  if(cond && cond!=='normal'){
+    let label=null, color='#ffcf66';
+    if(cond==='hungry'){ label='Hungry'; color='#ffcf66'; }
+    else if(cond==='starving'){ label='Starving'; color='#ff6b6b'; }
+    else if(cond==='sick'){ label='Collapsed'; color='#d76bff'; }
+    else if(cond==='recovering'){ label='Recovering'; color='#7cc4ff'; }
+    if(label){
+      const fontSize=Math.max(6,6*cam.z);
+      const cx=gx+8*s;
+      const cy=gy-4*cam.z;
+      ctx.save();
+      ctx.font=`600 ${fontSize}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+      ctx.textAlign='center';
+      ctx.textBaseline='middle';
+      const metrics=ctx.measureText(label);
+      const boxW=metrics.width+6*cam.z;
+      const boxH=fontSize+4*cam.z;
+      ctx.fillStyle='rgba(10,12,16,0.8)';
+      ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+      ctx.strokeStyle='rgba(255,255,255,0.25)';
+      ctx.lineWidth=Math.max(1,0.7*cam.z);
+      ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+      ctx.fillStyle=color;
+      ctx.fillText(label, cx, cy+0.2*cam.z);
+      ctx.restore();
+    }
+  }
 }
 
 /* ==================== Items & Loop ==================== */
