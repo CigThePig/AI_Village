@@ -4,50 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
 <title>AI Village — Pixel Edition v3 (Mobile)</title>
-<style>
-  :root { --bg:#0d0f13; --fg:#e9f1ff; --muted:#9cb2cc; --panel:#141821; --panel-2:#1b2230; --accent:#7cc4ff; }
-  html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--fg); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial; overflow:hidden; -webkit-tap-highlight-color: transparent; }
-  /* canvas always clickable */
-  #game { position:fixed; inset:0; width:100vw; height:100vh; background:#0a0c10; image-rendering:pixelated; image-rendering:crisp-edges; touch-action:none; display:block; z-index:0; }
-  /* HUD containers ignore taps by default; only their children accept them */
-  .hud-top, .hud-bottom { pointer-events:none; }
-  .hud-top > *, .hud-bottom > * { pointer-events:auto; }
-  .hud-top { position: fixed; left: 10px; right: 10px; top: max(10px, env(safe-area-inset-top)); display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; z-index:3000; }
-  .hud-top .pill { max-width:100%; overflow:hidden; }
-  .pill { pointer-events:auto; background: rgba(20,24,33,0.9); border:1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 8px 10px; display:flex; gap:12px; align-items:center; box-shadow: 0 4px 18px rgba(0,0,0,0.35); backdrop-filter: blur(6px); }
-  .stat { font-weight:700; font-size:14px } .stat small { color: var(--muted); font-weight:600; margin-left:4px }
-  .btn { pointer-events:auto; border:1px solid rgba(255,255,255,0.1); background: rgba(27,35,48,0.95); color:var(--fg); border-radius:10px; padding:8px 10px; font-weight:700; font-size:14px; }
-  .btn:active { transform: translateY(1px) }
-  .hud-bottom { position:fixed; left:10px; right:10px; bottom:10px; }
-  .bar { pointer-events:auto; background: rgba(27,35,48,0.9); border:1px solid rgba(255,255,255,0.1); border-radius:14px; padding:10px; display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; }
-  .chip { text-align:center; font-weight:700; font-size:13px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:var(--fg); border-radius:10px; padding:8px 10px; user-select:none; }
-  .chip[data-active="true"] { background: rgba(124,196,255,0.18); border-color: rgba(124,196,255,0.55); }
-  /* Sheets only accept taps when open */
-  .sheet { pointer-events:none; position:fixed; left:0; right:0; bottom:0; transform: translateY(100%); transition: transform .2s ease; background: var(--panel-2); border-top:1px solid rgba(255,255,255,0.08); border-radius: 16px 16px 0 0; padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px); max-height: 65vh; overflow:auto; box-shadow: 0 -12px 30px rgba(0,0,0,0.5); z-index:0; }
-  .sheet[data-open="true"] { pointer-events:auto; transform: translateY(0); z-index:3500; }
-  .sheet h3 { margin: 6px 2px 10px; font-size: 16px; color: var(--muted); display:flex; justify-content:space-between; align-items:center; }
-  .sheet-close { border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.06); color:var(--fg); border-radius:8px; padding:4px 8px; font-weight:700; }
-  .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px }
-  .tile { text-align:center; font-size:12px; padding:10px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:10px; user-select:none; }
-  .slider { appearance:none; width:100%; height:8px; border-radius:999px; background:#2b3544; outline:none; }
-  .slider::-webkit-slider-thumb { appearance:none; width:22px; height:22px; border-radius:50%; background: var(--accent); border: 2px solid rgba(255,255,255,0.35); box-shadow: 0 2px 6px rgba(0,0,0,0.45); }
-  /* Any helper/guide panel should not block the map unless explicitly open */
-  #help { position: fixed; left: 12px; right: 12px; top: 12px; background: rgba(20,24,33,0.95); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px; font-size: 14px; line-height: 1.4; box-shadow: 0 10px 30px rgba(0,0,0,0.6); display: none; pointer-events:none; }
-  #help button { margin-top: 8px }
-
-  @media (max-width: 480px) {
-    .hud-top { gap:8px; }
-    .pill { padding: 6px 8px; }
-    .hud-top .pill:nth-child(2) { margin-left:auto; }
-  }
-</style>
+<link rel="stylesheet" href="styles.css">
+<!-- Enable the DebugKit overlay by visiting the page with ?debug=1 or setting localStorage.debug to true. -->
+<script src="bootstrap.js" defer></script>
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="version" style="position:fixed;left:8px;top:8px;z-index:1;pointer-events:none;color:#9cb2cc;font:12px system-ui">
+<div id="version">
   AI Village v3.1 (diag)
 </div>
-<script>console.log('AIV: HTML parsed v3.1');</script>
 
 <div class="hud-top">
   <div class="pill" id="stats">
@@ -97,101 +62,29 @@
 
 <div class="sheet" id="sheetPrior">
   <h3>Village Priorities <button class="sheet-close" aria-label="Close">✕</button></h3>
-  <div style="display:flex; gap:10px">
-    <div style="flex:1"><div style="font-weight:700;margin-bottom:4px">Food</div><input type="range" id="prioFood" class="slider" min="0" max="100" value="70"></div>
-    <div style="flex:1"><div style="font-weight:700;margin-bottom:4px">Build</div><input type="range" id="prioBuild" class="slider" min="0" max="100" value="50"></div>
-    <div style="flex:1"><div style="font-weight:700;margin-bottom:4px">Explore</div><input type="range" id="prioExplore" class="slider" min="0" max="100" value="30"></div>
+  <div class="priorities-columns">
+    <div class="priorities-column">
+      <div class="priorities-label">Food</div>
+      <input type="range" id="prioFood" class="slider" min="0" max="100" value="70">
+    </div>
+    <div class="priorities-column">
+      <div class="priorities-label">Build</div>
+      <input type="range" id="prioBuild" class="slider" min="0" max="100" value="50">
+    </div>
+    <div class="priorities-column">
+      <div class="priorities-label">Explore</div>
+      <input type="range" id="prioExplore" class="slider" min="0" max="100" value="30">
+    </div>
   </div>
 </div>
 
 <div id="help">
-  <div style="font-weight:700; margin-bottom:6px">Pixel Edition v3 — Quickstart</div>
+  <div class="help-title">Pixel Edition v3 — Quickstart</div>
   - Pinch to <b>zoom</b>, drag with one finger to <b>pan</b> (in Inspect/Build/Priorities).<br/>
   - If you saw a blank screen previously, this build fixes camera scaling.<br/>
   <button class="btn" id="btnHelpClose">Got it</button>
 </div>
 
-<!-- Enable the DebugKit overlay by visiting the page with ?debug=1 or setting localStorage.debug to true. -->
-<script>
-  (function () {
-    'use strict';
-    const params = new URLSearchParams(window.location.search || '');
-    let storageFlag = false;
-    try {
-      storageFlag = window.localStorage && window.localStorage.getItem('debug') === 'true';
-    } catch (err) {
-      storageFlag = false;
-    }
-    if (!(params.get('debug') === '1' || storageFlag)) {
-      return;
-    }
-    const sources = [
-      { url: 'debugkit.js', label: 'debugkit.js' },
-      { url: 'https://cdn.jsdelivr.net/gh/CigThePig/AI_Village@main/debugkit.js', label: 'debugkit.js?cdn' }
-    ];
-    const head = document.head || document.getElementsByTagName('head')[0] || document.body;
-
-    function fetchText(url) {
-      if (window.fetch) {
-        return fetch(url, { cache: 'no-store' }).then(function (resp) {
-          if (!resp.ok) {
-            throw new Error('HTTP ' + resp.status);
-          }
-          return resp.text();
-        });
-      }
-      return new Promise(function (resolve, reject) {
-        try {
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', url, true);
-          xhr.overrideMimeType && xhr.overrideMimeType('text/plain');
-          xhr.onreadystatechange = function () {
-            if (xhr.readyState === 4) {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                resolve(xhr.responseText);
-              } else {
-                reject(new Error('HTTP ' + xhr.status));
-              }
-            }
-          };
-          xhr.onerror = function () { reject(new Error('Network error')); };
-          xhr.send();
-        } catch (xhrErr) {
-          reject(xhrErr);
-        }
-      });
-    }
-
-    function loadFrom(index) {
-      if (index >= sources.length) {
-        return Promise.reject(new Error('All sources failed'));
-      }
-      const source = sources[index];
-      return fetchText(source.url).then(function (code) {
-        const script = document.createElement('script');
-        script.type = 'text/javascript';
-        script.textContent = code + '\n//# sourceURL=' + source.label;
-        head.appendChild(script);
-      }).catch(function (err) {
-        console.warn('DebugKit load failed from', source.url, err);
-        return loadFrom(index + 1);
-      });
-    }
-
-    loadFrom(0).catch(function (err) {
-      console.warn('DebugKit overlay unavailable:', err);
-    });
-  })();
-</script>
 <script src="app.js?v=3.1" defer></script>
-<script>
-  setTimeout(() => {
-    if (!window.__AIV_BOOT__) {
-      const v = document.getElementById('version');
-      if (v) v.textContent += ' — JS NOT RUNNING (CSP or cache)';
-      console.error('AIV: JS did not run — likely CSP or stale cache');
-    }
-  }, 1000);
-</script>
 </body>
 </html>
