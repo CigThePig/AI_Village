@@ -194,6 +194,14 @@ body {
   border-radius: 10px;
   user-select: none;
 }
+.tile small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1.3;
+}
 
 .slider {
   appearance: none;
