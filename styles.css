@@ -1,0 +1,279 @@
+:root {
+  --bg: #0d0f13;
+  --fg: #e9f1ff;
+  --muted: #9cb2cc;
+  --panel: #141821;
+  --panel-2: #1b2230;
+  --accent: #7cc4ff;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* canvas always clickable */
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #0a0c10;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  touch-action: none;
+  display: block;
+  z-index: 0;
+}
+
+/* HUD containers ignore taps by default; only their children accept them */
+.hud-top,
+.hud-bottom {
+  pointer-events: none;
+}
+
+.hud-top > *,
+.hud-bottom > * {
+  pointer-events: auto;
+}
+
+.hud-top {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  top: max(10px, env(safe-area-inset-top));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  z-index: 3000;
+}
+
+.hud-top .pill {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pill {
+  pointer-events: auto;
+  background: rgba(20, 24, 33, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+}
+
+.stat {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.stat small {
+  color: var(--muted);
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.btn {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(27, 35, 48, 0.95);
+  color: var(--fg);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.hud-bottom {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+}
+
+.bar {
+  pointer-events: auto;
+  background: rgba(27, 35, 48, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.chip {
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--fg);
+  border-radius: 10px;
+  padding: 8px 10px;
+  user-select: none;
+}
+
+.chip[data-active="true"] {
+  background: rgba(124, 196, 255, 0.18);
+  border-color: rgba(124, 196, 255, 0.55);
+}
+
+/* Sheets only accept taps when open */
+.sheet {
+  pointer-events: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: translateY(100%);
+  transition: transform 0.2s ease;
+  background: var(--panel-2);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px 16px 0 0;
+  padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px);
+  max-height: 65vh;
+  overflow: auto;
+  box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.5);
+  z-index: 0;
+}
+
+.sheet[data-open="true"] {
+  pointer-events: auto;
+  transform: translateY(0);
+  z-index: 3500;
+}
+
+.sheet h3 {
+  margin: 6px 2px 10px;
+  font-size: 16px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sheet-close {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-weight: 700;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.tile {
+  text-align: center;
+  font-size: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  user-select: none;
+}
+
+.slider {
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #2b3544;
+  outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+/* Any helper/guide panel should not block the map unless explicitly open */
+#help {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  background: rgba(20, 24, 33, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  display: none;
+  pointer-events: none;
+}
+
+#help button {
+  margin-top: 8px;
+}
+
+#version {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  z-index: 1;
+  pointer-events: none;
+  color: #9cb2cc;
+  font: 12px system-ui;
+}
+
+.priorities-columns {
+  display: flex;
+  gap: 10px;
+}
+
+.priorities-column {
+  flex: 1;
+}
+
+.priorities-label {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.help-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 480px) {
+  .hud-top {
+    gap: 8px;
+  }
+
+  .pill {
+    padding: 6px 8px;
+  }
+
+  .hud-top .pill:nth-child(2) {
+    margin-left: auto;
+  }
+}
