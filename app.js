@@ -239,6 +239,43 @@ window.toast = (msg, ms) => Toast.show(msg, ms);
 let ui={ mode:'inspect', zonePaint:ZONES.FARM, buildKind:null, brush:2 };
 let brushPreview=null;
 
+const ZONE_JOB_TYPES = {
+  [ZONES.FARM]: 'sow',
+  [ZONES.CUT]: 'chop',
+  [ZONES.MINE]: 'mine'
+};
+
+function zoneJobType(z){
+  return ZONE_JOB_TYPES[z] || null;
+}
+
+function zoneCanEverWork(z, i){
+  if(z===ZONES.FARM){
+    return world.tiles[i] !== TILES.WATER;
+  }
+  if(z===ZONES.CUT){
+    return world.trees[i] > 0;
+  }
+  if(z===ZONES.MINE){
+    return world.rocks[i] > 0;
+  }
+  return false;
+}
+
+function zoneHasWorkNow(z, i){
+  if(!zoneCanEverWork(z, i)) return false;
+  if(z===ZONES.FARM){
+    return world.growth[i] === 0;
+  }
+  if(z===ZONES.CUT){
+    return true;
+  }
+  if(z===ZONES.MINE){
+    return true;
+  }
+  return false;
+}
+
 el('chipInspect').addEventListener('click', ()=> openMode('inspect'));
 el('chipZones').addEventListener('click', ()=> openMode('zones'));
 el('chipBuild').addEventListener('click', ()=> openMode('build'));
@@ -438,7 +475,12 @@ function paintZoneAt(cx, cy){
   for (let y = y0 - r; y <= y0 + r; y++){
     for (let x = x0 - r; x <= x0 + r; x++){
       if (x<0 || y<0 || x>=MAP_W || y>=MAP_H) continue;
-      world.zone[y*MAP_W + x] = z;         // paint immediately
+      const i = y*MAP_W + x;
+      if(z===ZONES.NONE){
+        world.zone[i] = ZONES.NONE;
+      } else if(zoneCanEverWork(z, i)){
+        world.zone[i] = z;
+      }
     }
   }
   brushPreview = {x:x0, y:y0, r};
@@ -466,9 +508,9 @@ function finishJob(v, remove=false){
   v.targetJob=null;
 }
 function generateJobs(){ for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x; const z=world.zone[i];
-  if(z===ZONES.FARM){ if(world.tiles[i]!==TILES.WATER && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)) addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6}); }
-  else if(z===ZONES.CUT){ if(world.trees[i]>0 && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
-  else if(z===ZONES.MINE){ if(world.rocks[i]>0 && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)) addJob({type:'mine',x,y, prio:0.5+priorities.build*0.5}); }
+  if(z===ZONES.FARM){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)) addJob({type:'sow',x,y, prio:0.6+priorities.food*0.6}); }
+  else if(z===ZONES.CUT){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)) addJob({type:'chop',x,y, prio:0.5+priorities.build*0.5}); }
+  else if(z===ZONES.MINE){ if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)) addJob({type:'mine',x,y, prio:0.5+priorities.build*0.5}); }
 } } buildings.forEach(b=>{ if(b.built<1 && !jobs.some(j=>j.type==='build'&&j.bid===b.id)) addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:0.6+priorities.build*0.6}); }); }
 function villagerTick(v){
   v.hunger += 0.0015; v.energy -= 0.0012; v.happy += nearbyWarmth(v.x|0,v.y|0)?0.0008:-0.0004;
@@ -693,10 +735,21 @@ function render(){
     } } }
   }
 
+  const activeZoneJobs={ sow:new Set(), chop:new Set(), mine:new Set() };
+  for(const job of jobs){
+    const type=job.type;
+    if((job.assigned||0)>0 && activeZoneJobs[type]){
+      activeZoneJobs[type].add(job.y*MAP_W + job.x);
+    }
+  }
+
   // zones glyphs and wash
   for(let y=y0;y<=y1;y++){
     for(let x=x0;x<=x1;x++){
       const i=y*MAP_W+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
+      if(!zoneHasWorkNow(z, i)) continue;
+      const jobType=zoneJobType(z);
+      if(jobType){ const activeSet=activeZoneJobs[jobType]; if(activeSet && activeSet.has(i)) continue; }
       const wash = z===ZONES.FARM ? 'rgba(120,220,120,0.25)'
                  : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
                  :                   'rgba(160,200,255,0.22)';
