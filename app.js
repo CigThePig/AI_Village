@@ -165,7 +165,35 @@ function buildTileset(){
 /* ==================== World State ==================== */
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
-const BUILDINGS = { campfire:{label:'Campfire',cost:0,wood:0,stone:0}, storage:{label:'Storage',cost:8,wood:8,stone:0}, hut:{label:'Hut',cost:10,wood:10,stone:0}, farmplot:{label:'Farm Plot',cost:4,wood:4,stone:0}, well:{label:'Well',cost:6,wood:0,stone:6} };
+const BUILDINGS = {
+  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
+  storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
+  hut:      { label: 'Hut',      cost:10, wood:10, stone: 0 },
+  farmplot: {
+    label: 'Farm Plot',
+    cost: 4,
+    wood: 4,
+    stone: 0,
+    effects: {
+      radius: 3,
+      growthBonus: 0.85,
+      harvestBonus: 0.65
+    },
+    tooltip: 'Boosts crop growth and yields within 3 tiles.'
+  },
+  well: {
+    label: 'Well',
+    cost: 6,
+    wood: 0,
+    stone: 6,
+    effects: {
+      hydrationRadius: 4,
+      hydrationGrowthBonus: 0.45,
+      moodBonus: 0.0007
+    },
+    tooltip: 'Hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
+  }
+};
 
 function newWorld(seed=Date.now()|0){
   R = mulberry32(seed>>>0);
@@ -189,6 +217,37 @@ function newWorld(seed=Date.now()|0){
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
 function addBuilding(kind,x,y,opts={}){ const def=BUILDINGS[kind]; const b={ id:uid(), kind,x,y, built:opts.built?1:0, progress:opts.built?def.cost:0, store:(kind==='storage'?{wood:0,stone:0,food:0}:null) }; buildings.push(b); return b; }
+
+function agricultureBonusesAt(x,y){
+  let growthBonus=0, harvestBonus=0, moodBonus=0;
+  if(!buildings.length) return {growthBonus, harvestBonus, moodBonus};
+  for(const b of buildings){
+    if(b.built<1) continue;
+    if(b.kind!=='farmplot' && b.kind!=='well') continue;
+    const dx=Math.abs(b.x-x);
+    const dy=Math.abs(b.y-y);
+    const dist=dx+dy;
+    if(b.kind==='farmplot'){
+      const eff=BUILDINGS.farmplot.effects||{};
+      const radius=(eff.radius|0);
+      if(radius>0){ if(dist>radius) continue; }
+      else if(dist>0){ continue; }
+      const influence=radius>0?Math.max(0,1-dist/(radius+1)):1;
+      if(eff.growthBonus){ growthBonus+=eff.growthBonus*influence; }
+      if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
+    } else if(b.kind==='well'){
+      const eff=BUILDINGS.well.effects||{};
+      const radius=(eff.hydrationRadius|0);
+      if(radius>0){ if(dist>radius) continue; }
+      else if(dist>0){ continue; }
+      const influence=radius>0?Math.max(0,1-dist/(radius+1)):1;
+      if(eff.hydrationGrowthBonus){ growthBonus+=eff.hydrationGrowthBonus*influence; }
+      if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
+      if(eff.moodBonus){ moodBonus+=eff.moodBonus*influence; }
+    }
+  }
+  return { growthBonus, harvestBonus, moodBonus };
+}
 
 /* ==================== UI & Sheets ==================== */
 const el=(id)=>document.getElementById(id);
@@ -450,11 +509,20 @@ document.getElementById('sheetZones').addEventListener('click', (e)=>{
   Toast.show('Zone: ' + (z==='erase' ? 'Clear' : z.toUpperCase()));
 });
 document.getElementById('brushSize').addEventListener('input', (e)=> ui.brush=parseInt(e.target.value||'2'));
+document.querySelectorAll('#sheetBuild .tile').forEach(tile=>{
+  const kind=tile.getAttribute('data-build');
+  const def=BUILDINGS[kind];
+  if(def && def.tooltip){ tile.setAttribute('title', def.tooltip); }
+});
 document.getElementById('sheetBuild').addEventListener('click', (e)=>{
   const t = e.target.closest('.tile'); if (!t) return;
-  ui.buildKind = t.getAttribute('data-build');
+  const kind=t.getAttribute('data-build');
+  ui.buildKind = kind;
   toggleSheet('sheetBuild', false);           // ← close sheet so canvas gets taps
-  Toast.show('Tap map to place: ' + ui.buildKind);
+  const def=BUILDINGS[kind];
+  const label=def?.label||kind;
+  const detail=def?.tooltip?` — ${def.tooltip}`:'';
+  Toast.show(`Tap map to place: ${label}${detail}`);
 });
 const priorities={ food:0.7, build:0.5, explore:0.3 };
 document.getElementById('prioFood').addEventListener('input', e=> priorities.food=(parseInt(e.target.value,10)||0)/100 );
@@ -537,10 +605,13 @@ function villagerTick(v){
   if(v.sickTimer===undefined) v.sickTimer=0;
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
   v.hunger += HUNGER_RATE;
-  const warm=nearbyWarmth(v.x|0,v.y|0);
+  const tileX=v.x|0, tileY=v.y|0;
+  const warm=nearbyWarmth(tileX,tileY);
   let energyDelta=-ENERGY_DRAIN_BASE;
   const moodEnergyBoost=moodMotivation(v)*0.00045;
   let happyDelta=warm?0.0008:-0.0004;
+  const { moodBonus } = agricultureBonusesAt(tileX, tileY);
+  if(moodBonus){ happyDelta+=moodBonus; }
   energyDelta+=moodEnergyBoost;
   const prevStage=v.starveStage||0;
   let stage=0;
@@ -695,8 +766,17 @@ else if(v.state==='sow'){
 }
 else if(v.state==='harvest'){
   if(world.growth[i]>0){
-    dropItem(cx,cy,ITEM.FOOD,1);
-    v.thought=moodThought(v,'Harvested');
+    let yieldAmount=1;
+    const { harvestBonus } = agricultureBonusesAt(cx,cy);
+    if(harvestBonus>0){
+      const whole=Math.floor(harvestBonus);
+      yieldAmount+=whole;
+      const frac=harvestBonus-whole;
+      if(frac>0 && R()<frac) yieldAmount+=1;
+    }
+    dropItem(cx,cy,ITEM.FOOD,yieldAmount);
+    const harvestThought=yieldAmount>1?'Bountiful harvest':'Harvested';
+    v.thought=moodThought(v,harvestThought);
   } else {
     v.thought=moodThought(v,'Nothing to harvest');
   }
@@ -803,7 +883,38 @@ function pathfind(sx,sy,tx,ty,limit=400){
 }
 
 /* ==================== Seasons/Growth ==================== */
-function seasonTick(){ world.tSeason++; const SEASON_LEN=60*10; if(world.tSeason>=SEASON_LEN){ world.tSeason=0; world.season=(world.season+1)%4; } for(let i=0;i<world.growth.length;i++){ if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0 && world.growth[i]<240){ world.growth[i]+=1; if(world.growth[i]===160){ const y=(i/MAP_W)|0, x=i%MAP_W; if(!jobs.some(j=>j.type==='harvest'&&j.x===x&&j.y===y)) addJob({type:'harvest',x,y, prio:0.65+priorities.food*0.6}); } } } }
+function seasonTick(){
+  world.tSeason++;
+  const SEASON_LEN=60*10;
+  if(world.tSeason>=SEASON_LEN){
+    world.tSeason=0;
+    world.season=(world.season+1)%4;
+  }
+  const hasFarmBoosters=buildings.some(b=>b.built>=1 && (b.kind==='farmplot'||b.kind==='well'));
+  for(let i=0;i<world.growth.length;i++){
+    if(world.tiles[i]!==TILES.FARMLAND) continue;
+    const prev=world.growth[i];
+    if(prev<=0 || prev>=240) continue;
+    const y=(i/MAP_W)|0, x=i%MAP_W;
+    let delta=1;
+    if(hasFarmBoosters){
+      const { growthBonus } = agricultureBonusesAt(x,y);
+      if(growthBonus>0){
+        const whole=Math.floor(growthBonus);
+        delta += whole;
+        const frac=growthBonus-whole;
+        if(frac>0 && R()<frac) delta+=1;
+      }
+    }
+    const next=Math.min(240, prev+delta);
+    world.growth[i]=next;
+    if(prev<160 && next>=160){
+      if(!jobs.some(j=>j.type==='harvest'&&j.x===x&&j.y===y)){
+        addJob({type:'harvest',x,y, prio:0.65+priorities.food*0.6});
+      }
+    }
+  }
+}
 
 /* ==================== Save/Load ==================== */
 function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
