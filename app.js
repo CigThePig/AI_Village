@@ -208,12 +208,12 @@ function buildTileset(){
   try { makeZoneGlyphs(); } catch(e){ console.warn('zones', e); }
   try { makeVillagerFrames(); } catch(e){ console.warn('villagers', e); }
   try {
-    Tileset.sprite.tree = makeSprite(TILE,TILE, drawTree);
-    Tileset.sprite.berry = makeSprite(TILE,TILE, drawBerry);
+    Tileset.sprite.tree = makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, drawTree);
+    Tileset.sprite.berry = makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, drawBerry);
     Tileset.sprite.sprout = [
-      makeSprite(TILE,TILE, g=>drawSproutOn(g,1)),
-      makeSprite(TILE,TILE, g=>drawSproutOn(g,2)),
-      makeSprite(TILE,TILE, g=>drawSproutOn(g,3))
+      makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, g=>drawSproutOn(g,1)),
+      makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, g=>drawSproutOn(g,2)),
+      makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, g=>drawSproutOn(g,3))
     ];
   } catch(e){ console.warn('sprites', e); }
 }
@@ -251,6 +251,14 @@ const BUILDINGS = {
   }
 };
 
+const FOOTPRINT = {
+  campfire: { w:2, h:2 },
+  storage:  { w:2, h:2 },
+  hut:      { w:2, h:2 },
+  farmplot: { w:2, h:2 },
+  well:     { w:2, h:2 }
+};
+
 function newWorld(seed=Date.now()|0){
   R = mulberry32(seed>>>0);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0;
@@ -267,8 +275,21 @@ function newWorld(seed=Date.now()|0){
     if((t===TILES.GRASS||t===TILES.FERTILE) && R()<0.14) world.berries[idc(x,y)]=1;
   } }
   let sx=GRID_W>>1, sy=GRID_H>>1;
-  for(let k=0;k<200;k++){ const x=(GRID_W>>1)+irnd(-8,8), y=(GRID_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
-  addBuilding('campfire',sx,sy,{built:1});
+  for(let k=0;k<200;k++){
+    const x=(GRID_W>>1)+irnd(-8,8), y=(GRID_H>>1)+irnd(-8,8);
+    if(validateFootprintPlacement('campfire', x, y)===null){
+      const fp=getFootprint('campfire');
+      let blocked=false;
+      for(let yy=0; yy<fp.h && !blocked; yy++){
+        for(let xx=0; xx<fp.w; xx++){
+          const t=world.tiles[idc(x+xx,y+yy)];
+          if(t===TILES.ROCK || t===TILES.WATER){ blocked=true; break; }
+        }
+      }
+      if(!blocked){ sx=x; sy=y; break; }
+    }
+  }
+  const campfire=addBuilding('campfire',sx,sy,{built:1});
   let storageX=sx, storageY=sy;
   {
     const visited=new Uint8Array(GRID_SIZE);
@@ -277,21 +298,33 @@ function newWorld(seed=Date.now()|0){
     let qi=0, found=false;
     while(qi<queue.length){
       const [x,y,d]=queue[qi++];
-      if(d>0 && world.tiles[idc(x,y)]!==TILES.WATER){ storageX=x; storageY=y; found=true; break; }
+      if(d>0 && validateFootprintPlacement('storage', x, y)===null){ storageX=x; storageY=y; found=true; break; }
       for(const [dx,dy] of DIR4){
         const nx=x+dx, ny=y+dy;
         if(nx<0||ny<0||nx>=GRID_W||ny>=GRID_H) continue;
         const idx=idc(nx,ny);
         if(visited[idx]) continue;
-        if(world.tiles[idx]===TILES.WATER) continue;
+        if(validateFootprintPlacement('storage', nx, ny)!==null) continue;
         visited[idx]=1;
         queue.push([nx,ny,d+1]);
       }
     }
     if(!found){ storageX=sx; storageY=sy; }
   }
-  addBuilding('storage',storageX,storageY,{built:1});
-  villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
+  const storage=addBuilding('storage',storageX,storageY,{built:1});
+  const campCenter=buildingCenter(campfire);
+  villagers.length=0;
+  for(let i=0;i<6;i++){
+    let spawnX=Math.round(campCenter.x)+irnd(-1,1);
+    let spawnY=Math.round(campCenter.y)+irnd(-1,1);
+    spawnX=clamp(spawnX,0,GRID_W-1);
+    spawnY=clamp(spawnY,0,GRID_H-1);
+    if(tileOccupiedByBuilding(spawnX, spawnY)){
+      const fallback=findEntryTileNear(campfire, spawnX, spawnY) || findEntryTileNear(storage, spawnX, spawnY);
+      if(fallback){ spawnX=fallback.x; spawnY=fallback.y; }
+    }
+    villagers.push(newVillager(spawnX, spawnY));
+  }
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
@@ -310,6 +343,116 @@ function addBuilding(kind,x,y,opts={}){
   };
   buildings.push(b);
   return b;
+}
+
+function getFootprint(kind){
+  return FOOTPRINT[kind] || { w:2, h:2 };
+}
+
+function buildingCenter(b){
+  const fp = getFootprint(b.kind);
+  return {
+    x: b.x + (fp.w - 1) / 2,
+    y: b.y + (fp.h - 1) / 2
+  };
+}
+
+function forEachFootprintTile(b, fn){
+  const fp = getFootprint(b.kind);
+  for(let yy=0; yy<fp.h; yy++){
+    for(let xx=0; xx<fp.w; xx++){
+      fn(b.x + xx, b.y + yy);
+    }
+  }
+}
+
+function tileOccupiedByBuilding(x, y, ignoreId=null){
+  for(const b of buildings){
+    if(ignoreId && b.id===ignoreId) continue;
+    const fp = getFootprint(b.kind);
+    if(x>=b.x && x<b.x+fp.w && y>=b.y && y<b.y+fp.h){
+      return true;
+    }
+  }
+  return false;
+}
+
+function buildingAt(x, y){
+  for(const b of buildings){
+    const fp=getFootprint(b.kind);
+    if(x>=b.x && x<b.x+fp.w && y>=b.y && y<b.y+fp.h){
+      return b;
+    }
+  }
+  return null;
+}
+
+function validateFootprintPlacement(kind, tx, ty, ignoreId=null){
+  const fp = getFootprint(kind);
+  if(tx<0 || ty<0 || tx+fp.w>GRID_W || ty+fp.h>GRID_H) return 'bounds';
+  for(let yy=0; yy<fp.h; yy++){
+    for(let xx=0; xx<fp.w; xx++){
+      const gx = tx + xx;
+      const gy = ty + yy;
+      const i = gy*GRID_W + gx;
+      if(world.tiles[i]===TILES.WATER) return 'water';
+    }
+  }
+  for(let yy=0; yy<fp.h; yy++){
+    for(let xx=0; xx<fp.w; xx++){
+      const gx = tx + xx;
+      const gy = ty + yy;
+      if(tileOccupiedByBuilding(gx, gy, ignoreId)) return 'occupied';
+    }
+  }
+  return null;
+}
+
+function distanceToFootprint(x, y, b){
+  const fp = getFootprint(b.kind);
+  const minX = b.x;
+  const maxX = b.x + fp.w - 1;
+  const minY = b.y;
+  const maxY = b.y + fp.h - 1;
+  let dx = 0;
+  if(x < minX) dx = minX - x;
+  else if(x > maxX) dx = x - maxX;
+  let dy = 0;
+  if(y < minY) dy = minY - y;
+  else if(y > maxY) dy = y - maxY;
+  return dx + dy;
+}
+
+function buildingEntryTiles(b){
+  const fp = getFootprint(b.kind);
+  const tiles=[];
+  const x0 = b.x;
+  const y0 = b.y;
+  const x1 = b.x + fp.w - 1;
+  const y1 = b.y + fp.h - 1;
+  for(let xx=x0; xx<=x1; xx++){
+    tiles.push({x:xx, y:y0-1});
+    tiles.push({x:xx, y:y1+1});
+  }
+  for(let yy=y0; yy<=y1; yy++){
+    tiles.push({x:x0-1, y:yy});
+    tiles.push({x:x1+1, y:yy});
+  }
+  return tiles;
+}
+
+function findEntryTileNear(b, fromX, fromY){
+  let best=null, bestDist=Infinity;
+  for(const tile of buildingEntryTiles(b)){
+    if(tile.x<0 || tile.y<0 || tile.x>=GRID_W || tile.y>=GRID_H) continue;
+    if(!passable(tile.x, tile.y)) continue;
+    const d=Math.abs(tile.x-fromX)+Math.abs(tile.y-fromY);
+    if(d<bestDist){
+      bestDist=d;
+      best=tile;
+    }
+  }
+  return best;
 }
 
 function ensureBuildingData(b){
@@ -381,9 +524,7 @@ function agricultureBonusesAt(x,y){
   for(const b of buildings){
     if(b.built<1) continue;
     if(b.kind!=='farmplot' && b.kind!=='well') continue;
-    const dx=Math.abs(b.x-x);
-    const dy=Math.abs(b.y-y);
-    const dist=dx+dy;
+    const dist=distanceToFootprint(x,y,b);
     if(b.kind==='farmplot'){
       const eff=BUILDINGS.farmplot.effects||{};
       const radius=(eff.radius|0);
@@ -480,6 +621,9 @@ function zoneCanEverWork(z, i){
 
 function zoneHasWorkNow(z, i){
   if(!zoneCanEverWork(z, i)) return false;
+  const x = i % GRID_W;
+  const y = (i/GRID_W)|0;
+  if(tileOccupiedByBuilding(x, y)) return false;
   if(z===ZONES.FARM){
     return world.growth[i] === 0;
   }
@@ -697,7 +841,8 @@ function scheduleHaul(b, resource, amount){
   if(available<=0) return;
   const qty=Math.min(Math.ceil(amount), available);
   if(qty<=0) return;
-  const storageBuilding=findNearestBuilding(b.x, b.y, 'storage');
+  const center=buildingCenter(b);
+  const storageBuilding=findNearestBuilding(center.x, center.y, 'storage');
   if(!storageBuilding) return;
   const job=addJob({
     type:'haul',
@@ -771,7 +916,10 @@ function paintZoneAt(cx, cy){
       const i = y*GRID_W + x;
       if(z===ZONES.NONE){
         world.zone[i] = ZONES.NONE;
-      } else if(zoneCanEverWork(z, i)){
+        continue;
+      }
+      if(tileOccupiedByBuilding(x, y)) continue;
+      if(zoneCanEverWork(z, i)){
         world.zone[i] = z;
       }
     }
@@ -781,9 +929,17 @@ function paintZoneAt(cx, cy){
 function placeBlueprint(kind,x,y){
   const tx=toTile(x), ty=toTile(y);
   if(tx<0||ty<0||tx>=GRID_W||ty>=GRID_H) return;
-  const t=getTile(tx,ty);
-  if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; }
-  if(buildings.some(b=>b.x===tx&&b.y===ty)){ Toast.show('Tile occupied.'); return; }
+  const result=validateFootprintPlacement(kind, tx, ty);
+  if(result==='bounds') return;
+  if(result==='water'){ Toast.show('Cannot build on water.'); return; }
+  if(result==='occupied'){ Toast.show('Tile occupied.'); return; }
+  const fp=getFootprint(kind);
+  for(let yy=0; yy<fp.h; yy++){
+    for(let xx=0; xx<fp.w; xx++){
+      const idx=(ty+yy)*GRID_W + (tx+xx);
+      world.zone[idx]=ZONES.NONE;
+    }
+  }
   const b=addBuilding(kind,tx,ty,{built:0}); requestBuildHauls(b); markStaticDirty(); Toast.show('Blueprint placed.');
 }
 
@@ -813,6 +969,7 @@ function generateJobs(){
   for(let y=0;y<GRID_H;y++){
     for(let x=0;x<GRID_W;x++){
       const i=y*GRID_W+x;
+      if(tileOccupiedByBuilding(x,y)) continue;
       const z=world.zone[i];
       if(z===ZONES.FARM){
         if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)){
@@ -939,17 +1096,38 @@ function villagerTick(v){
   }
   if(v.energy<0.15){ if(goRest(v)) return; }
   if(v.path && v.path.length>0){ stepAlong(v); return; }
-  if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,s.x,s.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
+  if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
   const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
     let dest={x:j.x,y:j.y};
     if(j.type==='build'){
       const b=buildings.find(bb=>bb.id===j.bid);
-      if(b){ dest={x:b.x,y:b.y}; }
+      if(b){
+        const entry=findEntryTileNear(b, v.x|0, v.y|0);
+        if(entry){ dest=entry; }
+        else {
+          const center=buildingCenter(b);
+          dest={x:Math.round(center.x), y:Math.round(center.y)};
+        }
+      }
     } else if(j.type==='haul'){
-      if(j.src){ dest={x:j.src.x,y:j.src.y}; }
+      if(j.src){
+        const srcBuilding=buildingAt(j.src.x, j.src.y);
+        if(srcBuilding){
+          const entry=findEntryTileNear(srcBuilding, v.x|0, v.y|0);
+          if(entry){ dest=entry; }
+          else { dest={x:j.src.x,y:j.src.y}; }
+        } else { dest={x:j.src.x,y:j.src.y}; }
+      }
       else {
         const b=buildings.find(bb=>bb.id===j.bid);
-        if(b){ dest={x:b.x,y:b.y}; }
+        if(b){
+          const entry=findEntryTileNear(b, v.x|0, v.y|0);
+          if(entry){ dest=entry; }
+          else {
+            const center=buildingCenter(b);
+            dest={x:Math.round(center.x), y:Math.round(center.y)};
+          }
+        }
       }
     }
     const p=pathfind(v.x|0,v.y|0,dest.x,dest.y);
@@ -970,7 +1148,7 @@ function villagerTick(v){
   const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,GRID_H-1);
   if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
 }
-function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && Math.abs(b.x-x)+Math.abs(b.y-y)<=2); }
+function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && distanceToFootprint(x,y,b)<=2); }
 function consumeFood(v){
   let source=null;
   if(v.inv && v.inv.type===ITEM.FOOD){
@@ -990,8 +1168,8 @@ function consumeFood(v){
   return false;
 }
 function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; } } return false; }
-function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
-function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
+function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'&&b.built>=1); if(hut){ const entry=findEntryTileNear(hut, v.x|0, v.y|0) || {x:Math.round(buildingCenter(hut).x), y:Math.round(buildingCenter(hut).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
+function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
 function pickJobFor(v){
   let best=null,bs=-1e9;
   for(const j of jobs){
@@ -1014,7 +1192,13 @@ function pickJobFor(v){
     if(j.type==='chop'&&world.trees[i]===0) continue;
     if(j.type==='mine'&&world.rocks[i]===0) continue;
     if(j.type==='sow'&&world.growth[i]>0) continue;
-    const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    let d;
+    if(j.type==='build'){
+      const b=buildings.find(bb=>bb.id===j.bid);
+      d=b?distanceToFootprint(v.x|0, v.y|0, b):Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    } else {
+      d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    }
     let prio=(j.prio||0.5);
     if(j.type==='build' && supplyStatus && !supplyStatus.fullyDelivered){
       const waitingCap=0.5 + priorities.build*0.35;
@@ -1038,7 +1222,7 @@ function pickJobFor(v){
   }
   return bs>0?best:null;
 }
-function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const moodSpeed=0.75+v.happy*0.5; const speed=v.speed*penalty*SPEEDS[speedIdx]*moodSpeed; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
+function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const moodSpeed=0.75+v.happy*0.5; const speedMultiplier=v.speed*penalty*moodSpeed*SPEEDS[speedIdx]; const stepPx=SPEED_PX_PER_SEC*speedMultiplier*SECONDS_PER_TICK; const step=stepPx/TILE; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy); if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
 function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
 if(v.state==='chop'){
   let remove = world.trees[i]<=0;
@@ -1206,7 +1390,12 @@ else if(v.state==='haul_pickup'){
     v.inv={type:res,qty};
     job.stage='deliver';
     v.thought=moodThought(v,'Loaded supplies');
-    const dest=job.dest||{x:b.x,y:b.y};
+    let dest=job.dest||{x:b.x,y:b.y};
+    const targetBuilding=job.dest?buildingAt(dest.x,dest.y):b;
+    if(targetBuilding){
+      const entry=findEntryTileNear(targetBuilding, cx, cy) || {x:Math.round(buildingCenter(targetBuilding).x), y:Math.round(buildingCenter(targetBuilding).y)};
+      dest=entry;
+    }
     const p=pathfind(cx,cy,dest.x,dest.y);
     if(p){
       v.path=p;
@@ -1276,7 +1465,7 @@ else if(v.state==='rest'){
 } }
 
 /* ==================== Pathfinding ==================== */
-function passable(x,y){ const i=idx(x,y); if(i<0) return false; return WALKABLE.has(world.tiles[i]); }
+function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
 function pathfind(sx,sy,tx,ty,limit=400){
   const tStart = PERF.log ? performance.now() : 0;
   if(sx===tx&&sy===ty){
@@ -1395,6 +1584,14 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
 function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle='#2c6b34'; g.fillRect(10,12,12,10); g.fillStyle='#2f7f3d'; g.fillRect(12,10,8,4); }
 function drawBerry(g){ g.fillStyle='#2f6d36'; g.fillRect(8,16,16,10); g.fillStyle='#a04a5a'; g.fillRect(12,18,2,2); g.fillRect(18,20,2,2); g.fillRect(16,22,2,2); }
 
+function entityDrawRect(tileX, tileY, cam){
+  const baseX = tileToPxX(tileX, cam);
+  const baseY = tileToPxY(tileY, cam);
+  const offset = Math.floor((ENTITY_TILE_PX - TILE) * cam.z * 0.5);
+  const size = ENTITY_TILE_PX * cam.z;
+  return { x: baseX - offset, y: baseY - offset, size };
+}
+
 function visibleTileBounds(){
   const raw = baseVisibleTileBounds(W, H, cam);
   const x0 = Math.max(0, raw.x0);
@@ -1465,20 +1662,17 @@ function render(){
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*GRID_W+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
-      const px = tileToPxX(x, cam);
-      const py = tileToPxY(y, cam);
-      ctx.drawImage(Tileset.sprite.tree, px, py, TILE*cam.z, TILE*cam.z);
+      const rect = entityDrawRect(x, y, cam);
+      ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
     }
     if(world.berries[i]>0){
-      const px = tileToPxX(x, cam);
-      const py = tileToPxY(y, cam);
-      ctx.drawImage(Tileset.sprite.berry, px, py, TILE*cam.z, TILE*cam.z);
+      const rect = entityDrawRect(x, y, cam);
+      ctx.drawImage(Tileset.sprite.berry, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
     }
     if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
       const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
-      const px = tileToPxX(x, cam);
-      const py = tileToPxY(y, cam);
-      ctx.drawImage(Tileset.sprite.sprout[stageIndex], px, py, TILE*cam.z, TILE*cam.z);
+      const rect = entityDrawRect(x, y, cam);
+      ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
     }
   } }
 
@@ -1522,8 +1716,9 @@ function render(){
   // campfire glow (screen space but positioned via cam)
   for(const b of buildings){
     if(b.kind==='campfire'){
-      const gx = tileToPxX(b.x, cam) + TILE*cam.z/2;
-      const gy = tileToPxY(b.y, cam) + TILE*cam.z/2;
+      const center=buildingCenter(b);
+      const gx = tileToPxX(center.x, cam);
+      const gy = tileToPxY(center.y, cam);
       const r = (24+4*Math.sin(tick*0.2))*cam.z;
       const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r);
       grd.addColorStop(0,'rgba(255,180,90,0.35)');
@@ -1543,9 +1738,11 @@ function render(){
 
 function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
-  const entityOffset = (ENTITY_TILE_PX - TILE) * s * 0.5;
-  gx -= entityOffset;
-  gy -= entityOffset;
+  const fp=getFootprint(b.kind);
+  const offsetX = Math.floor((ENTITY_TILE_PX - fp.w*TILE) * s * 0.5);
+  const offsetY = Math.floor((ENTITY_TILE_PX - fp.h*TILE) * s * 0.5);
+  gx -= offsetX;
+  gy -= offsetY;
   if(b.kind==='campfire'){ g.fillStyle='#7b8591'; g.fillRect(gx+10*s,gy+18*s,12*s,6*s); const f=(tick%6); g.fillStyle=['#ffde7a','#ffc05a','#ff9b4a'][f%3]; g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
   } else if(b.kind==='storage'){ g.fillStyle='#6a5338'; g.fillRect(gx+6*s,gy+10*s,20*s,14*s); g.fillStyle='#8b6b44'; g.fillRect(gx+6*s,gy+20*s,20*s,2*s); g.fillStyle='#3b2b1a'; g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
   } else if(b.kind==='hut'){ g.fillStyle='#7d5a3a'; g.fillRect(gx+8*s,gy+16*s,16*s,12*s); g.fillStyle='#caa56a'; g.fillRect(gx+6*s,gy+12*s,20*s,6*s); g.fillStyle='#31251a'; g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
@@ -1557,12 +1754,10 @@ function drawBuildingAt(gx,gy,b){
 function drawVillager(v){
   const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role==='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
-  const baseX = tileToPxX(v.x, cam);
-  const baseY = tileToPxY(v.y, cam);
-  const tileSize = TILE * s;
+  const rect = entityDrawRect(v.x, v.y, cam);
   const spriteSize = 16 * s;
-  const gx = baseX + (tileSize - spriteSize) * 0.5;
-  const gy = baseY + (tileSize - spriteSize) * 0.5;
+  const gx = Math.floor(rect.x + (rect.size - spriteSize) * 0.5);
+  const gy = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
   ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
   if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s); }
   const cond=v.condition;
@@ -1609,7 +1804,7 @@ function drawVillager(v){
 
 /* ==================== Items & Loop ==================== */
 function dropItem(x,y,type,qty){ itemsOnGround.push({x,y,type,qty}); }
-let last=performance.now(), acc=0; const TICK_MS=1000/6;
+let last=performance.now(), acc=0; const TICK_MS=1000/6; const TICKS_PER_SEC=6; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC;
 function update(){ if(paused){ render(); requestAnimationFrame(update); return; } const now=performance.now(); let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(tick%20===0) generateJobs(); if(tick%10===0) seasonTick(); for(const v of villagers){ if(!v.inv){ for(let k=0;k<itemsOnGround.length;k++){ const it=itemsOnGround[k]; if((v.x|0)===it.x && (v.y|0)===it.y){ v.inv={type:it.type,qty:it.qty}; itemsOnGround.splice(k,1); k--; break; } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
 
 /* ==================== Boot ==================== */
