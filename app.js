@@ -73,13 +73,11 @@ window.addEventListener('error', (e) => { showFatalOverlay(e.error || e.message)
 window.addEventListener('unhandledrejection', (e) => { showFatalOverlay(e.reason || e); });
 
 /* ==================== Constants & Types ==================== */
-const MAP_W = 96, MAP_H = 96;
-
 const coords = (() => {
-  const TILE = 32;
+  const TILE = 16;
   const ENTITY_TILE_PX = 32;
-  let GRID_W = MAP_W;
-  let GRID_H = MAP_H;
+  let GRID_W = 192;
+  let GRID_H = 192;
 
   function tileToPxX(tx, cam){ return Math.floor((tx - cam.x) * TILE * cam.z); }
   function tileToPxY(ty, cam){ return Math.floor((ty - cam.y) * TILE * cam.z); }
@@ -123,6 +121,9 @@ const {
   visibleTileBounds: baseVisibleTileBounds,
   idx: baseIdx
 } = coords;
+const GRID_W = coords.GRID_W;
+const GRID_H = coords.GRID_H;
+const GRID_SIZE = GRID_W * GRID_H;
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([TILES.GRASS, TILES.FOREST, TILES.ROCK, TILES.FERTILE, TILES.FARMLAND, TILES.SAND, TILES.SNOW]);
@@ -130,9 +131,9 @@ const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const SPEEDS = [0.5, 1, 2, 4];
 const PF = {
-  qx: new Int16Array(MAP_W*MAP_H),
-  qy: new Int16Array(MAP_W*MAP_H),
-  came: new Int32Array(MAP_W*MAP_H)
+  qx: new Int16Array(GRID_SIZE),
+  qy: new Int16Array(GRID_SIZE),
+  came: new Int32Array(GRID_SIZE)
 };
 
 /* ==================== Canvas & Camera ==================== */
@@ -160,8 +161,8 @@ function resize(){
 }
 resize(); window.addEventListener('resize', resize);
 function clampCam(){
-  const maxX = MAP_W - W / (TILE * cam.z);
-  const maxY = MAP_H - H / (TILE * cam.z);
+  const maxX = GRID_W - W / (TILE * cam.z);
+  const maxY = GRID_H - H / (TILE * cam.z);
   cam.x = Math.max(0, Math.min(cam.x, Math.max(0, maxX)));
   cam.y = Math.max(0, Math.min(cam.y, Math.max(0, maxY)));
 }
@@ -256,21 +257,21 @@ function newWorld(seed=Date.now()|0){
   storageTotals={food:8, wood:12, stone:0};
   storageReserved={food:0, wood:0, stone:0};
   tick=0; dayTime=0;
-  world={ seed, tiles:new Uint8Array(MAP_W*MAP_H), zone:new Uint8Array(MAP_W*MAP_H), trees:new Uint8Array(MAP_W*MAP_H), rocks:new Uint8Array(MAP_W*MAP_H), berries:new Uint8Array(MAP_W*MAP_H), growth:new Uint8Array(MAP_W*MAP_H), season:0, tSeason:0 };
-  function idc(x,y){ return y*MAP_W+x; }
-  for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const v=R(); let t=TILES.GRASS;
+  world={ seed, tiles:new Uint8Array(GRID_SIZE), zone:new Uint8Array(GRID_SIZE), trees:new Uint8Array(GRID_SIZE), rocks:new Uint8Array(GRID_SIZE), berries:new Uint8Array(GRID_SIZE), growth:new Uint8Array(GRID_SIZE), season:0, tSeason:0 };
+  function idc(x,y){ return y*GRID_W+x; }
+  for(let y=0;y<GRID_H;y++){ for(let x=0;x<GRID_W;x++){ const v=R(); let t=TILES.GRASS;
     if(v<0.10) t=TILES.WATER; else if(v<0.18) t=TILES.ROCK; else if(v<0.52) t=TILES.FOREST; else if(v<0.72) t=TILES.FERTILE; else if(v<0.80) t=TILES.SAND; else if(v<0.86) t=TILES.SNOW;
     world.tiles[idc(x,y)]=t; world.zone[idc(x,y)]=0; world.growth[idc(x,y)]=0;
     if(t===TILES.FOREST && R()<0.9) world.trees[idc(x,y)]=1+(R()<0.6?1:0);
     if(t===TILES.ROCK && R()<0.7) world.rocks[idc(x,y)]=1+(R()<0.5?1:0);
     if((t===TILES.GRASS||t===TILES.FERTILE) && R()<0.14) world.berries[idc(x,y)]=1;
   } }
-  let sx=MAP_W>>1, sy=MAP_H>>1;
-  for(let k=0;k<200;k++){ const x=(MAP_W>>1)+irnd(-8,8), y=(MAP_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
+  let sx=GRID_W>>1, sy=GRID_H>>1;
+  for(let k=0;k<200;k++){ const x=(GRID_W>>1)+irnd(-8,8), y=(GRID_H>>1)+irnd(-8,8); const t=world.tiles[idc(x,y)]; if(t!==TILES.WATER && t!==TILES.ROCK){ sx=x; sy=y; break; } }
   addBuilding('campfire',sx,sy,{built:1});
   let storageX=sx, storageY=sy;
   {
-    const visited=new Uint8Array(MAP_W*MAP_H);
+    const visited=new Uint8Array(GRID_SIZE);
     const queue=[[sx,sy,0]];
     visited[idc(sx,sy)]=1;
     let qi=0, found=false;
@@ -279,7 +280,7 @@ function newWorld(seed=Date.now()|0){
       if(d>0 && world.tiles[idc(x,y)]!==TILES.WATER){ storageX=x; storageY=y; found=true; break; }
       for(const [dx,dy] of DIR4){
         const nx=x+dx, ny=y+dy;
-        if(nx<0||ny<0||nx>=MAP_W||ny>=MAP_H) continue;
+        if(nx<0||ny<0||nx>=GRID_W||ny>=GRID_H) continue;
         const idx=idc(nx,ny);
         if(visited[idx]) continue;
         if(world.tiles[idx]===TILES.WATER) continue;
@@ -752,7 +753,7 @@ function cancelHaulJobsForBuilding(b){
     }
   }
 }
-function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return baseIdx(x,y); }
+function idx(x,y){ if(x<0||y<0||x>=GRID_W||y>=GRID_H) return -1; return baseIdx(x,y); }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){
   cam.z = 2.2;
@@ -762,12 +763,12 @@ function centerCamera(x,y){
 }
 function paintZoneAt(cx, cy){
   const x0 = toTile(cx), y0 = toTile(cy);
-  if (x0 < 0 || y0 < 0 || x0 >= MAP_W || y0 >= MAP_H) return;
+  if (x0 < 0 || y0 < 0 || x0 >= GRID_W || y0 >= GRID_H) return;
   const r = Math.floor(ui.brush), z = ui.zonePaint|0;
   for (let y = y0 - r; y <= y0 + r; y++){
     for (let x = x0 - r; x <= x0 + r; x++){
-      if (x<0 || y<0 || x>=MAP_W || y>=MAP_H) continue;
-      const i = y*MAP_W + x;
+      if (x<0 || y<0 || x>=GRID_W || y>=GRID_H) continue;
+      const i = y*GRID_W + x;
       if(z===ZONES.NONE){
         world.zone[i] = ZONES.NONE;
       } else if(zoneCanEverWork(z, i)){
@@ -779,7 +780,7 @@ function paintZoneAt(cx, cy){
 }
 function placeBlueprint(kind,x,y){
   const tx=toTile(x), ty=toTile(y);
-  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return;
+  if(tx<0||ty<0||tx>=GRID_W||ty>=GRID_H) return;
   const t=getTile(tx,ty);
   if(!t||t.t===TILES.WATER){ Toast.show('Cannot build on water.'); return; }
   if(buildings.some(b=>b.x===tx&&b.y===ty)){ Toast.show('Tile occupied.'); return; }
@@ -809,9 +810,9 @@ function finishJob(v, remove=false){
   v.targetJob=null;
 }
 function generateJobs(){
-  for(let y=0;y<MAP_H;y++){
-    for(let x=0;x<MAP_W;x++){
-      const i=y*MAP_W+x;
+  for(let y=0;y<GRID_H;y++){
+    for(let x=0;x<GRID_W;x++){
+      const i=y*GRID_W+x;
       const z=world.zone[i];
       if(z===ZONES.FARM){
         if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)){
@@ -965,8 +966,8 @@ function villagerTick(v){
   if(stage>=2){ v.thought=moodThought(v,'Starving'); return; }
   const wanderRange=stage===1?3:4;
   v.thought=moodThought(v,stage===1?'Hungry':'Wandering');
-  const nx=clamp((v.x|0)+irnd(-wanderRange,wanderRange),0,MAP_W-1);
-  const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,MAP_H-1);
+  const nx=clamp((v.x|0)+irnd(-wanderRange,wanderRange),0,GRID_W-1);
+  const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,GRID_H-1);
   if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
 }
 function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && Math.abs(b.x-x)+Math.abs(b.y-y)<=2); }
@@ -1282,7 +1283,7 @@ function pathfind(sx,sy,tx,ty,limit=400){
     if(PERF.log && (tick % 60) === 0) console.log(`pathfind 0.00ms`);
     return [{x:tx,y:ty}];
   }
-  const Wm=MAP_W,Hm=MAP_H;
+  const Wm=GRID_W,Hm=GRID_H;
   const qx=PF.qx, qy=PF.qy, came=PF.came;
   came.fill(-1);
   let qs=0,qe=0;
@@ -1337,7 +1338,7 @@ function seasonTick(){
     if(world.tiles[i]!==TILES.FARMLAND) continue;
     const prev=world.growth[i];
     if(prev<=0 || prev>=240) continue;
-    const y=(i/MAP_W)|0, x=i%MAP_W;
+    const y=(i/GRID_W)|0, x=i%GRID_W;
     let delta=1;
     if(hasFarmBoosters){
       const { growthBonus } = agricultureBonusesAt(x,y);
@@ -1360,13 +1361,34 @@ function seasonTick(){
 
 /* ==================== Save/Load ==================== */
 function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>{ ensureBuildingData(b); buildings.push(b); }); storageTotals=d.storageTotals||{food:0,wood:0,stone:0}; storageReserved=d.storageReserved||{food:0,wood:0,stone:0}; villagers.length=0; d.villagers.forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed);
+  const applyArray=(target, source)=>{
+    target.fill(0);
+    if(!source) return;
+    const src = Array.isArray(source) || ArrayBuffer.isView(source) ? source : [];
+    const len=Math.min(target.length, src.length);
+    for(let i=0;i<len;i++){ target[i]=src[i]|0; }
+  };
+  applyArray(world.tiles, d.tiles);
+  applyArray(world.zone, d.zone);
+  applyArray(world.trees, d.trees);
+  applyArray(world.rocks, d.rocks);
+  applyArray(world.berries, d.berries);
+  applyArray(world.growth, d.growth);
+  world.season=d.season;
+  world.tSeason=d.tSeason;
+  buildings.length=0;
+  (d.buildings||[]).forEach(b=>{ ensureBuildingData(b); buildings.push(b); });
+  storageTotals=d.storageTotals||{food:0,wood:0,stone:0};
+  storageReserved=d.storageReserved||{food:0,wood:0,stone:0};
+  villagers.length=0;
+  (d.villagers||[]).forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(MAP_W*TILE, MAP_H*TILE); staticCtx=context2d(staticCanvas); } const g=staticCtx;
-  for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x, t=world.tiles[i];
+function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticCtx=context2d(staticCanvas); } const g=staticCtx;
+  for(let y=0;y<GRID_H;y++){ for(let x=0;x<GRID_W;x++){ const i=y*GRID_W+x, t=world.tiles[i];
     let img=Tileset.base.grass; if(t===TILES.GRASS) img=Tileset.base.grass; else if(t===TILES.FERTILE) img=Tileset.base.fertile; else if(t===TILES.SAND) img=Tileset.base.sand; else if(t===TILES.SNOW) img=Tileset.base.snow; else if(t===TILES.ROCK) img=Tileset.base.rock; else if(t===TILES.WATER) img=Tileset.base.water; else if(t===TILES.FARMLAND) img=Tileset.base.farmland; g.drawImage(img,x*TILE,y*TILE);
   } } staticDirty=false; }
 
@@ -1377,8 +1399,8 @@ function visibleTileBounds(){
   const raw = baseVisibleTileBounds(W, H, cam);
   const x0 = Math.max(0, raw.x0);
   const y0 = Math.max(0, raw.y0);
-  const x1 = Math.min(MAP_W-1, raw.x1);
-  const y1 = Math.min(MAP_H-1, raw.y1);
+  const x1 = Math.min(GRID_W-1, raw.x1);
+  const y1 = Math.min(GRID_H-1, raw.y1);
   return {x0, y0, x1, y1};
 }
 
@@ -1402,7 +1424,7 @@ function render(){
   const frames = Tileset.waterOverlay || [];
   if(frames.length){
     const frame = Math.floor((tick/10)%frames.length);
-    for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
+    for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*GRID_W+x; if(world.tiles[i]===TILES.WATER){
       const px = tileToPxX(x, cam);
       const py = tileToPxY(y, cam);
       ctx.drawImage(frames[frame], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
@@ -1413,14 +1435,14 @@ function render(){
   for(const job of jobs){
     const type=job.type;
     if((job.assigned||0)>0 && activeZoneJobs[type]){
-      activeZoneJobs[type].add(job.y*MAP_W + job.x);
+      activeZoneJobs[type].add(job.y*GRID_W + job.x);
     }
   }
 
   // zones glyphs and wash
   for(let y=y0;y<=y1;y++){
     for(let x=x0;x<=x1;x++){
-      const i=y*MAP_W+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
+      const i=y*GRID_W+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
       if(!zoneHasWorkNow(z, i)) continue;
       const jobType=zoneJobType(z);
       if(jobType){ const activeSet=activeZoneJobs[jobType]; if(activeSet && activeSet.has(i)) continue; }
@@ -1441,7 +1463,7 @@ function render(){
   }
 
   // vegetation/crops
-  for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x;
+  for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*GRID_W+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
       const px = tileToPxX(x, cam);
       const py = tileToPxY(y, cam);
@@ -1486,7 +1508,7 @@ function render(){
     ctx.lineWidth=Math.max(1,1*cam.z);
     for(let yy=y-r; yy<=y+r; yy++){
       for(let xx=x-r; xx<=x+r; xx++){
-        if(xx<0||yy<0||xx>=MAP_W||yy>=MAP_H) continue;
+        if(xx<0||yy<0||xx>=GRID_W||yy>=GRID_H) continue;
         const sx = tileToPxX(xx, cam);
         const sy = tileToPxY(yy, cam);
         ctx.strokeRect(sx+1, sy+1, TILE*cam.z-2, TILE*cam.z-2);
@@ -1521,6 +1543,9 @@ function render(){
 
 function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
+  const entityOffset = (ENTITY_TILE_PX - TILE) * s * 0.5;
+  gx -= entityOffset;
+  gy -= entityOffset;
   if(b.kind==='campfire'){ g.fillStyle='#7b8591'; g.fillRect(gx+10*s,gy+18*s,12*s,6*s); const f=(tick%6); g.fillStyle=['#ffde7a','#ffc05a','#ff9b4a'][f%3]; g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
   } else if(b.kind==='storage'){ g.fillStyle='#6a5338'; g.fillRect(gx+6*s,gy+10*s,20*s,14*s); g.fillStyle='#8b6b44'; g.fillRect(gx+6*s,gy+20*s,20*s,2*s); g.fillStyle='#3b2b1a'; g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
   } else if(b.kind==='hut'){ g.fillStyle='#7d5a3a'; g.fillRect(gx+8*s,gy+16*s,16*s,12*s); g.fillStyle='#caa56a'; g.fillRect(gx+6*s,gy+12*s,20*s,6*s); g.fillStyle='#31251a'; g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
@@ -1534,12 +1559,14 @@ function drawVillager(v){
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
   const baseX = tileToPxX(v.x, cam);
   const baseY = tileToPxY(v.y, cam);
-  const gx = baseX + 8*s;
-  const gy = baseY + 8*s;
-  ctx.drawImage(f, 0,0,16,16, gx, gy, 16*s, 16*s);
-  if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+12*s, gy+2*s, 3*s, 3*s); }
+  const tileSize = TILE * s;
+  const spriteSize = 16 * s;
+  const gx = baseX + (tileSize - spriteSize) * 0.5;
+  const gy = baseY + (tileSize - spriteSize) * 0.5;
+  ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
+  if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s); }
   const cond=v.condition;
-  const baseCx=gx+8*s;
+  const baseCx=gx+spriteSize*0.5;
   const baseCy=gy-4*cam.z;
   let labelOffset=0;
   function drawLabel(text,color){
