@@ -1,3 +1,6 @@
+import { generateTerrain } from './worldgen/terrain.js';
+import { WORLDGEN_DEFAULTS } from './worldgen/config.js';
+
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
 (function(){
@@ -368,23 +371,24 @@ function newWorld(seed=Date.now()|0){
   storageTotals={food:8, wood:12, stone:0};
   storageReserved={food:0, wood:0, stone:0};
   tick=0; dayTime=0;
-  world={ seed, tiles:new Uint8Array(GRID_SIZE), zone:new Uint8Array(GRID_SIZE), trees:new Uint8Array(GRID_SIZE), rocks:new Uint8Array(GRID_SIZE), berries:new Uint8Array(GRID_SIZE), growth:new Uint8Array(GRID_SIZE), season:0, tSeason:0 };
+  const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
+  world={
+    seed,
+    tiles:terrain.tiles,
+    zone:new Uint8Array(GRID_SIZE),
+    trees:terrain.trees,
+    rocks:terrain.rocks,
+    berries:terrain.berries,
+    growth:new Uint8Array(GRID_SIZE),
+    season:0,
+    tSeason:0
+  };
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
+  world.zone.fill(0);
+  world.growth.fill(0);
+  refreshWaterRowMaskFromTiles();
   function idc(x,y){ return y*GRID_W+x; }
-  for(let y=0;y<GRID_H;y++){
-    let rowHasWater=0;
-    for(let x=0;x<GRID_W;x++){ const v=R(); let t=TILES.GRASS;
-      if(v<0.10) t=TILES.WATER; else if(v<0.18) t=TILES.ROCK; else if(v<0.52) t=TILES.FOREST; else if(v<0.72) t=TILES.FERTILE; else if(v<0.80) t=TILES.SAND; else if(v<0.86) t=TILES.SNOW;
-      const idx=idc(x,y);
-      world.tiles[idx]=t; world.zone[idx]=0; world.growth[idx]=0;
-      if(t===TILES.FOREST && R()<0.9) world.trees[idx]=1+(R()<0.6?1:0);
-      if(t===TILES.ROCK && R()<0.7) world.rocks[idx]=1+(R()<0.5?1:0);
-      if((t===TILES.GRASS||t===TILES.FERTILE) && R()<0.14) world.berries[idx]=1;
-      if(t===TILES.WATER) rowHasWater=1;
-    }
-    waterRowMask[y]=rowHasWater;
-  }
   const startFootprintClear=(kind, tx, ty)=>{
     if(validateFootprintPlacement(kind, tx, ty)!==null) return false;
     const fp=getFootprint(kind);
