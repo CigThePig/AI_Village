@@ -73,7 +73,56 @@ window.addEventListener('error', (e) => { showFatalOverlay(e.error || e.message)
 window.addEventListener('unhandledrejection', (e) => { showFatalOverlay(e.reason || e); });
 
 /* ==================== Constants & Types ==================== */
-const TILE = 32, MAP_W = 96, MAP_H = 96;
+const MAP_W = 96, MAP_H = 96;
+
+const coords = (() => {
+  const TILE = 32;
+  const ENTITY_TILE_PX = 32;
+  let GRID_W = MAP_W;
+  let GRID_H = MAP_H;
+
+  function tileToPxX(tx, cam){ return Math.floor((tx - cam.x) * TILE * cam.z); }
+  function tileToPxY(ty, cam){ return Math.floor((ty - cam.y) * TILE * cam.z); }
+  function pxToTileX(sx, cam){ return (sx / (TILE * cam.z)) + cam.x; }
+  function pxToTileY(sy, cam){ return (sy / (TILE * cam.z)) + cam.y; }
+  function idx(x, y){ return y * GRID_W + x; }
+  function visibleTileBounds(W,H,cam){
+    const spanX = Math.ceil(W/(TILE*cam.z));
+    const spanY = Math.ceil(H/(TILE*cam.z));
+    return {
+      x0: Math.floor(cam.x)-1,
+      y0: Math.floor(cam.y)-1,
+      x1: Math.ceil(cam.x)+spanX+1,
+      y1: Math.ceil(cam.y)+spanY+1
+    };
+  }
+
+  return {
+    TILE,
+    ENTITY_TILE_PX,
+    get GRID_W(){ return GRID_W; },
+    set GRID_W(v){ GRID_W = v; },
+    get GRID_H(){ return GRID_H; },
+    set GRID_H(v){ GRID_H = v; },
+    tileToPxX,
+    tileToPxY,
+    pxToTileX,
+    pxToTileY,
+    idx,
+    visibleTileBounds
+  };
+})();
+
+const {
+  TILE,
+  ENTITY_TILE_PX,
+  tileToPxX,
+  tileToPxY,
+  pxToTileX,
+  pxToTileY,
+  visibleTileBounds: baseVisibleTileBounds,
+  idx: baseIdx
+} = coords;
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([TILES.GRASS, TILES.FOREST, TILES.ROCK, TILES.FERTILE, TILES.FARMLAND, TILES.SAND, TILES.SNOW]);
@@ -88,7 +137,13 @@ const PF = {
 
 /* ==================== Canvas & Camera ==================== */
 const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d', { alpha:false });
+function context2d(canvas, opts){
+  const context = canvas.getContext('2d', opts);
+  // We size canvases in device pixels (see resize) so disable smoothing once per context for crisp art.
+  context.imageSmoothingEnabled = false;
+  return context;
+}
+const ctx = context2d(canvas, { alpha:false });
 canvas.style.touchAction = 'none';
 let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 let W=0, H=0;
@@ -127,19 +182,19 @@ const Tileset = { base:{}, waterOverlay:[], zoneGlyphs:{}, villagerSprites:{}, s
 function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
 function px(g,x,y,c){ g.fillStyle=c; g.fillRect(x,y,1,1); }
 function rect(g,x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
-function makeSprite(w,h,drawFn){ const c=makeCanvas(w,h), g=c.getContext('2d'); drawFn(g); return c; }
+function makeSprite(w,h,drawFn){ const c=makeCanvas(w,h), g=context2d(c); drawFn(g); return c; }
 
-function makeGrass(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#245a2f'); for(let i=0;i<40;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), (i%3===0)?'#2f7d3d':(i%2===0?'#2a6b37':'#2a5f34')); } g.globalAlpha=0.25; rect(g,0,TILE-5,TILE,5,'#1a3e22'); g.globalAlpha=1; return c; }
-function makeFertile(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#3c2a1e'); g.globalAlpha=0.2; for(let y=4;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#2a1d15'); } g.globalAlpha=1; return c; }
-function makeSand(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#b99a52'); for(let i=0;i<28;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#c7ad69':'#a78848'); } return c; }
-function makeSnow(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#d7e6f8'); for(let i=0;i<24;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), '#c9d7ea'); } rect(g,0,TILE-4,TILE,4,'#c0d0e8'); return c; }
-function makeRock(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#59616c'); for(let i=0;i<30;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#8f99a5':'#6c757f'); } rect(g,0,TILE-5,TILE,5,'#4a525b'); return c; }
-function makeWaterBase(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#134a6a'); for (let i = 0; i < 14; i++) { px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#0f3e59':'#0c3248'); } return c; }
-function makeWaterOverlayFrames(){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); g.globalAlpha=0.22; g.strokeStyle='#4fa3d6'; g.lineWidth=1; g.beginPath(); for(let i=0;i<3;i++){ const y=6+i*10+f*2; g.moveTo(0,y); g.quadraticCurveTo(TILE*0.5,y+2,TILE,y); } g.stroke(); g.globalAlpha=1; frames.push(c); } return frames; }
-function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=c.getContext('2d'); rect(g,0,0,TILE,TILE,'#4a3624'); g.globalAlpha=0.25; for(let y=3;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#3b2a1d'); } g.globalAlpha=1; return c; }
+function makeGrass(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#245a2f'); for(let i=0;i<40;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), (i%3===0)?'#2f7d3d':(i%2===0?'#2a6b37':'#2a5f34')); } g.globalAlpha=0.25; rect(g,0,TILE-5,TILE,5,'#1a3e22'); g.globalAlpha=1; return c; }
+function makeFertile(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#3c2a1e'); g.globalAlpha=0.2; for(let y=4;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#2a1d15'); } g.globalAlpha=1; return c; }
+function makeSand(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#b99a52'); for(let i=0;i<28;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#c7ad69':'#a78848'); } return c; }
+function makeSnow(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#d7e6f8'); for(let i=0;i<24;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), '#c9d7ea'); } rect(g,0,TILE-4,TILE,4,'#c0d0e8'); return c; }
+function makeRock(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#59616c'); for(let i=0;i<30;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#8f99a5':'#6c757f'); } rect(g,0,TILE-5,TILE,5,'#4a525b'); return c; }
+function makeWaterBase(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#134a6a'); for (let i = 0; i < 14; i++) { px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#0f3e59':'#0c3248'); } return c; }
+function makeWaterOverlayFrames(){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(TILE,TILE), g=context2d(c); g.globalAlpha=0.22; g.strokeStyle='#4fa3d6'; g.lineWidth=1; g.beginPath(); for(let i=0;i<3;i++){ const y=6+i*10+f*2; g.moveTo(0,y); g.quadraticCurveTo(TILE*0.5,y+2,TILE,y); } g.stroke(); g.globalAlpha=1; frames.push(c); } return frames; }
+function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#4a3624'); g.globalAlpha=0.25; for(let y=3;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#3b2a1d'); } g.globalAlpha=1; return c; }
 function drawSproutOn(g,stage){ const s=Math.min(3,Math.floor(stage)); if(s<=0) return; const gx=8, gy=10; g.fillStyle='#86c06c'; g.fillRect(gx,gy,2,2); if(s>=2){ g.fillRect(gx-2,gy+2,6,2); } if(s>=3){ g.fillRect(gx-1,gy-2,4,2); } }
-function makeZoneGlyphs(){ const farm=makeCanvas(8,8), f=farm.getContext('2d'); rect(f,0,0,8,8,'rgba(0,0,0,0)'); px(f,3,6,'#9dd47a'); px(f,4,6,'#9dd47a'); px(f,3,5,'#73b85d'); px(f,4,5,'#73b85d'); px(f,3,4,'#5aa34b'); const cut=makeCanvas(8,8), c=cut.getContext('2d'); rect(c,0,0,8,8,'rgba(0,0,0,0)'); rect(c,2,2,4,1,'#caa56a'); rect(c,3,1,2,1,'#8f6934'); const mine=makeCanvas(8,8), m=mine.getContext('2d'); rect(m,0,0,8,8,'rgba(0,0,0,0)'); rect(m,2,2,4,1,'#9aa3ad'); rect(m,3,3,2,1,'#6d7782'); Tileset.zoneGlyphs={farm,cut,mine}; }
-function makeVillagerFrames(){ function role(shirt,hat){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(16,16), g=c.getContext('2d'); rect(g,7,4,2,2,'#f1d4b6'); if(hat){ rect(g,6,3,4,1,hat); rect(g,6,2,4,1,hat); } rect(g,6,6,4,4,shirt); if(f===0){ rect(g,5,6,1,3,shirt); rect(g,10,6,1,2,shirt); } if(f===1){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,3,shirt); } if(f===2){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,2,shirt); } rect(g,6,10,1,4,'#3f3f4f'); rect(g,9,10,1,4,'#3f3f4f'); frames.push(c);} return frames; } Tileset.villagerSprites.farmer=role('#3aa357','#d6cf74'); Tileset.villagerSprites.worker=role('#a36b3a','#8f7440'); Tileset.villagerSprites.explorer=role('#3a6aa3',null); Tileset.villagerSprites.sleepy=role('#777','#444'); }
+function makeZoneGlyphs(){ const farm=makeCanvas(8,8), f=context2d(farm); rect(f,0,0,8,8,'rgba(0,0,0,0)'); px(f,3,6,'#9dd47a'); px(f,4,6,'#9dd47a'); px(f,3,5,'#73b85d'); px(f,4,5,'#73b85d'); px(f,3,4,'#5aa34b'); const cut=makeCanvas(8,8), c=context2d(cut); rect(c,0,0,8,8,'rgba(0,0,0,0)'); rect(c,2,2,4,1,'#caa56a'); rect(c,3,1,2,1,'#8f6934'); const mine=makeCanvas(8,8), m=context2d(mine); rect(m,0,0,8,8,'rgba(0,0,0,0)'); rect(m,2,2,4,1,'#9aa3ad'); rect(m,3,3,2,1,'#6d7782'); Tileset.zoneGlyphs={farm,cut,mine}; }
+function makeVillagerFrames(){ function role(shirt,hat){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(16,16), g=context2d(c); rect(g,7,4,2,2,'#f1d4b6'); if(hat){ rect(g,6,3,4,1,hat); rect(g,6,2,4,1,hat); } rect(g,6,6,4,4,shirt); if(f===0){ rect(g,5,6,1,3,shirt); rect(g,10,6,1,2,shirt); } if(f===1){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,3,shirt); } if(f===2){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,2,shirt); } rect(g,6,10,1,4,'#3f3f4f'); rect(g,9,10,1,4,'#3f3f4f'); frames.push(c);} return frames; } Tileset.villagerSprites.farmer=role('#3aa357','#d6cf74'); Tileset.villagerSprites.worker=role('#a36b3a','#8f7440'); Tileset.villagerSprites.explorer=role('#3a6aa3',null); Tileset.villagerSprites.sleepy=role('#777','#444'); }
 function buildTileset(){
   try { Tileset.base.grass = makeGrass(); } catch(e){ console.warn('grass', e); }
   try { Tileset.base.fertile = makeFertile(); } catch(e){ console.warn('fertile', e); }
@@ -498,10 +553,10 @@ function screenToWorld(px, py){
   const rect = canvas.getBoundingClientRect();         // CSS pixels
   const sx = (px - rect.left) * (canvas.width  / rect.width);   // device px
   const sy = (py - rect.top)  * (canvas.height / rect.height);  // device px
-  // camera is in tiles; drawing uses (x - cam.x) * TILE * cam.z
+  // camera is in tiles; conversion helpers live in coords
   return {
-    x: cam.x + sx / (TILE * cam.z),
-    y: cam.y + sy / (TILE * cam.z)
+    x: pxToTileX(sx, cam),
+    y: pxToTileY(sy, cam)
   };
 }
 
@@ -548,16 +603,16 @@ canvas.addEventListener('pointermove', (e)=>{
     cam.y += (after.y - before.y);
     const midx = (pts[0].x + pts[1].x) / 2,
           midy = (pts[0].y + pts[1].y) / 2;
-    cam.x -= (midx - pinch.midx) * scaleX / (TILE * cam.z);
-    cam.y -= (midy - pinch.midy) * scaleY / (TILE * cam.z);
+    cam.x -= pxToTileX((midx - pinch.midx) * scaleX, cam) - cam.x;
+    cam.y -= pxToTileY((midy - pinch.midy) * scaleY, cam) - cam.y;
     pinch.midx = midx; pinch.midy = midy;
     clampCam();
   } else if(primaryPointer && e.pointerId===primaryPointer.id){
     if(ui.mode!=='zones'){
       const dx=(e.clientX-primaryPointer.sx)*scaleX;
       const dy=(e.clientY-primaryPointer.sy)*scaleY;
-      const dtX = dx / (TILE * cam.z);
-      const dtY = dy / (TILE * cam.z);
+      const dtX = pxToTileX(dx, cam) - cam.x;
+      const dtY = pxToTileY(dy, cam) - cam.y;
       cam.x = primaryPointer.camx - dtX;
       cam.y = primaryPointer.camy - dtY;
       clampCam();
@@ -697,7 +752,7 @@ function cancelHaulJobsForBuilding(b){
     }
   }
 }
-function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return y*MAP_W+x; }
+function idx(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return -1; return baseIdx(x,y); }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 function centerCamera(x,y){
   cam.z = 2.2;
@@ -1310,7 +1365,7 @@ function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) retu
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(MAP_W*TILE, MAP_H*TILE); staticCtx=staticCanvas.getContext('2d'); staticCtx.imageSmoothingEnabled=false; } const g=staticCtx;
+function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(MAP_W*TILE, MAP_H*TILE); staticCtx=context2d(staticCanvas); } const g=staticCtx;
   for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x, t=world.tiles[i];
     let img=Tileset.base.grass; if(t===TILES.GRASS) img=Tileset.base.grass; else if(t===TILES.FERTILE) img=Tileset.base.fertile; else if(t===TILES.SAND) img=Tileset.base.sand; else if(t===TILES.SNOW) img=Tileset.base.snow; else if(t===TILES.ROCK) img=Tileset.base.rock; else if(t===TILES.WATER) img=Tileset.base.water; else if(t===TILES.FARMLAND) img=Tileset.base.farmland; g.drawImage(img,x*TILE,y*TILE);
   } } staticDirty=false; }
@@ -1319,18 +1374,16 @@ function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle=
 function drawBerry(g){ g.fillStyle='#2f6d36'; g.fillRect(8,16,16,10); g.fillStyle='#a04a5a'; g.fillRect(12,18,2,2); g.fillRect(18,20,2,2); g.fillRect(16,22,2,2); }
 
 function visibleTileBounds(){
-  const wTiles = W / (TILE * cam.z);
-  const hTiles = H / (TILE * cam.z);
-  const x0 = Math.max(0, Math.floor(cam.x));
-  const y0 = Math.max(0, Math.floor(cam.y));
-  const x1 = Math.min(MAP_W-1, Math.ceil(cam.x + wTiles));
-  const y1 = Math.min(MAP_H-1, Math.ceil(cam.y + hTiles));
+  const raw = baseVisibleTileBounds(W, H, cam);
+  const x0 = Math.max(0, raw.x0);
+  const y0 = Math.max(0, raw.y0);
+  const x1 = Math.min(MAP_W-1, raw.x1);
+  const y1 = Math.min(MAP_H-1, raw.y1);
   return {x0, y0, x1, y1};
 }
 
 function render(){
   if(staticDirty) drawStatic();
-  ctx.imageSmoothingEnabled=false;
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#0a0c10';
   ctx.fillRect(0,0,W,H);
@@ -1350,8 +1403,8 @@ function render(){
   if(frames.length){
     const frame = Math.floor((tick/10)%frames.length);
     for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
+      const px = tileToPxX(x, cam);
+      const py = tileToPxY(y, cam);
       ctx.drawImage(frames[frame], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
     } } }
   }
@@ -1375,8 +1428,8 @@ function render(){
                  : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
                  :                   'rgba(160,200,255,0.22)';
       ctx.fillStyle=wash;
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
+      const px = tileToPxX(x, cam);
+      const py = tileToPxY(y, cam);
       ctx.fillRect(px, py, TILE*cam.z, TILE*cam.z);
       const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
       ctx.globalAlpha=0.6;
@@ -1390,19 +1443,19 @@ function render(){
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
+      const px = tileToPxX(x, cam);
+      const py = tileToPxY(y, cam);
       ctx.drawImage(Tileset.sprite.tree, px, py, TILE*cam.z, TILE*cam.z);
     }
     if(world.berries[i]>0){
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
+      const px = tileToPxX(x, cam);
+      const py = tileToPxY(y, cam);
       ctx.drawImage(Tileset.sprite.berry, px, py, TILE*cam.z, TILE*cam.z);
     }
     if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
       const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
+      const px = tileToPxX(x, cam);
+      const py = tileToPxY(y, cam);
       ctx.drawImage(Tileset.sprite.sprout[stageIndex], px, py, TILE*cam.z, TILE*cam.z);
     }
   } }
@@ -1411,15 +1464,15 @@ function render(){
 
   // buildings
   for(const b of buildings){
-    const gx = (b.x - cam.x) * TILE * cam.z;
-    const gy = (b.y - cam.y) * TILE * cam.z;
+    const gx = tileToPxX(b.x, cam);
+    const gy = tileToPxY(b.y, cam);
     drawBuildingAt(gx, gy, b);
   }
 
   // items
   for(const it of itemsOnGround){
-    const gx = (it.x - cam.x) * TILE * cam.z;
-    const gy = (it.y - cam.y) * TILE * cam.z;
+    const gx = tileToPxX(it.x, cam);
+    const gy = tileToPxY(it.y, cam);
     ctx.fillStyle = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
     ctx.fillRect(gx+TILE*cam.z*0.5-2*cam.z, gy+TILE*cam.z*0.5-2*cam.z, 4*cam.z, 4*cam.z);
   }
@@ -1434,8 +1487,8 @@ function render(){
     for(let yy=y-r; yy<=y+r; yy++){
       for(let xx=x-r; xx<=x+r; xx++){
         if(xx<0||yy<0||xx>=MAP_W||yy>=MAP_H) continue;
-        const sx = (xx - cam.x) * TILE * cam.z;
-        const sy = (yy - cam.y) * TILE * cam.z;
+        const sx = tileToPxX(xx, cam);
+        const sy = tileToPxY(yy, cam);
         ctx.strokeRect(sx+1, sy+1, TILE*cam.z-2, TILE*cam.z-2);
       }
     }
@@ -1447,8 +1500,8 @@ function render(){
   // campfire glow (screen space but positioned via cam)
   for(const b of buildings){
     if(b.kind==='campfire'){
-      const gx = (b.x - cam.x) * TILE * cam.z + TILE*cam.z/2;
-      const gy = (b.y - cam.y) * TILE * cam.z + TILE*cam.z/2;
+      const gx = tileToPxX(b.x, cam) + TILE*cam.z/2;
+      const gy = tileToPxY(b.y, cam) + TILE*cam.z/2;
       const r = (24+4*Math.sin(tick*0.2))*cam.z;
       const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r);
       grd.addColorStop(0,'rgba(255,180,90,0.35)');
@@ -1479,8 +1532,10 @@ function drawBuildingAt(gx,gy,b){
 function drawVillager(v){
   const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role==='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
-  const gx = (v.x - cam.x) * TILE * cam.z + 8*s;
-  const gy = (v.y - cam.y) * TILE * cam.z + 8*s;
+  const baseX = tileToPxX(v.x, cam);
+  const baseY = tileToPxY(v.y, cam);
+  const gx = baseX + 8*s;
+  const gy = baseY + 8*s;
   ctx.drawImage(f, 0,0,16,16, gx, gy, 16*s, 16*s);
   if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+12*s, gy+2*s, 3*s, 3*s); }
   const cond=v.condition;
