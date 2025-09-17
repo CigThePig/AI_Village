@@ -957,7 +957,7 @@ function pickJobFor(v){
     const i=idx(j.x,j.y);
     if(j.type==='chop'&&world.trees[i]===0) continue;
     if(j.type==='mine'&&world.rocks[i]===0) continue;
-    if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue;
+    if(j.type==='sow'&&world.growth[i]>0) continue;
     const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
     let prio=(j.prio||0.5);
     if(j.type==='build' && supplyStatus && !supplyStatus.fullyDelivered){
