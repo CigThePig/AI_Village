@@ -132,6 +132,7 @@ const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([TILES.GRASS, TILES.FOREST, TILES.ROCK, TILES.FERTILE, TILES.FARMLAND, TILES.SAND, TILES.SNOW]);
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
+const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
 const SPEEDS = [0.5, 1, 2, 4];
 const PF = {
   qx: new Int16Array(GRID_SIZE),
@@ -284,7 +285,18 @@ function makeRock(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,T
 function makeWaterBase(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#134a6a'); for (let i = 0; i < 14; i++) { px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#0f3e59':'#0c3248'); } return c; }
 function makeWaterOverlayFrames(){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(TILE,TILE), g=context2d(c); g.globalAlpha=0.22; g.strokeStyle='#4fa3d6'; g.lineWidth=1; g.beginPath(); for(let i=0;i<3;i++){ const y=6+i*10+f*2; g.moveTo(0,y); g.quadraticCurveTo(TILE*0.5,y+2,TILE,y); } g.stroke(); g.globalAlpha=1; frames.push(c); } return frames; }
 function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#4a3624'); g.globalAlpha=0.25; for(let y=3;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#3b2a1d'); } g.globalAlpha=1; return c; }
-function drawSproutOn(g,stage){ const s=Math.min(3,Math.floor(stage)); if(s<=0) return; const gx=8, gy=10; g.fillStyle='#86c06c'; g.fillRect(gx,gy,2,2); if(s>=2){ g.fillRect(gx-2,gy+2,6,2); } if(s>=3){ g.fillRect(gx-1,gy-2,4,2); } }
+function drawSproutOn(g,stage){
+  const s=Math.min(3,Math.floor(stage));
+  if(s<=0) return;
+  const centerX=Math.floor(ENTITY_TILE_PX/2);
+  const centerY=Math.floor(ENTITY_TILE_PX/2);
+  const gx=centerX-1;
+  const gy=centerY-1;
+  g.fillStyle='#86c06c';
+  g.fillRect(gx,gy,2,2);
+  if(s>=2){ g.fillRect(gx-2,gy+2,6,2); }
+  if(s>=3){ g.fillRect(gx-1,gy-2,4,2); }
+}
 function makeZoneGlyphs(){ const farm=makeCanvas(8,8), f=context2d(farm); rect(f,0,0,8,8,'rgba(0,0,0,0)'); px(f,3,6,'#9dd47a'); px(f,4,6,'#9dd47a'); px(f,3,5,'#73b85d'); px(f,4,5,'#73b85d'); px(f,3,4,'#5aa34b'); const cut=makeCanvas(8,8), c=context2d(cut); rect(c,0,0,8,8,'rgba(0,0,0,0)'); rect(c,2,2,4,1,'#caa56a'); rect(c,3,1,2,1,'#8f6934'); const mine=makeCanvas(8,8), m=context2d(mine); rect(m,0,0,8,8,'rgba(0,0,0,0)'); rect(m,2,2,4,1,'#9aa3ad'); rect(m,3,3,2,1,'#6d7782'); Tileset.zoneGlyphs={farm,cut,mine}; }
 function makeVillagerFrames(){ function role(shirt,hat){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(16,16), g=context2d(c); rect(g,7,4,2,2,'#f1d4b6'); if(hat){ rect(g,6,3,4,1,hat); rect(g,6,2,4,1,hat); } rect(g,6,6,4,4,shirt); if(f===0){ rect(g,5,6,1,3,shirt); rect(g,10,6,1,2,shirt); } if(f===1){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,3,shirt); } if(f===2){ rect(g,5,6,1,2,shirt); rect(g,10,6,1,2,shirt); } rect(g,6,10,1,4,'#3f3f4f'); rect(g,9,10,1,4,'#3f3f4f'); frames.push(c);} return frames; } Tileset.villagerSprites.farmer=role('#3aa357','#d6cf74'); Tileset.villagerSprites.worker=role('#a36b3a','#8f7440'); Tileset.villagerSprites.explorer=role('#3a6aa3',null); Tileset.villagerSprites.sleepy=role('#777','#444'); }
 function buildTileset(){
@@ -373,44 +385,89 @@ function newWorld(seed=Date.now()|0){
     }
     waterRowMask[y]=rowHasWater;
   }
-  let sx=GRID_W>>1, sy=GRID_H>>1;
-  for(let k=0;k<200;k++){
-    const x=(GRID_W>>1)+irnd(-8,8), y=(GRID_H>>1)+irnd(-8,8);
-    if(validateFootprintPlacement('campfire', x, y)===null){
-      const fp=getFootprint('campfire');
-      let blocked=false;
-      for(let yy=0; yy<fp.h && !blocked; yy++){
-        for(let xx=0; xx<fp.w; xx++){
-          const t=world.tiles[idc(x+xx,y+yy)];
-          if(t===TILES.ROCK || t===TILES.WATER){ blocked=true; break; }
-        }
+  const startFootprintClear=(kind, tx, ty)=>{
+    if(validateFootprintPlacement(kind, tx, ty)!==null) return false;
+    const fp=getFootprint(kind);
+    for(let yy=0; yy<fp.h; yy++){
+      const row=(ty+yy)*GRID_W;
+      for(let xx=0; xx<fp.w; xx++){
+        const idx=row+(tx+xx);
+        const tile=world.tiles[idx];
+        if(tile===TILES.WATER || tile===TILES.ROCK) return false;
+        if(world.trees[idx]>0 || world.rocks[idx]>0) return false;
       }
-      if(!blocked){ sx=x; sy=y; break; }
     }
-  }
-  const campfire=addBuilding('campfire',sx,sy,{built:1});
-  let storageX=sx, storageY=sy;
-  {
+    return true;
+  };
+
+  const findNearestStartSpot=(kind, startX, startY)=>{
+    const fp=getFootprint(kind);
+    const maxX=Math.max(0, GRID_W-fp.w);
+    const maxY=Math.max(0, GRID_H-fp.h);
+    const clampedX=clamp(Math.round(startX), 0, maxX);
+    const clampedY=clamp(Math.round(startY), 0, maxY);
     const visited=new Uint8Array(GRID_SIZE);
-    const queue=[[sx,sy,0]];
-    visited[idc(sx,sy)]=1;
-    let qi=0, found=false;
+    const queue=[];
+    const enqueue=(x,y)=>{
+      if(x<0||y<0||x+fp.w>GRID_W||y+fp.h>GRID_H) return;
+      const idx=idc(x,y);
+      if(visited[idx]) return;
+      visited[idx]=1;
+      queue.push({x,y});
+    };
+    enqueue(clampedX, clampedY);
+    let qi=0;
     while(qi<queue.length){
-      const [x,y,d]=queue[qi++];
-      if(d>0 && validateFootprintPlacement('storage', x, y)===null){ storageX=x; storageY=y; found=true; break; }
-      for(const [dx,dy] of DIR4){
-        const nx=x+dx, ny=y+dy;
-        if(nx<0||ny<0||nx>=GRID_W||ny>=GRID_H) continue;
-        const idx=idc(nx,ny);
-        if(visited[idx]) continue;
-        if(validateFootprintPlacement('storage', nx, ny)!==null) continue;
-        visited[idx]=1;
-        queue.push([nx,ny,d+1]);
-      }
+      const {x,y}=queue[qi++];
+      if(startFootprintClear(kind,x,y)) return {x,y};
+      for(const [dx,dy] of DIR4){ enqueue(x+dx, y+dy); }
     }
-    if(!found){ storageX=sx; storageY=sy; }
+    return null;
+  };
+
+  const campFp=getFootprint('campfire');
+  const campMaxX=Math.max(0, GRID_W-campFp.w);
+  const campMaxY=Math.max(0, GRID_H-campFp.h);
+  const campStartX=clamp(Math.round(GRID_W*0.5 - campFp.w*0.5), 0, campMaxX);
+  const campStartY=clamp(Math.round(GRID_H*0.5 - campFp.h*0.5), 0, campMaxY);
+  const campPos=findNearestStartSpot('campfire', campStartX, campStartY) || {x:campStartX, y:campStartY};
+  const campfire=addBuilding('campfire',campPos.x,campPos.y,{built:1});
+
+  const storageFp=getFootprint('storage');
+  const mapCenterX=(GRID_W-1)/2;
+  const mapCenterY=(GRID_H-1)/2;
+  const adjacencyOffsets=[
+    {dx:campFp.w, dy:0},
+    {dx:-storageFp.w, dy:0},
+    {dx:0, dy:campFp.h},
+    {dx:0, dy:-storageFp.h}
+  ];
+  const adjacency=adjacencyOffsets.map((off, index)=>{
+    const x=campfire.x+off.dx;
+    const y=campfire.y+off.dy;
+    const centerX=x+(storageFp.w-1)/2;
+    const centerY=y+(storageFp.h-1)/2;
+    const dist=Math.abs(centerX-mapCenterX)+Math.abs(centerY-mapCenterY);
+    return {x,y,dist,order:index};
+  }).sort((a,b)=>a.dist===b.dist?a.order-b.order:a.dist-b.dist);
+
+  let storagePos=null;
+  for(const cand of adjacency){
+    if(cand.x<0||cand.y<0||cand.x+storageFp.w>GRID_W||cand.y+storageFp.h>GRID_H) continue;
+    if(startFootprintClear('storage', cand.x, cand.y)){ storagePos={x:cand.x,y:cand.y}; break; }
   }
-  const storage=addBuilding('storage',storageX,storageY,{built:1});
+  if(!storagePos){
+    const fallback=adjacency.find(c=>!(c.x<0||c.y<0||c.x+storageFp.w>GRID_W||c.y+storageFp.h>GRID_H));
+    const startX=fallback?fallback.x:campfire.x;
+    const startY=fallback?fallback.y:campfire.y;
+    storagePos=findNearestStartSpot('storage', startX, startY);
+    if(!storagePos){
+      const defaultX=clamp(campfire.x+campFp.w, 0, GRID_W-storageFp.w);
+      const defaultY=clamp(campfire.y, 0, GRID_H-storageFp.h);
+      storagePos={x:defaultX, y:defaultY};
+    }
+  }
+  const storage=addBuilding('storage',storagePos.x,storagePos.y,{built:1});
   const campCenter=buildingCenter(campfire);
   villagers.length=0;
   for(let i=0;i<6;i++){
@@ -424,7 +481,7 @@ function newWorld(seed=Date.now()|0){
     }
     villagers.push(newVillager(spawnX, spawnY));
   }
-  toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
+  toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
 function addBuilding(kind,x,y,opts={}){
@@ -1814,7 +1871,8 @@ function render(){
   for(let y=y0;y<=y1;y++){ const rowStart=y*GRID_W; for(let x=x0;x<=x1;x++){ const i=rowStart+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
       const rect = entityDrawRect(x, y, cam);
-      ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+      const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
+      ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
     }
     if(world.berries[i]>0){
       const rect = entityDrawRect(x, y, cam);
