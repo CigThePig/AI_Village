@@ -290,6 +290,35 @@ function buildingResourceNeed(b, resource){
   return Math.max(0, required-spent);
 }
 
+function buildingSupplyStatus(b){
+  ensureBuildingData(b);
+  const woodNeed = buildingResourceNeed(b, 'wood');
+  const stoneNeed = buildingResourceNeed(b, 'stone');
+  const storeWood = b?.store?.wood || 0;
+  const storeStone = b?.store?.stone || 0;
+  const pendingWood = b?.pending?.wood || 0;
+  const pendingStone = b?.pending?.stone || 0;
+  const reservedWood = storeWood + pendingWood;
+  const reservedStone = storeStone + pendingStone;
+  const requiresResources = (woodNeed > 0) || (stoneNeed > 0);
+  const hasAnySupply = requiresResources ? (reservedWood > 0 || reservedStone > 0) : true;
+  const hasAllReserved = reservedWood >= woodNeed && reservedStone >= stoneNeed;
+  const fullyDelivered = storeWood >= woodNeed && storeStone >= stoneNeed;
+  return {
+    woodNeed,
+    stoneNeed,
+    storeWood,
+    storeStone,
+    pendingWood,
+    pendingStone,
+    reservedWood,
+    reservedStone,
+    hasAnySupply,
+    hasAllReserved,
+    fullyDelivered
+  };
+}
+
 function agricultureBonusesAt(x,y){
   let growthBonus=0, harvestBonus=0, moodBonus=0;
   if(!buildings.length) return {growthBonus, harvestBonus, moodBonus};
@@ -748,9 +777,31 @@ function generateJobs(){
   }
   for(const b of buildings){
     ensureBuildingData(b);
-    if(b.built<1 && !jobs.some(j=>j.type==='build'&&j.bid===b.id)){
-      addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:0.6+priorities.build*0.6});
+    if(b.built>=1){
+      continue;
     }
+    let status = buildingSupplyStatus(b);
+    if(!status.hasAllReserved){
+      requestBuildHauls(b);
+      status = buildingSupplyStatus(b);
+    }
+    let job = jobs.find(j=>j.type==='build' && j.bid===b.id);
+    if(!status.hasAnySupply){
+      if(job){
+        const ji=jobs.indexOf(job);
+        if(ji!==-1) jobs.splice(ji,1);
+      }
+      continue;
+    }
+    const readyPrio = 0.6 + priorities.build*0.6;
+    const waitingPrio = 0.5 + priorities.build*0.35;
+    if(!job){
+      job = addJob({type:'build',bid:b.id,x:b.x,y:b.y,prio:status.fullyDelivered?readyPrio:waitingPrio});
+    } else {
+      job.prio = status.fullyDelivered?readyPrio:waitingPrio;
+    }
+    job.waitingForMaterials = !status.fullyDelivered;
+    job.hasAllReserved = status.hasAllReserved;
   }
 }
 const STARVE_THRESH={ hungry:0.78, starving:1.02, sick:1.15 };
@@ -885,7 +936,52 @@ function consumeFood(v){
 function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; } } return false; }
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'); if(hut){ const p=pathfind(v.x|0,v.y|0,hut.x,hut.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=999; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=Math.abs(b.x-x)+Math.abs(b.y-y); if(d<bd){bd=d; best=b;} } return best; }
-function pickJobFor(v){ let best=null,bs=-1e9; for(const j of jobs){ if(j.assigned>=1 && j.type!=='build') continue; const i=idx(j.x,j.y); if(j.type==='chop'&&world.trees[i]===0) continue; if(j.type==='mine'&&world.rocks[i]===0) continue; if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue; const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y); let s=(j.prio||0.5)-d*0.01; const mood=moodMotivation(v); const prio=(j.prio||0.5); const heavy=(j.type==='chop'||j.type==='mine'||j.type==='build'||j.type==='haul'); const nurture=(j.type==='sow'||j.type==='harvest'); const baseMood=mood*0.04; const roleMood=heavy?mood*0.04:(nurture?mood*0.02:0); const prioMood=mood>=0?mood*(prio*0.03):mood*((0.7-prio)*0.03); s+=baseMood+roleMood+prioMood; if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08; if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06; if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03; if(s>bs){ bs=s; best=j; } } return bs>0?best:null; }
+function pickJobFor(v){
+  let best=null,bs=-1e9;
+  for(const j of jobs){
+    let supplyStatus=null;
+    if(j.type==='build'){
+      const b=buildings.find(bb=>bb.id===j.bid);
+      if(!b || b.built>=1) continue;
+      supplyStatus=buildingSupplyStatus(b);
+      if(!supplyStatus.hasAnySupply){
+        j.waitingForMaterials=true;
+        continue;
+      }
+      if(j.assigned>=1 && !supplyStatus.fullyDelivered){
+        continue;
+      }
+    } else {
+      if(j.assigned>=1) continue;
+    }
+    const i=idx(j.x,j.y);
+    if(j.type==='chop'&&world.trees[i]===0) continue;
+    if(j.type==='mine'&&world.rocks[i]===0) continue;
+    if(j.type==='sow'&&world.tiles[i]===TILES.FARMLAND) continue;
+    const d=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    let prio=(j.prio||0.5);
+    if(j.type==='build' && supplyStatus && !supplyStatus.fullyDelivered){
+      const waitingCap=0.5 + priorities.build*0.35;
+      if(prio>waitingCap) prio=waitingCap;
+    }
+    let s=prio-d*0.01;
+    const mood=moodMotivation(v);
+    const heavy=(j.type==='chop'||j.type==='mine'||j.type==='build'||j.type==='haul');
+    const nurture=(j.type==='sow'||j.type==='harvest');
+    const baseMood=mood*0.04;
+    const roleMood=heavy?mood*0.04:(nurture?mood*0.02:0);
+    const prioMood=mood>=0?mood*(prio*0.03):mood*((0.7-prio)*0.03);
+    s+=baseMood+roleMood+prioMood;
+    if(v.role==='farmer'&&(j.type==='sow'||j.type==='harvest')) s+=0.08;
+    if(v.role==='worker'&&(j.type==='chop'||j.type==='mine'||j.type==='build')) s+=0.06;
+    if(v.hunger>0.6&&(j.type==='sow'||j.type==='harvest')) s+=0.03;
+    if(j.type==='build'){
+      j.waitingForMaterials=!supplyStatus.fullyDelivered;
+    }
+    if(s>bs){ bs=s; best=j; }
+  }
+  return bs>0?best:null;
+}
 function stepAlong(v){ const next=v.path[0]; if(!next) return; const condition=v.condition||'normal'; const penalty=condition==='sick'?0.45:condition==='starving'?0.7:condition==='hungry'?0.85:condition==='recovering'?0.95:1; const moodSpeed=0.75+v.happy*0.5; const speed=v.speed*penalty*SPEEDS[speedIdx]*moodSpeed; const dx=next.x-v.x, dy=next.y-v.y, dist=Math.hypot(dx,dy), step=0.08*speed; if(dist<=step){ v.x=next.x; v.y=next.y; v.path.shift(); if(v.path.length===0) onArrive(v); } else { v.x+=(dx/dist)*step; v.y+=(dy/dist)*step; } }
 function onArrive(v){ const cx=v.x|0, cy=v.y|0, i=idx(cx,cy);
 if(v.state==='chop'){
