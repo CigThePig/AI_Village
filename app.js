@@ -3,6 +3,9 @@ const PERF = { log:false }; // flip to true to log basic timings
 (function(){
 'use strict';
 
+const QUERY_PARAMS = new URLSearchParams(window.location.search || '');
+function getQueryParam(name){ return QUERY_PARAMS.get(name); }
+
 // ---- Safe storage wrapper ----
 const Storage = (() => {
   let available = false;
@@ -79,6 +82,18 @@ const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([TILES.GRASS, TILES.FOREST, TILES.ROCK, TILES.FERTILE, TILES.FARMLAND, TILES.SAND, TILES.SNOW]);
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
+
+// Sub-tile ground feature flag
+const _subParam = Number(getQueryParam('sub') || 1);
+const _subCandidate = Number.isFinite(_subParam) ? Math.max(1, Math.floor(_subParam)) : 1;
+const GROUND_SUBDIV = (TILE % _subCandidate === 0) ? _subCandidate : 1; // 1 = off; 2/4/etc = enabled
+const MICRO_W = MAP_W * GROUND_SUBDIV;
+const MICRO_H = MAP_H * GROUND_SUBDIV;
+// Size of one micro ground cell in pixels (must divide TILE evenly)
+const MICRO_PX = TILE / GROUND_SUBDIV; // assume TILE % GROUND_SUBDIV === 0
+const WATER_BLOCK_THRESHOLD = 0.5; // tweakable; keep consistent across checks
+const SHOW_MICRO_OVERLAY = (getQueryParam('overlay') || '') === 'micro';
+
 const SPEEDS = [0.5, 1, 2, 4];
 const PF = {
   qx: new Int16Array(MAP_W*MAP_H),
@@ -165,6 +180,103 @@ function buildTileset(){
 /* ==================== World State ==================== */
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
+
+/* ==================== Ground Micro Helpers ==================== */
+function microIdx(tx, ty, sx, sy){
+  const mx = tx * GROUND_SUBDIV + sx;
+  const my = ty * GROUND_SUBDIV + sy;
+  return my * MICRO_W + mx;
+}
+
+function fillMicroTile(tx, ty, type){
+  if(GROUND_SUBDIV === 1 || !world || !world.groundMicro) return;
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return;
+  const baseX = tx * GROUND_SUBDIV;
+  const baseY = ty * GROUND_SUBDIV;
+  const stride = MICRO_W;
+  let row = baseY * stride + baseX;
+  for(let sy=0; sy<GROUND_SUBDIV; sy++){
+    let idx=row;
+    for(let sx=0; sx<GROUND_SUBDIV; sx++){
+      world.groundMicro[idx++] = type;
+    }
+    row += stride;
+  }
+}
+
+function syncMicroTileAt(tx, ty){
+  if(GROUND_SUBDIV === 1 || !world || !world.groundMicro) return;
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return;
+  const type = world.tiles[ty*MAP_W + tx];
+  fillMicroTile(tx, ty, type);
+}
+
+function waterFractionAtTile(tx, ty){
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return 0;
+  if(!world || !world.tiles) return 0;
+  const coarseIdx = ty*MAP_W + tx;
+  if(GROUND_SUBDIV === 1 || !world.groundMicro){
+    return world.tiles[coarseIdx] === TILES.WATER ? 1 : 0;
+  }
+  const base = tx * GROUND_SUBDIV;
+  const offY = ty * GROUND_SUBDIV;
+  let water = 0;
+  for(let sy=0; sy<GROUND_SUBDIV; sy++){
+    let row = (offY + sy) * MICRO_W + base;
+    for(let sx=0; sx<GROUND_SUBDIV; sx++){
+      if(world.groundMicro[row + sx] === TILES.WATER) water++;
+    }
+  }
+  return water / (GROUND_SUBDIV * GROUND_SUBDIV);
+}
+
+function rebuildMicroFromTiles(){
+  if(GROUND_SUBDIV === 1 || !world || !world.groundMicro) return;
+  for(let ty=0; ty<MAP_H; ty++){
+    for(let tx=0; tx<MAP_W; tx++){
+      fillMicroTile(tx, ty, world.tiles[ty*MAP_W + tx]);
+    }
+  }
+}
+
+function carveRiversMicro(seed){
+  if(GROUND_SUBDIV === 1 || !world || !world.groundMicro) return;
+  const subdiv = GROUND_SUBDIV;
+  const center = Math.min(subdiv-1, Math.floor(subdiv/2));
+  const alt = subdiv>2 ? Math.max(0, center-1) : center;
+  const rand = mulberry32((seed ^ 0x51f) >>> 0);
+  const pickAxis = () => (subdiv>2 && rand()<0.5) ? alt : center;
+  for(let ty=0; ty<MAP_H; ty++){
+    for(let tx=0; tx<MAP_W; tx++){
+      const coarseIdx = ty*MAP_W + tx;
+      const type = world.tiles[coarseIdx];
+      if(type === TILES.WATER) continue;
+      if(!(type===TILES.GRASS || type===TILES.SAND || type===TILES.FERTILE)) continue;
+      const leftWater = tx>0 && world.tiles[coarseIdx-1] === TILES.WATER;
+      const rightWater = tx<MAP_W-1 && world.tiles[coarseIdx+1] === TILES.WATER;
+      const upWater = ty>0 && world.tiles[coarseIdx-MAP_W] === TILES.WATER;
+      const downWater = ty<MAP_H-1 && world.tiles[coarseIdx+MAP_W] === TILES.WATER;
+      if(!(leftWater||rightWater||upWater||downWater)) continue;
+      if(leftWater){
+        const sy = pickAxis();
+        world.groundMicro[microIdx(tx,ty,0,sy)] = TILES.WATER;
+      }
+      if(rightWater){
+        const sy = pickAxis();
+        world.groundMicro[microIdx(tx,ty,subdiv-1,sy)] = TILES.WATER;
+      }
+      if(upWater){
+        const sx = pickAxis();
+        world.groundMicro[microIdx(tx,ty,sx,0)] = TILES.WATER;
+      }
+      if(downWater){
+        const sx = pickAxis();
+        world.groundMicro[microIdx(tx,ty,sx,subdiv-1)] = TILES.WATER;
+      }
+    }
+  }
+}
+
 const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
@@ -201,11 +313,12 @@ function newWorld(seed=Date.now()|0){
   storageTotals={food:8, wood:12, stone:0};
   storageReserved={food:0, wood:0, stone:0};
   tick=0; dayTime=0;
-  world={ seed, tiles:new Uint8Array(MAP_W*MAP_H), zone:new Uint8Array(MAP_W*MAP_H), trees:new Uint8Array(MAP_W*MAP_H), rocks:new Uint8Array(MAP_W*MAP_H), berries:new Uint8Array(MAP_W*MAP_H), growth:new Uint8Array(MAP_W*MAP_H), season:0, tSeason:0 };
+  world={ seed, tiles:new Uint8Array(MAP_W*MAP_H), zone:new Uint8Array(MAP_W*MAP_H), trees:new Uint8Array(MAP_W*MAP_H), rocks:new Uint8Array(MAP_W*MAP_H), berries:new Uint8Array(MAP_W*MAP_H), growth:new Uint8Array(MAP_W*MAP_H), season:0, tSeason:0, groundMicro:(GROUND_SUBDIV>1)?new Uint8Array(MICRO_W*MICRO_H):null };
   function idc(x,y){ return y*MAP_W+x; }
   for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const v=R(); let t=TILES.GRASS;
     if(v<0.10) t=TILES.WATER; else if(v<0.18) t=TILES.ROCK; else if(v<0.52) t=TILES.FOREST; else if(v<0.72) t=TILES.FERTILE; else if(v<0.80) t=TILES.SAND; else if(v<0.86) t=TILES.SNOW;
     world.tiles[idc(x,y)]=t; world.zone[idc(x,y)]=0; world.growth[idc(x,y)]=0;
+    if(world.groundMicro){ fillMicroTile(x,y,t); }
     if(t===TILES.FOREST && R()<0.9) world.trees[idc(x,y)]=1+(R()<0.6?1:0);
     if(t===TILES.ROCK && R()<0.7) world.rocks[idc(x,y)]=1+(R()<0.5?1:0);
     if((t===TILES.GRASS||t===TILES.FERTILE) && R()<0.14) world.berries[idc(x,y)]=1;
@@ -236,6 +349,7 @@ function newWorld(seed=Date.now()|0){
   }
   addBuilding('storage',storageX,storageY,{built:1});
   villagers.length=0; for(let i=0;i<6;i++){ villagers.push(newVillager(sx+irnd(-1,1), sy+irnd(-1,1))); }
+  carveRiversMicro(seed);
   toast('New pixel map created.'); centerCamera(sx,sy); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
@@ -411,7 +525,13 @@ function zoneJobType(z){
 
 function zoneCanEverWork(z, i){
   if(z===ZONES.FARM){
-    return world.tiles[i] !== TILES.WATER;
+    if(world.tiles[i] === TILES.WATER) return false;
+    if(GROUND_SUBDIV>1 && world.groundMicro){
+      const tx = i % MAP_W;
+      const ty = (i / MAP_W) | 0;
+      if(waterFractionAtTile(tx, ty) >= WATER_BLOCK_THRESHOLD) return false;
+    }
+    return true;
   }
   if(z===ZONES.CUT){
     return world.trees[i] > 0;
@@ -991,6 +1111,7 @@ if(v.state==='chop'){
     dropItem(cx,cy,ITEM.WOOD,1);
     if(world.trees[i]===0){
       world.tiles[i]=TILES.GRASS;
+      syncMicroTileAt(cx,cy);
       markStaticDirty();
       remove = true;
     }
@@ -1008,6 +1129,7 @@ else if(v.state==='mine'){
     dropItem(cx,cy,ITEM.STONE,1);
     if(world.rocks[i]===0){
       world.tiles[i]=TILES.GRASS;
+      syncMicroTileAt(cx,cy);
       markStaticDirty();
       remove = true;
     }
@@ -1034,8 +1156,9 @@ else if(v.state==='forage'){
   v.state='idle';
 }
 else if(v.state==='sow'){
-  if(world.tiles[i]!==TILES.WATER){
+  if(waterFractionAtTile(cx,cy) < WATER_BLOCK_THRESHOLD){
     world.tiles[i]=TILES.FARMLAND;
+    syncMicroTileAt(cx,cy);
     world.growth[i]=1;
     world.zone[i]=ZONES.FARM;
     markStaticDirty();
@@ -1220,7 +1343,15 @@ else if(v.state==='rest'){
 } }
 
 /* ==================== Pathfinding ==================== */
-function passable(x,y){ const i=idx(x,y); if(i<0) return false; return WALKABLE.has(world.tiles[i]); }
+function passable(x,y){
+  const i=idx(x,y);
+  if(i<0) return false;
+  if(!WALKABLE.has(world.tiles[i])) return false;
+  if(GROUND_SUBDIV>1 && world.groundMicro){
+    if(waterFractionAtTile(x,y) >= WATER_BLOCK_THRESHOLD) return false;
+  }
+  return true;
+}
 function pathfind(sx,sy,tx,ty,limit=400){
   const tStart = PERF.log ? performance.now() : 0;
   if(sx===tx&&sy===ty){
@@ -1304,16 +1435,167 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set('aiv_px_v3_save', JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get('aiv_px_v3_save'); if(!raw) return false; const d=JSON.parse(raw); newWorld(d.seed); world.tiles=Uint8Array.from(d.tiles); world.zone=Uint8Array.from(d.zone); world.trees=Uint8Array.from(d.trees); world.rocks=Uint8Array.from(d.rocks); world.berries=Uint8Array.from(d.berries); world.growth=Uint8Array.from(d.growth); world.season=d.season; world.tSeason=d.tSeason; buildings.length=0; d.buildings.forEach(b=>{ ensureBuildingData(b); buildings.push(b); }); storageTotals=d.storageTotals||{food:0,wood:0,stone:0}; storageReserved=d.storageReserved||{food:0,wood:0,stone:0}; villagers.length=0; d.villagers.forEach(v=>{ const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0); const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal'); villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 }); }); Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
+function encodeGroundMicro(arr){
+  if(!arr || !arr.length || typeof btoa !== 'function') return '';
+  let binary='';
+  const chunk=0x8000;
+  for(let i=0;i<arr.length;i+=chunk){
+    const slice=arr.subarray(i, Math.min(i+chunk, arr.length));
+    binary+=String.fromCharCode.apply(null, slice);
+  }
+  return btoa(binary);
+}
+
+function decodeGroundMicro(str){
+  if(!str || typeof atob !== 'function') return null;
+  try {
+    const binary=atob(str);
+    const len=binary.length;
+    const out=new Uint8Array(len);
+    for(let i=0;i<len;i++){ out[i]=binary.charCodeAt(i); }
+    return out;
+  } catch(err){
+    console.warn('Failed to decode groundMicro', err);
+    return null;
+  }
+}
+
+function saveGame(){
+  const data={
+    seed:world.seed,
+    tiles:Array.from(world.tiles),
+    zone:Array.from(world.zone),
+    trees:Array.from(world.trees),
+    rocks:Array.from(world.rocks),
+    berries:Array.from(world.berries),
+    growth:Array.from(world.growth),
+    season:world.season,
+    tSeason:world.tSeason,
+    buildings,
+    storageTotals,
+    storageReserved,
+    villagers: villagers.map(v=>({
+      id:v.id,x:v.x,y:v.y,
+      h:v.hunger,e:v.energy,ha:v.happy,
+      role:v.role,cond:v.condition||'normal',
+      ss:v.starveStage||0,ns:v.nextStarveWarning||0,
+      sk:v.sickTimer||0,rc:v.recoveryTimer||0
+    }))
+  };
+  if(GROUND_SUBDIV>1 && world.groundMicro){
+    data.groundMicro={
+      version:1,
+      subdiv:GROUND_SUBDIV,
+      data:encodeGroundMicro(world.groundMicro)
+    };
+  }
+  Storage.set('aiv_px_v3_save', JSON.stringify(data));
+}
+
+function loadGame(){
+  try{
+    const raw=Storage.get('aiv_px_v3_save');
+    if(!raw) return false;
+    const d=JSON.parse(raw);
+    newWorld(d.seed);
+    world.tiles=Uint8Array.from(d.tiles);
+    world.zone=Uint8Array.from(d.zone);
+    world.trees=Uint8Array.from(d.trees);
+    world.rocks=Uint8Array.from(d.rocks);
+    world.berries=Uint8Array.from(d.berries);
+    world.growth=Uint8Array.from(d.growth);
+    world.season=d.season;
+    world.tSeason=d.tSeason;
+    buildings.length=0;
+    d.buildings.forEach(b=>{ ensureBuildingData(b); buildings.push(b); });
+    storageTotals=d.storageTotals||{food:0,wood:0,stone:0};
+    storageReserved=d.storageReserved||{food:0,wood:0,stone:0};
+    villagers.length=0;
+    d.villagers.forEach(v=>{
+      const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0);
+      const cond=v.cond|| (stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal');
+      villagers.push({ id:v.id,x:v.x,y:v.y,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 });
+    });
+    if(GROUND_SUBDIV>1){
+      const payload=d.groundMicro;
+      let decoded=null;
+      if(payload && payload.version>=1 && payload.subdiv===GROUND_SUBDIV && typeof payload.data==='string'){
+        decoded=decodeGroundMicro(payload.data);
+      }
+      if(decoded && decoded.length===MICRO_W*MICRO_H){
+        world.groundMicro=decoded;
+      } else {
+        if(!world.groundMicro || world.groundMicro.length!==MICRO_W*MICRO_H){
+          world.groundMicro=new Uint8Array(MICRO_W*MICRO_H);
+        }
+        rebuildMicroFromTiles();
+        carveRiversMicro(world.seed);
+      }
+    } else {
+      world.groundMicro=null;
+    }
+    Toast.show('Loaded.');
+    markStaticDirty();
+    return true;
+  } catch(e){
+    console.error(e);
+    return false;
+  }
+}
 
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(MAP_W*TILE, MAP_H*TILE); staticCtx=staticCanvas.getContext('2d'); staticCtx.imageSmoothingEnabled=false; } const g=staticCtx;
-  for(let y=0;y<MAP_H;y++){ for(let x=0;x<MAP_W;x++){ const i=y*MAP_W+x, t=world.tiles[i];
-    let img=Tileset.base.grass; if(t===TILES.GRASS) img=Tileset.base.grass; else if(t===TILES.FERTILE) img=Tileset.base.fertile; else if(t===TILES.SAND) img=Tileset.base.sand; else if(t===TILES.SNOW) img=Tileset.base.snow; else if(t===TILES.ROCK) img=Tileset.base.rock; else if(t===TILES.WATER) img=Tileset.base.water; else if(t===TILES.FARMLAND) img=Tileset.base.farmland; g.drawImage(img,x*TILE,y*TILE);
-  } } staticDirty=false; }
+
+function groundImageForType(t){
+  if(t===TILES.GRASS) return Tileset.base.grass;
+  if(t===TILES.FERTILE) return Tileset.base.fertile;
+  if(t===TILES.SAND) return Tileset.base.sand;
+  if(t===TILES.SNOW) return Tileset.base.snow;
+  if(t===TILES.ROCK) return Tileset.base.rock;
+  if(t===TILES.WATER) return Tileset.base.water;
+  if(t===TILES.FARMLAND) return Tileset.base.farmland;
+  return Tileset.base.grass;
+}
+
+function drawStatic(){
+  if(!staticCanvas){
+    staticCanvas=makeCanvas(MAP_W*TILE, MAP_H*TILE);
+    staticCtx=staticCanvas.getContext('2d');
+    staticCtx.imageSmoothingEnabled=false;
+  }
+  const g=staticCtx;
+  if(!world) return;
+  if(GROUND_SUBDIV===1 || !world.groundMicro){
+    for(let y=0;y<MAP_H;y++){
+      for(let x=0;x<MAP_W;x++){
+        const t=world.tiles[y*MAP_W+x];
+        g.drawImage(groundImageForType(t), x*TILE, y*TILE);
+      }
+    }
+  } else {
+    const subdiv=GROUND_SUBDIV;
+    const cell=MICRO_PX;
+    for(let ty=0; ty<MAP_H; ty++){
+      const coarseY=ty*TILE;
+      for(let sy=0; sy<subdiv; sy++){
+        const my=ty*subdiv+sy;
+        const py=coarseY + sy*cell;
+        const row=my*MICRO_W;
+        for(let tx=0; tx<MAP_W; tx++){
+          const coarseX=tx*TILE;
+          const base=row + tx*subdiv;
+          for(let sx=0; sx<subdiv; sx++){
+            const t=world.groundMicro[base+sx];
+            const px=coarseX + sx*cell;
+            g.drawImage(groundImageForType(t), 0,0,TILE,TILE, px, py, cell, cell);
+          }
+        }
+      }
+    }
+  }
+  staticDirty=false;
+}
 
 function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle='#2c6b34'; g.fillRect(10,12,12,10); g.fillStyle='#2f7f3d'; g.fillRect(12,10,8,4); }
 function drawBerry(g){ g.fillStyle='#2f6d36'; g.fillRect(8,16,16,10); g.fillStyle='#a04a5a'; g.fillRect(12,18,2,2); g.fillRect(18,20,2,2); g.fillRect(16,22,2,2); }
@@ -1326,6 +1608,47 @@ function visibleTileBounds(){
   const x1 = Math.min(MAP_W-1, Math.ceil(cam.x + wTiles));
   const y1 = Math.min(MAP_H-1, Math.ceil(cam.y + hTiles));
   return {x0, y0, x1, y1};
+}
+
+function drawMicroDebugOverlay(bounds){
+  if(!SHOW_MICRO_OVERLAY || GROUND_SUBDIV===1 || !world || !world.groundMicro) return;
+  const subdiv=GROUND_SUBDIV;
+  const pxScale=TILE * cam.z;
+  const microX0=bounds.x0 * subdiv;
+  const microY0=bounds.y0 * subdiv;
+  const microX1=(bounds.x1+1) * subdiv - 1;
+  const microY1=(bounds.y1+1) * subdiv - 1;
+  const startX=Math.floor(((microX0 / subdiv) - cam.x) * pxScale);
+  const startY=Math.floor(((microY0 / subdiv) - cam.y) * pxScale);
+  const endX=Math.floor((((microX1 + 1) / subdiv) - cam.x) * pxScale);
+  const endY=Math.floor((((microY1 + 1) / subdiv) - cam.y) * pxScale);
+  const fillSize=Math.max(1, MICRO_PX * cam.z);
+  ctx.save();
+  ctx.lineWidth=Math.max(1,0.5*cam.z);
+  ctx.strokeStyle='rgba(255,255,255,0.08)';
+  ctx.beginPath();
+  for(let mx=microX0; mx<=microX1+1; mx++){
+    const sx=Math.floor(((mx / subdiv) - cam.x) * pxScale)+0.5;
+    ctx.moveTo(sx, startY);
+    ctx.lineTo(sx, endY);
+  }
+  for(let my=microY0; my<=microY1+1; my++){
+    const sy=Math.floor(((my / subdiv) - cam.y) * pxScale)+0.5;
+    ctx.moveTo(startX, sy);
+    ctx.lineTo(endX, sy);
+  }
+  ctx.stroke();
+  ctx.fillStyle='rgba(70,140,220,0.25)';
+  for(let my=microY0; my<=microY1; my++){
+    const row=my*MICRO_W;
+    const sy=Math.floor(((my / subdiv) - cam.y) * pxScale);
+    for(let mx=microX0; mx<=microX1; mx++){
+      if(world.groundMicro[row+mx]!==TILES.WATER) continue;
+      const sx=Math.floor(((mx / subdiv) - cam.x) * pxScale);
+      ctx.fillRect(sx, sy, fillSize, fillSize);
+    }
+  }
+  ctx.restore();
 }
 
 function render(){
@@ -1348,12 +1671,43 @@ function render(){
   // animated water overlay
   const frames = Tileset.waterOverlay || [];
   if(frames.length){
-    const frame = Math.floor((tick/10)%frames.length);
-    for(let y=y0;y<=y1;y++){ for(let x=x0;x<=x1;x++){ const i=y*MAP_W+x; if(world.tiles[i]===TILES.WATER){
-      const px = (x - cam.x) * TILE * cam.z;
-      const py = (y - cam.y) * TILE * cam.z;
-      ctx.drawImage(frames[frame], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
-    } } }
+    const frameIdx = Math.floor((tick/10)%frames.length);
+    const frameImg = frames[frameIdx];
+    if(GROUND_SUBDIV===1 || !world.groundMicro){
+      for(let y=y0;y<=y1;y++){
+        for(let x=x0;x<=x1;x++){
+          const i=y*MAP_W+x;
+          if(world.tiles[i]!==TILES.WATER) continue;
+          const px = (x - cam.x) * TILE * cam.z;
+          const py = (y - cam.y) * TILE * cam.z;
+          ctx.drawImage(frameImg, 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
+        }
+      }
+    } else {
+      const subdiv=GROUND_SUBDIV;
+      const size=Math.max(1, Math.floor(MICRO_PX * cam.z));
+      const scale=TILE * cam.z;
+      for(let ty=y0; ty<=y1; ty++){
+        for(let tx=x0; tx<=x1; tx++){
+          const coarseIdx=ty*MAP_W+tx;
+          const coarseType=world.tiles[coarseIdx];
+          if(coarseType!==TILES.WATER && waterFractionAtTile(tx,ty)<=0) continue;
+          const microYBase=ty*subdiv;
+          const microXBase=tx*subdiv;
+          for(let sy=0; sy<subdiv; sy++){
+            const my=microYBase+sy;
+            const row=my*MICRO_W+microXBase;
+            const py=Math.floor(((my / subdiv) - cam.y) * scale);
+            for(let sx=0; sx<subdiv; sx++){
+              if(world.groundMicro[row+sx]!==TILES.WATER) continue;
+              const mx=microXBase+sx;
+              const px=Math.floor(((mx / subdiv) - cam.x) * scale);
+              ctx.drawImage(frameImg, 0,0,TILE,TILE, px, py, size, size);
+            }
+          }
+        }
+      }
+    }
   }
 
   const activeZoneJobs={ sow:new Set(), chop:new Set(), mine:new Set() };
@@ -1440,6 +1794,8 @@ function render(){
       }
     }
   }
+
+  drawMicroDebugOverlay(vis);
 
   // day/night tint (screen space)
   const t=dayTime/DAY_LEN; let night=(Math.cos((t*2*Math.PI))+1)/2; ctx.fillStyle=`rgba(10,18,30, ${0.25*night})`; ctx.fillRect(0,0,W,H);
