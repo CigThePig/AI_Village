@@ -19,6 +19,13 @@ export function setShadingParams(params = {}) {
   return setShadingParamsImpl(params);
 }
 
+if (typeof globalThis !== 'undefined') {
+  // Provide provisional globals so the debug overlay can bind immediately.
+  globalThis.setShadingMode = setShadingMode;
+  globalThis.setShadingParams = setShadingParams;
+  globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
+}
+
 export function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
   const size = w * h;
   const shade = new Float32Array(size);
@@ -475,10 +482,10 @@ function applyShadingParams({ ambient, intensity } = {}) {
 setShadingModeImpl = applyShadingMode;
 setShadingParamsImpl = applyShadingParams;
 
-if (typeof window !== 'undefined') {
-  window.setShadingMode = setShadingMode;
-  window.setShadingParams = setShadingParams;
-  window.SHADING_DEFAULTS = SHADING_DEFAULTS;
+if (typeof globalThis !== 'undefined') {
+  globalThis.setShadingMode = applyShadingMode;
+  globalThis.setShadingParams = applyShadingParams;
+  globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
 }
 const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
