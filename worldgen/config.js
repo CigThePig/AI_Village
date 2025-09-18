@@ -32,5 +32,6 @@ export const WORLDGEN_DEFAULTS = {
 export const SHADING_DEFAULTS = {
   mode: 'hillshade',
   ambient: 0.78,
-  intensity: 0.22
+  intensity: 0.22,
+  slopeScale: 4
 };

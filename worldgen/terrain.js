@@ -1141,6 +1141,9 @@ export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
 
   const ambient = clamp(typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient, 0, 1);
   const intensity = clamp(typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity, 0, 1);
+  let slopeScale = Number.isFinite(cfg?.slopeScale) ? cfg.slopeScale : SHADING_DEFAULTS.slopeScale;
+  if (!Number.isFinite(slopeScale)) slopeScale = 1;
+  if (slopeScale < 0.1) slopeScale = 0.1;
   shade.fill(ambient);
 
   if (w < 3 || h < 3) {
@@ -1155,7 +1158,7 @@ export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
   ly /= ln;
   lz /= ln;
 
-  const normalZ = 4;
+  const normalZ = 1;
 
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
@@ -1171,8 +1174,8 @@ export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
       const h21 = height[south];
       const h22 = height[south + 1];
 
-      const gx = (h02 + 2 * h12 + h22) - (h00 + 2 * h10 + h20);
-      const gy = (h20 + 2 * h21 + h22) - (h00 + 2 * h01 + h02);
+      const gx = ((h02 + 2 * h12 + h22) - (h00 + 2 * h10 + h20)) * slopeScale;
+      const gy = ((h20 + 2 * h21 + h22) - (h00 + 2 * h01 + h02)) * slopeScale;
 
       let nx = -gx;
       let ny = -gy;
