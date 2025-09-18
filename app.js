@@ -467,12 +467,15 @@ function applyShadingMode(mode) {
   markStaticDirty();
 }
 
-function applyShadingParams({ ambient, intensity } = {}) {
+function applyShadingParams({ ambient, intensity, slopeScale } = {}) {
   if (typeof ambient === 'number' && Number.isFinite(ambient)) {
     SHADING_DEFAULTS.ambient = clamp(ambient, 0, 1);
   }
   if (typeof intensity === 'number' && Number.isFinite(intensity)) {
     SHADING_DEFAULTS.intensity = clamp(intensity, 0, 1);
+  }
+  if (typeof slopeScale === 'number' && Number.isFinite(slopeScale)) {
+    SHADING_DEFAULTS.slopeScale = clamp(slopeScale, 0.1, 16);
   }
   if (!world || !world.aux || !world.aux.height) return;
   if (SHADING_DEFAULTS.mode === 'off') return;

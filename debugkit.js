@@ -503,6 +503,14 @@
     intensityInput,
     intensityValue
   ]);
+  const slopeInput = el('input', { type: 'range', min: '0.10', max: '16', step: '0.05' });
+  slopeInput.classList.add('dbg-shade-slider');
+  const slopeValue = el('span', { className: 'dbg-shade-value', text: '--' });
+  const slopeLabel = el('label', { className: 'dbg-shade-control', title: 'Slope influence' }, [
+    'Slope',
+    slopeInput,
+    slopeValue
+  ]);
   const shadingStateLabel = el('span', { className: 'dbg-shade-state', text: 'Shade: loading…' });
   const perfBtn = el('button', null, 'Perf');
   const connBtn = el('button', null, 'Conn');
@@ -538,6 +546,7 @@
     shadingSelect,
     ambientLabel,
     intensityLabel,
+    slopeLabel,
     shadingStateLabel,
     fpsLabel,
     netLabel,
@@ -573,6 +582,13 @@
     return value;
   }
 
+  function clampSlopeScale(value) {
+    if (!Number.isFinite(value)) {
+      return 1;
+    }
+    return clamp(value, 0.1, 16);
+  }
+
   function normalizeShadeModeValue(value) {
     const lower = value == null ? '' : String(value).toLowerCase();
     if (lower === 'off' || lower === 'altitude' || lower === 'hillshade') {
@@ -593,12 +609,17 @@
     return {
       mode: normalizeShadeModeValue(defaults.mode),
       ambient: clampShadeUnit(Number(defaults.ambient)),
-      intensity: clampShadeUnit(Number(defaults.intensity))
+      intensity: clampShadeUnit(Number(defaults.intensity)),
+      slopeScale: clampSlopeScale(Number(defaults.slopeScale))
     };
   }
 
   function formatShadeValue(value) {
     return clampShadeUnit(value).toFixed(2);
+  }
+
+  function formatSlopeValue(value) {
+    return clampSlopeScale(value).toFixed(2);
   }
 
   function syncShadingControls() {
@@ -607,10 +628,13 @@
     shadingSelect.disabled = !available;
     ambientInput.disabled = !available;
     intensityInput.disabled = !available;
+    slopeInput.disabled = !available;
     if (!available) {
       shadingSelect.value = 'off';
       ambientValue.textContent = '--';
       intensityValue.textContent = '--';
+      slopeInput.value = '1';
+      slopeValue.textContent = '--';
       shadingStateLabel.textContent = 'Shade: loading…';
       return;
     }
@@ -619,8 +643,11 @@
     intensityInput.value = formatShadeValue(state.intensity);
     ambientValue.textContent = formatShadeValue(state.ambient);
     intensityValue.textContent = formatShadeValue(state.intensity);
+    const slope = clampSlopeScale(state.slopeScale);
+    slopeInput.value = String(slope);
+    slopeValue.textContent = formatSlopeValue(slope);
     const label = state.mode === 'hillshade' ? 'Hillshade' : state.mode === 'altitude' ? 'Altitude' : 'Off';
-    shadingStateLabel.textContent = `Shade: ${label} a=${formatShadeValue(state.ambient)} i=${formatShadeValue(state.intensity)}`;
+    shadingStateLabel.textContent = `Shade: ${label} a=${formatShadeValue(state.ambient)} i=${formatShadeValue(state.intensity)} s=${formatSlopeValue(slope)}`;
   }
 
   function ensureShadingMonitoring() {
@@ -868,6 +895,15 @@
     intensityValue.textContent = formatShadeValue(value);
     if (shadingAPIAvailable()) {
       win.setShadingParams({ intensity: value });
+    }
+    syncShadingControls();
+  });
+
+  slopeInput.addEventListener('input', () => {
+    const value = clampSlopeScale(parseFloat(slopeInput.value));
+    slopeValue.textContent = formatSlopeValue(value);
+    if (shadingAPIAvailable()) {
+      win.setShadingParams({ slopeScale: value });
     }
     syncShadingControls();
   });
