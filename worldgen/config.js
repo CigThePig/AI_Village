@@ -28,3 +28,12 @@ export const WORLDGEN_DEFAULTS = {
     clusterRadius: 4
   }
 };
+
+export const SHADING_DEFAULTS = {
+  enabled: true,
+  lightDir: [-1, -1],   // sun from NW (x,y); z inferred
+  intensity: 0.12,      // max ± brightness change (0.08–0.12 recommended)
+  ambient: 0.78,        // base light level (0..1)
+  gamma: 1.0,           // 1.0 = linear; 0.9 softens contrast
+  method: 'sobel'       // 'sobel' | 'simple'
+};
