@@ -5,25 +5,26 @@ export const WORLDGEN_DEFAULTS = {
   water: { level: 0.32, minLakeSize: 12, maxLakeSize: 220 },
   rivers: {
     count: 2,
-    sourceMin: 0.68,
+    sourceMin: 0.66,
     sourceSpacing: 24,
-    widenFlow: [12, 28],
-    maxWidth: 4
+    accumThreshold: 15,
+    meanderJitter: 0.20,
+    smoothIterations: 2,
+    maxWidth: 5,
+    widenK: 0.45
   },
-  ratiosTarget: {
-    grass:  [0.55, 0.70],
-    forest: [0.15, 0.30],
-    water:  [0.08, 0.15],
-    rock:   [0.05, 0.12]
+  rock: {
+    targetRatio: 0.06,
+    pOnRock: 0.70,
+    blobChance: 0.30,
+    ensureMinDeposits: 120
   },
-  biomes: {
-    hSnow: 0.82,
-    hRock: 0.70,
-    sRock: 0.07,
-    mFertile: 0.63,
-    mForest: 0.55,
-    mSand: 0.35
-  },
-  forests: { clusterSpacing: 9, clusterRadius: 7 },
-  spawn:   { radius: 4 }
+  fertile: {
+    areaMin: 4,
+    areaMax: 50,
+    edgeFeather: 1,
+    berryBaseP: 0.06,
+    clusterCentersPer1k: 2.0,
+    clusterRadius: 4
+  }
 };

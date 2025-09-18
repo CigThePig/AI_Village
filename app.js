@@ -130,9 +130,19 @@ const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
 const SAVE_VERSION = 2;
 const COARSE_SAVE_SIZE = 96;
-const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7 };
+const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
-const WALKABLE = new Set([TILES.GRASS, TILES.FOREST, TILES.ROCK, TILES.FERTILE, TILES.FARMLAND, TILES.SAND, TILES.SNOW]);
+const WALKABLE = new Set([
+  TILES.GRASS,
+  TILES.FOREST,
+  TILES.ROCK,
+  TILES.FERTILE,
+  TILES.FARMLAND,
+  TILES.SAND,
+  TILES.SNOW,
+  TILES.MEADOW,
+  TILES.MARSH
+]);
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
@@ -280,8 +290,65 @@ function px(g,x,y,c){ g.fillStyle=c; g.fillRect(x,y,1,1); }
 function rect(g,x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
 function makeSprite(w,h,drawFn){ const c=makeCanvas(w,h), g=context2d(c); drawFn(g); return c; }
 
-function makeGrass(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#245a2f'); for(let i=0;i<40;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), (i%3===0)?'#2f7d3d':(i%2===0?'#2a6b37':'#2a5f34')); } g.globalAlpha=0.25; rect(g,0,TILE-5,TILE,5,'#1a3e22'); g.globalAlpha=1; return c; }
-function makeFertile(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#3c2a1e'); g.globalAlpha=0.2; for(let y=4;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#2a1d15'); } g.globalAlpha=1; return c; }
+function makeGrassVariant({ base, blades, shadow, overlay, extras }){
+  const c=makeCanvas(TILE,TILE), g=context2d(c);
+  rect(g,0,0,TILE,TILE,base);
+  for(let i=0;i<40;i++){
+    const color=blades[i % blades.length];
+    px(g,irnd(0,TILE-1),irnd(0,TILE-1),color);
+  }
+  if(shadow){ g.globalAlpha=0.25; rect(g,0,TILE-5,TILE,5,shadow); g.globalAlpha=1; }
+  if(overlay){ const oa=(typeof overlay.alpha==='number')?overlay.alpha:1; g.globalAlpha=oa; rect(g,0,0,TILE,TILE,overlay.color); g.globalAlpha=1; }
+  if(typeof extras==='function') extras(g);
+  return c;
+}
+function makeGrass(){
+  return makeGrassVariant({
+    base:'#245a2f',
+    blades:['#2f7d3d','#2a6b37','#2a5f34'],
+    shadow:'#1a3e22'
+  });
+}
+function makeFertile(){
+  return makeGrassVariant({
+    base:'#276b33',
+    blades:['#358845','#2f7d3d','#2c7036'],
+    shadow:'#1a3e22',
+    overlay:{ color:'rgba(140,220,145,0.18)', alpha:1 }
+  });
+}
+function makeMeadow(){
+  return makeGrassVariant({
+    base:'#276f39',
+    blades:['#348846','#2f7d3d','#2d7137'],
+    shadow:'#1a3e22',
+    overlay:{ color:'rgba(200,255,200,0.1)', alpha:1 },
+    extras:(g)=>{
+      const flowers=['#f4f0c0','#f7b4d4','#d5f5ff'];
+      g.globalAlpha=0.85;
+      for(let i=0;i<6;i++){
+        px(g,irnd(0,TILE-1),irnd(0,TILE-1),flowers[i%flowers.length]);
+      }
+      g.globalAlpha=1;
+    }
+  });
+}
+function makeMarsh(){
+  return makeGrassVariant({
+    base:'#1f4e32',
+    blades:['#2d6a45','#245b3a','#27543a'],
+    shadow:'#163724',
+    overlay:{ color:'rgba(20,40,35,0.22)', alpha:1 },
+    extras:(g)=>{
+      const puddles=['#3a6b63','#2f5550'];
+      g.globalAlpha=0.35;
+      for(let i=0;i<5;i++){
+        px(g,irnd(0,TILE-1),irnd(0,TILE-1),puddles[i%puddles.length]);
+      }
+      g.globalAlpha=1;
+    }
+  });
+}
 function makeSand(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#b99a52'); for(let i=0;i<28;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#c7ad69':'#a78848'); } return c; }
 function makeSnow(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#d7e6f8'); for(let i=0;i<24;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), '#c9d7ea'); } rect(g,0,TILE-4,TILE,4,'#c0d0e8'); return c; }
 function makeRock(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#59616c'); for(let i=0;i<30;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#8f99a5':'#6c757f'); } rect(g,0,TILE-5,TILE,5,'#4a525b'); return c; }
@@ -305,6 +372,8 @@ function makeVillagerFrames(){ function role(shirt,hat){ const frames=[]; for(le
 function buildTileset(){
   try { Tileset.base.grass = makeGrass(); } catch(e){ console.warn('grass', e); }
   try { Tileset.base.fertile = makeFertile(); } catch(e){ console.warn('fertile', e); }
+  try { Tileset.base.meadow = makeMeadow(); } catch(e){ console.warn('meadow', e); }
+  try { Tileset.base.marsh = makeMarsh(); } catch(e){ console.warn('marsh', e); }
   try { Tileset.base.sand = makeSand(); } catch(e){ console.warn('sand', e); }
   try { Tileset.base.snow = makeSnow(); } catch(e){ console.warn('snow', e); }
   try { Tileset.base.rock = makeRock(); } catch(e){ console.warn('rock', e); }
@@ -1778,7 +1847,17 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
     let rowHasWater=0;
     const rowStart=y*GRID_W;
     for(let x=0;x<GRID_W;x++){ const i=rowStart+x, t=world.tiles[i];
-      let img=Tileset.base.grass; if(t===TILES.GRASS) img=Tileset.base.grass; else if(t===TILES.FERTILE) img=Tileset.base.fertile; else if(t===TILES.SAND) img=Tileset.base.sand; else if(t===TILES.SNOW) img=Tileset.base.snow; else if(t===TILES.ROCK) img=Tileset.base.rock; else if(t===TILES.WATER) img=Tileset.base.water; else if(t===TILES.FARMLAND) img=Tileset.base.farmland; g.drawImage(img,x*TILE,y*TILE);
+      let img=Tileset.base.grass;
+      if(t===TILES.GRASS) img=Tileset.base.grass;
+      else if(t===TILES.FERTILE) img=Tileset.base.fertile;
+      else if(t===TILES.MEADOW) img=Tileset.base.meadow;
+      else if(t===TILES.MARSH) img=Tileset.base.marsh;
+      else if(t===TILES.SAND) img=Tileset.base.sand;
+      else if(t===TILES.SNOW) img=Tileset.base.snow;
+      else if(t===TILES.ROCK) img=Tileset.base.rock;
+      else if(t===TILES.WATER) img=Tileset.base.water;
+      else if(t===TILES.FARMLAND) img=Tileset.base.farmland;
+      g.drawImage(img,x*TILE,y*TILE);
       if(t===TILES.WATER) rowHasWater=1;
     }
     waterRowMask[y]=rowHasWater;
