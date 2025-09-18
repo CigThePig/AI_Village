@@ -1,6 +1,46 @@
 import { generateTerrain, makeHillshade } from './worldgen/terrain.js';
 import { WORLDGEN_DEFAULTS, SHADING_DEFAULTS } from './worldgen/config.js';
 
+let setShadingModeImpl = () => {};
+let setShadingParamsImpl = () => {};
+
+const clamp01 = (value) => {
+  if (!Number.isFinite(value)) {
+    return value > 0 ? 1 : 0;
+  }
+  return value <= 0 ? 0 : value >= 1 ? 1 : value;
+};
+
+export function setShadingMode(mode) {
+  return setShadingModeImpl(mode);
+}
+
+export function setShadingParams(params = {}) {
+  return setShadingParamsImpl(params);
+}
+
+export function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
+  const size = w * h;
+  const shade = new Float32Array(size);
+  if (!height || height.length !== size || size === 0) {
+    return shade;
+  }
+  const ambient = clamp01(typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient);
+  const intensity = clamp01(typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity);
+  shade.fill(ambient);
+  const span = intensity * 2;
+  if (span === 0) {
+    return shade;
+  }
+  const min = ambient - intensity;
+  for (let i = 0; i < size; i++) {
+    const hVal = clamp01(height[i]);
+    const lit = clamp01(min + span * hVal);
+    shade[i] = lit;
+  }
+  return shade;
+}
+
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
 (function(){
@@ -396,6 +436,50 @@ function buildTileset(){
 /* ==================== World State ==================== */
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
+
+function normalizeShadingMode(mode) {
+  if (mode === 'off' || mode === 'altitude') return mode;
+  return 'hillshade';
+}
+
+function computeShadeForMode(mode, height) {
+  const nextMode = normalizeShadingMode(mode);
+  if (!height || height.length !== GRID_SIZE) return null;
+  if (nextMode === 'off') return null;
+  if (nextMode === 'altitude') {
+    return makeAltitudeShade(height, GRID_W, GRID_H, SHADING_DEFAULTS);
+  }
+  return makeHillshade(height, GRID_W, GRID_H, SHADING_DEFAULTS);
+}
+
+function applyShadingMode(mode) {
+  const nextMode = normalizeShadingMode(mode);
+  SHADING_DEFAULTS.mode = nextMode;
+  if (!world || !world.aux || !world.aux.height) return;
+  world.hillshade = computeShadeForMode(nextMode, world.aux.height);
+  markStaticDirty();
+}
+
+function applyShadingParams({ ambient, intensity } = {}) {
+  if (typeof ambient === 'number' && Number.isFinite(ambient)) {
+    SHADING_DEFAULTS.ambient = clamp(ambient, 0, 1);
+  }
+  if (typeof intensity === 'number' && Number.isFinite(intensity)) {
+    SHADING_DEFAULTS.intensity = clamp(intensity, 0, 1);
+  }
+  if (!world || !world.aux || !world.aux.height) return;
+  if (SHADING_DEFAULTS.mode === 'off') return;
+  applyShadingMode(SHADING_DEFAULTS.mode);
+}
+
+setShadingModeImpl = applyShadingMode;
+setShadingParamsImpl = applyShadingParams;
+
+if (typeof window !== 'undefined') {
+  window.setShadingMode = setShadingMode;
+  window.setShadingParams = setShadingParams;
+  window.SHADING_DEFAULTS = SHADING_DEFAULTS;
+}
 const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
@@ -442,9 +526,9 @@ function newWorld(seed=Date.now()|0){
   tick=0; dayTime=0;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
   const aux = terrain.aux || {};
-  const hillshade = (SHADING_DEFAULTS.enabled && aux.height && aux.height.length === GRID_SIZE)
-    ? makeHillshade(aux.height, GRID_W, GRID_H, SHADING_DEFAULTS)
-    : null;
+  const mode = normalizeShadingMode(SHADING_DEFAULTS.mode);
+  SHADING_DEFAULTS.mode = mode;
+  const hillshade = computeShadeForMode(mode, aux.height);
   world={
     seed,
     tiles:terrain.tiles,
@@ -1868,7 +1952,7 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
     }
     waterRowMask[y]=rowHasWater;
   }
-  const shade = (SHADING_DEFAULTS.enabled && world.hillshade && world.hillshade.length===GRID_SIZE) ? world.hillshade : null;
+  const shade = (world.hillshade && world.hillshade.length === GRID_SIZE) ? world.hillshade : null;
   if(shade){
     const ctx=staticCtx;
     const img=ctx.getImageData(0,0, staticCanvas.width, staticCanvas.height);

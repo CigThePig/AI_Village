@@ -1135,72 +1135,75 @@ function countOnes(mask) {
 export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
   const size = w * h;
   const shade = new Float32Array(size);
-  if (!height || height.length !== size) {
+  if (!height || height.length !== size || size === 0) {
     return shade;
   }
 
-  const gx = new Float32Array(size);
-  const gy = new Float32Array(size);
+  const ambient = clamp(typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient, 0, 1);
+  const intensity = clamp(typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity, 0, 1);
+  shade.fill(ambient);
 
-  const method = cfg?.method || 'sobel';
-  if (method === 'simple') {
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = y * w + x;
-        gx[i] = (height[i + 1] - height[i - 1]) * 0.5;
-        gy[i] = (height[i + w] - height[i - w]) * 0.5;
-      }
-    }
-  } else {
-    const Kx = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
-    const Ky = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-    const at = (x, y) => height[y * w + x];
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        let sx = 0, sy = 0, idx = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const v = at(x + dx, y + dy);
-            sx += v * Kx[idx];
-            sy += v * Ky[idx];
-            idx++;
-          }
-        }
-        gx[y * w + x] = sx;
-        gy[y * w + x] = sy;
-      }
-    }
+  if (w < 3 || h < 3) {
+    return shade;
   }
 
-  const lightDir = cfg?.lightDir || SHADING_DEFAULTS.lightDir;
-  let lx = lightDir[0];
-  let ly = lightDir[1];
-  const lz = 1.0;
+  let lx = -0.75;
+  let ly = -0.65;
+  let lz = 0.45;
   const ln = Math.hypot(lx, ly, lz) || 1;
   lx /= ln;
   ly /= ln;
-  const lzn = lz / ln;
+  lz /= ln;
 
-  const ambient = typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient;
-  const intensity = typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity;
-  const gamma = typeof cfg?.gamma === 'number' ? cfg.gamma : SHADING_DEFAULTS.gamma;
+  const normalZ = 4;
 
-  for (let i = 0; i < size; i++) {
-    let nx = -gx[i];
-    let ny = -gy[i];
-    let nz = 1.0;
-    const nlen = Math.hypot(nx, ny, nz);
-    if (nlen !== 0) {
-      nx /= nlen;
-      ny /= nlen;
-      nz /= nlen;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const north = i - w;
+      const south = i + w;
+      const h00 = height[north - 1];
+      const h01 = height[north];
+      const h02 = height[north + 1];
+      const h10 = height[i - 1];
+      const h12 = height[i + 1];
+      const h20 = height[south - 1];
+      const h21 = height[south];
+      const h22 = height[south + 1];
+
+      const gx = (h02 + 2 * h12 + h22) - (h00 + 2 * h10 + h20);
+      const gy = (h20 + 2 * h21 + h22) - (h00 + 2 * h01 + h02);
+
+      let nx = -gx;
+      let ny = -gy;
+      let nz = normalZ;
+      const invLen = 1 / Math.hypot(nx, ny, nz);
+      nx *= invLen;
+      ny *= invLen;
+      nz *= invLen;
+
+      let lambert = nx * lx + ny * ly + nz * lz;
+      if (lambert < -1) lambert = -1;
+      else if (lambert > 1) lambert = 1;
+      const lit = clamp(ambient + intensity * lambert, 0, 1);
+      shade[i] = lit;
     }
-    let lambert = nx * lx + ny * ly + nz * lzn;
-    let lit = ambient + intensity * lambert;
-    if (gamma !== 1.0) {
-      lit = Math.pow(Math.max(0, Math.min(1, lit)), gamma);
+  }
+
+  if (h > 1) {
+    for (let x = 0; x < w; x++) {
+      shade[x] = shade[w + x];
+      const lastRow = (h - 1) * w;
+      shade[lastRow + x] = shade[lastRow - w + x];
     }
-    shade[i] = Math.max(0, Math.min(1, lit));
+  }
+
+  if (w > 1) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      shade[row] = shade[row + 1];
+      shade[row + w - 1] = shade[row + w - 2];
+    }
   }
 
   return shade;
