@@ -1,5 +1,5 @@
-import { generateTerrain } from './worldgen/terrain.js';
-import { WORLDGEN_DEFAULTS } from './worldgen/config.js';
+import { generateTerrain, makeHillshade } from './worldgen/terrain.js';
+import { WORLDGEN_DEFAULTS, SHADING_DEFAULTS } from './worldgen/config.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
@@ -441,6 +441,10 @@ function newWorld(seed=Date.now()|0){
   storageReserved={food:0, wood:0, stone:0};
   tick=0; dayTime=0;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
+  const aux = terrain.aux || {};
+  const hillshade = (SHADING_DEFAULTS.enabled && aux.height && aux.height.length === GRID_SIZE)
+    ? makeHillshade(aux.height, GRID_W, GRID_H, SHADING_DEFAULTS)
+    : null;
   world={
     seed,
     tiles:terrain.tiles,
@@ -450,7 +454,9 @@ function newWorld(seed=Date.now()|0){
     berries:terrain.berries,
     growth:new Uint8Array(GRID_SIZE),
     season:0,
-    tSeason:0
+    tSeason:0,
+    aux,
+    hillshade
   };
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
@@ -1842,7 +1848,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
 /* ==================== Rendering ==================== */
 let staticCanvas=null, staticCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticCtx=context2d(staticCanvas); } const g=staticCtx; ensureRowMasksSize();
+function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticCtx=context2d(staticCanvas); } if(!world) return; const g=staticCtx; ensureRowMasksSize();
   for(let y=0;y<GRID_H;y++){
     let rowHasWater=0;
     const rowStart=y*GRID_W;
@@ -1861,6 +1867,35 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
       if(t===TILES.WATER) rowHasWater=1;
     }
     waterRowMask[y]=rowHasWater;
+  }
+  const shade = (SHADING_DEFAULTS.enabled && world.hillshade && world.hillshade.length===GRID_SIZE) ? world.hillshade : null;
+  if(shade){
+    const ctx=staticCtx;
+    const img=ctx.getImageData(0,0, staticCanvas.width, staticCanvas.height);
+    const data=img.data;
+    const tilePx=TILE;
+    const canvasWidth=staticCanvas.width;
+    for(let ty=0; ty<GRID_H; ty++){
+      const rowStart=ty*GRID_W;
+      const yOffset=ty*tilePx;
+      for(let tx=0; tx<GRID_W; tx++){
+        const idx=rowStart+tx;
+        if(world.tiles[idx]===TILES.WATER) continue;
+        const s=shade[idx];
+        if(s===1) continue;
+        const xOffset=tx*tilePx;
+        for(let py=0; py<tilePx; py++){
+          let off=((yOffset+py)*canvasWidth + xOffset)*4;
+          for(let px=0; px<tilePx; px++){
+            data[off+0]=(data[off+0]*s)|0;
+            data[off+1]=(data[off+1]*s)|0;
+            data[off+2]=(data[off+2]*s)|0;
+            off+=4;
+          }
+        }
+      }
+    }
+    ctx.putImageData(img,0,0);
   }
   staticDirty=false; }
 

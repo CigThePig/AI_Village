@@ -1,4 +1,5 @@
 import { makeNoise2D, mulberry32 } from './noise.js';
+import { SHADING_DEFAULTS } from './config.js';
 
 const TILES = {
   GRASS: 0,
@@ -1129,6 +1130,80 @@ function countOnes(mask) {
   let total = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i]) total++;
   return total;
+}
+
+export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
+  const size = w * h;
+  const shade = new Float32Array(size);
+  if (!height || height.length !== size) {
+    return shade;
+  }
+
+  const gx = new Float32Array(size);
+  const gy = new Float32Array(size);
+
+  const method = cfg?.method || 'sobel';
+  if (method === 'simple') {
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        gx[i] = (height[i + 1] - height[i - 1]) * 0.5;
+        gy[i] = (height[i + w] - height[i - w]) * 0.5;
+      }
+    }
+  } else {
+    const Kx = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const Ky = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+    const at = (x, y) => height[y * w + x];
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        let sx = 0, sy = 0, idx = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const v = at(x + dx, y + dy);
+            sx += v * Kx[idx];
+            sy += v * Ky[idx];
+            idx++;
+          }
+        }
+        gx[y * w + x] = sx;
+        gy[y * w + x] = sy;
+      }
+    }
+  }
+
+  const lightDir = cfg?.lightDir || SHADING_DEFAULTS.lightDir;
+  let lx = lightDir[0];
+  let ly = lightDir[1];
+  const lz = 1.0;
+  const ln = Math.hypot(lx, ly, lz) || 1;
+  lx /= ln;
+  ly /= ln;
+  const lzn = lz / ln;
+
+  const ambient = typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient;
+  const intensity = typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity;
+  const gamma = typeof cfg?.gamma === 'number' ? cfg.gamma : SHADING_DEFAULTS.gamma;
+
+  for (let i = 0; i < size; i++) {
+    let nx = -gx[i];
+    let ny = -gy[i];
+    let nz = 1.0;
+    const nlen = Math.hypot(nx, ny, nz);
+    if (nlen !== 0) {
+      nx /= nlen;
+      ny /= nlen;
+      nz /= nlen;
+    }
+    let lambert = nx * lx + ny * ly + nz * lzn;
+    let lit = ambient + intensity * lambert;
+    if (gamma !== 1.0) {
+      lit = Math.pow(Math.max(0, Math.min(1, lit)), gamma);
+    }
+    shade[i] = Math.max(0, Math.min(1, lit));
+  }
+
+  return shade;
 }
 
 function logGenerationStats(ctx) {
