@@ -160,6 +160,31 @@
     #dbgTray label input {
       margin: 0;
     }
+    #dbgTray .dbg-shade-control {
+      flex: 0 1 auto;
+      min-width: 0;
+      gap: 6px;
+      font-size: 12px;
+    }
+    #dbgTray .dbg-shade-control input[type="range"] {
+      flex: 1 1 80px;
+      min-width: 60px;
+    }
+    #dbgTray .dbg-shade-value {
+      min-width: 40px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+      opacity: 0.75;
+    }
+    #dbgTray .dbg-shade-state {
+      font-size: 12px;
+      opacity: 0.75;
+      margin-left: 4px;
+    }
+    #dbgTray select.dbg-shade-mode {
+      flex: 0 0 auto;
+    }
     .dbg-row {
       padding: 6px 8px;
       border-left: 4px solid transparent;
@@ -457,6 +482,28 @@
     el('option', { value: 'NOTE', text: 'Notes' })
   ]);
   const searchInput = el('input', { type: 'text', placeholder: 'Search…' });
+  const shadingSelect = el('select', { className: 'dbg-shade-mode', title: 'Terrain shading mode' }, [
+    el('option', { value: 'off', text: 'Off' }),
+    el('option', { value: 'altitude', text: 'Altitude' }),
+    el('option', { value: 'hillshade', text: 'Hillshade' })
+  ]);
+  const ambientInput = el('input', { type: 'range', min: '0', max: '1', step: '0.01' });
+  ambientInput.classList.add('dbg-shade-slider');
+  const ambientValue = el('span', { className: 'dbg-shade-value', text: '--' });
+  const ambientLabel = el('label', { className: 'dbg-shade-control', title: 'Ambient light floor' }, [
+    'Ambient',
+    ambientInput,
+    ambientValue
+  ]);
+  const intensityInput = el('input', { type: 'range', min: '0', max: '1', step: '0.01' });
+  intensityInput.classList.add('dbg-shade-slider');
+  const intensityValue = el('span', { className: 'dbg-shade-value', text: '--' });
+  const intensityLabel = el('label', { className: 'dbg-shade-control', title: 'Shade contrast' }, [
+    'Intensity',
+    intensityInput,
+    intensityValue
+  ]);
+  const shadingStateLabel = el('span', { className: 'dbg-shade-state', text: 'Shade: loading…' });
   const perfBtn = el('button', null, 'Perf');
   const connBtn = el('button', null, 'Conn');
   const permsBtn = el('button', null, 'Perms');
@@ -488,6 +535,10 @@
   rowB.append(
     markBtn,
     stateBtn,
+    shadingSelect,
+    ambientLabel,
+    intensityLabel,
+    shadingStateLabel,
     fpsLabel,
     netLabel,
     filterSelect,
@@ -509,6 +560,105 @@
   tray.append(head, body);
   doc.body.appendChild(tray);
   doc.body.appendChild(pill);
+
+  let shadingHooksInstalled = false;
+  let shadingSyncInterval = null;
+
+  function clampShadeUnit(value) {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+  }
+
+  function normalizeShadeModeValue(value) {
+    const lower = value == null ? '' : String(value).toLowerCase();
+    if (lower === 'off' || lower === 'altitude' || lower === 'hillshade') {
+      return lower;
+    }
+    return 'hillshade';
+  }
+
+  function shadingAPIAvailable() {
+    return typeof win.setShadingMode === 'function' && typeof win.setShadingParams === 'function' && !!win.SHADING_DEFAULTS;
+  }
+
+  function readShadingState() {
+    if (!shadingAPIAvailable()) {
+      return null;
+    }
+    const defaults = win.SHADING_DEFAULTS || {};
+    return {
+      mode: normalizeShadeModeValue(defaults.mode),
+      ambient: clampShadeUnit(Number(defaults.ambient)),
+      intensity: clampShadeUnit(Number(defaults.intensity))
+    };
+  }
+
+  function formatShadeValue(value) {
+    return clampShadeUnit(value).toFixed(2);
+  }
+
+  function syncShadingControls() {
+    const state = readShadingState();
+    const available = !!state;
+    shadingSelect.disabled = !available;
+    ambientInput.disabled = !available;
+    intensityInput.disabled = !available;
+    if (!available) {
+      shadingSelect.value = 'off';
+      ambientValue.textContent = '--';
+      intensityValue.textContent = '--';
+      shadingStateLabel.textContent = 'Shade: loading…';
+      return;
+    }
+    shadingSelect.value = state.mode;
+    ambientInput.value = formatShadeValue(state.ambient);
+    intensityInput.value = formatShadeValue(state.intensity);
+    ambientValue.textContent = formatShadeValue(state.ambient);
+    intensityValue.textContent = formatShadeValue(state.intensity);
+    const label = state.mode === 'hillshade' ? 'Hillshade' : state.mode === 'altitude' ? 'Altitude' : 'Off';
+    shadingStateLabel.textContent = `Shade: ${label} a=${formatShadeValue(state.ambient)} i=${formatShadeValue(state.intensity)}`;
+  }
+
+  function ensureShadingMonitoring() {
+    if (!shadingAPIAvailable()) {
+      return;
+    }
+    if (!shadingHooksInstalled) {
+      const originalMode = win.setShadingMode;
+      const originalParams = win.setShadingParams;
+      win.setShadingMode = function (mode) {
+        const result = originalMode.apply(this, arguments);
+        syncShadingControls();
+        return result;
+      };
+      win.setShadingParams = function (params) {
+        const result = originalParams.apply(this, arguments);
+        syncShadingControls();
+        return result;
+      };
+      shadingHooksInstalled = true;
+    }
+    if (shadingSyncInterval == null) {
+      shadingSyncInterval = setInterval(syncShadingControls, 1000);
+    }
+    syncShadingControls();
+  }
+
+  syncShadingControls();
+  ensureShadingMonitoring();
+  const shadingReadyWatcher = setInterval(() => {
+    if (!shadingHooksInstalled) {
+      ensureShadingMonitoring();
+    }
+    if (shadingHooksInstalled) {
+      clearInterval(shadingReadyWatcher);
+    }
+  }, 500);
+  win.addEventListener('focus', syncShadingControls);
 
   function setCollapsedState(value) {
     trayCollapsed = !!value;
@@ -694,6 +844,32 @@
       pushLog(entry);
       scheduleRender();
     }
+  });
+
+  shadingSelect.addEventListener('change', () => {
+    const mode = normalizeShadeModeValue(shadingSelect.value);
+    if (shadingAPIAvailable()) {
+      win.setShadingMode(mode);
+    }
+    syncShadingControls();
+  });
+
+  ambientInput.addEventListener('input', () => {
+    const value = clampShadeUnit(parseFloat(ambientInput.value));
+    ambientValue.textContent = formatShadeValue(value);
+    if (shadingAPIAvailable()) {
+      win.setShadingParams({ ambient: value });
+    }
+    syncShadingControls();
+  });
+
+  intensityInput.addEventListener('input', () => {
+    const value = clampShadeUnit(parseFloat(intensityInput.value));
+    intensityValue.textContent = formatShadeValue(value);
+    if (shadingAPIAvailable()) {
+      win.setShadingParams({ intensity: value });
+    }
+    syncShadingControls();
   });
 
   markBtn.addEventListener('click', () => {
