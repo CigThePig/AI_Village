@@ -1,6 +1,6 @@
 const TAU = Math.PI * 2;
 
-function mulberry32(seed) {
+export function mulberry32(seed) {
   return function () {
     let t = seed += 0x6D2B79F5;
     t = Math.imul(t ^ t >>> 15, t | 1);
@@ -9,36 +9,27 @@ function mulberry32(seed) {
   };
 }
 
-function buildPermutation(rng) {
-  const p = new Uint8Array(256);
+function buildTables(seed) {
+  const rng = mulberry32(seed >>> 0);
+  const permBase = new Uint8Array(256);
+  const gradients = new Float32Array(512);
   for (let i = 0; i < 256; i++) {
-    p[i] = i;
+    permBase[i] = i;
+    const angle = rng() * TAU;
+    gradients[i * 2] = Math.cos(angle);
+    gradients[i * 2 + 1] = Math.sin(angle);
   }
   for (let i = 255; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
-    const tmp = p[i];
-    p[i] = p[j];
-    p[j] = tmp;
+    const tmp = permBase[i];
+    permBase[i] = permBase[j];
+    permBase[j] = tmp;
   }
   const perm = new Uint8Array(512);
   for (let i = 0; i < 512; i++) {
-    perm[i] = p[i & 255];
+    perm[i] = permBase[i & 255];
   }
-  return perm;
-}
-
-const gradients2D = new Float32Array(16);
-for (let i = 0; i < 8; i++) {
-  const angle = TAU * i / 8;
-  gradients2D[i * 2] = Math.cos(angle);
-  gradients2D[i * 2 + 1] = Math.sin(angle);
-}
-
-function grad(hash, x, y) {
-  const h = hash & 7;
-  const gx = gradients2D[h * 2];
-  const gy = gradients2D[h * 2 + 1];
-  return gx * x + gy * y;
+  return { perm, gradients };
 }
 
 function fade(t) {
@@ -46,12 +37,16 @@ function fade(t) {
 }
 
 function lerp(a, b, t) {
-  return a + t * (b - a);
+  return a + (b - a) * t;
+}
+
+function grad(hash, x, y, gradients) {
+  const idx = (hash & 255) << 1;
+  return gradients[idx] * x + gradients[idx + 1] * y;
 }
 
 export function makeNoise2D(seed) {
-  const rng = mulberry32(seed >>> 0);
-  const perm = buildPermutation(rng);
+  const { perm, gradients } = buildTables(seed >>> 0);
 
   function noise2D(x, y) {
     const X = Math.floor(x) & 255;
@@ -68,10 +63,10 @@ export function makeNoise2D(seed) {
     const ba = perm[X + 1] + Y;
     const bb = ba + 1;
 
-    const gradAA = grad(perm[aa], xf, yf);
-    const gradBA = grad(perm[ba], xf - 1, yf);
-    const gradAB = grad(perm[ab], xf, yf - 1);
-    const gradBB = grad(perm[bb], xf - 1, yf - 1);
+    const gradAA = grad(perm[aa], xf, yf, gradients);
+    const gradBA = grad(perm[ba], xf - 1, yf, gradients);
+    const gradAB = grad(perm[ab], xf, yf - 1, gradients);
+    const gradBB = grad(perm[bb], xf - 1, yf - 1, gradients);
 
     const x1 = lerp(gradAA, gradBA, u);
     const x2 = lerp(gradAB, gradBB, u);
@@ -79,8 +74,8 @@ export function makeNoise2D(seed) {
   }
 
   function fbm2D(x, y, scale, octaves, lacunarity, gain) {
-    let amplitude = 1;
     let frequency = scale;
+    let amplitude = 1;
     let sum = 0;
     let norm = 0;
     for (let i = 0; i < octaves; i++) {
@@ -95,5 +90,3 @@ export function makeNoise2D(seed) {
 
   return { noise2D, fbm2D };
 }
-
-export { mulberry32 };
