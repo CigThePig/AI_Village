@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="styles.css">
 <!-- Enable the DebugKit overlay by visiting the page with ?debug=1 or setting localStorage.debug to true. -->
 <script src="bootstrap.js" defer></script>
+<script src="worldgen/noise.js" defer></script>
+<script src="worldgen/config.js" defer></script>
+<script src="worldgen/terrain.js" defer></script>
 </head>
 <body>
 <canvas id="game"></canvas>
@@ -85,6 +88,6 @@
   <button class="btn" id="btnHelpClose">Got it</button>
 </div>
 
-<script type="module" src="app.js?v=3.1"></script>
+<script src="app.js?v=3.1" defer></script>
 </body>
 </html>
