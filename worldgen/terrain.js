@@ -1,7 +1,20 @@
-import { makeNoise2D, mulberry32 } from './noise.js';
-import { SHADING_DEFAULTS } from './config.js';
+;(function (global) {
+  'use strict';
 
-const TILES = {
+  const noiseAPI = global && global.AIV_NOISE ? global.AIV_NOISE : null;
+  const configAPI = global && global.AIV_CONFIG ? global.AIV_CONFIG : null;
+  const makeNoise2D = noiseAPI && typeof noiseAPI.makeNoise2D === 'function' ? noiseAPI.makeNoise2D : null;
+  const mulberry32 = noiseAPI && typeof noiseAPI.mulberry32 === 'function' ? noiseAPI.mulberry32 : null;
+  const SHADING_DEFAULTS = configAPI ? configAPI.SHADING_DEFAULTS : undefined;
+
+  if (typeof makeNoise2D !== 'function' || typeof mulberry32 !== 'function') {
+    throw new Error('AI Village noise module unavailable.');
+  }
+  if (!configAPI || !SHADING_DEFAULTS) {
+    throw new Error('AI Village configuration unavailable.');
+  }
+
+  const TILES = {
   GRASS: 0,
   FOREST: 1,
   ROCK: 2,
@@ -14,22 +27,22 @@ const TILES = {
   MARSH: 9
 };
 
-const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-const DIR8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const DIR8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
-let GW = 0;
-let GH = 0;
-let GS = 0;
-let baseSeed = 0;
-let RNG_RIVER = null;
-let RNG_RESOURCE = null;
-let heightField = null;
-let moistureField = null;
-let riverMeta = [];
-let riverConfig = null;
+  let GW = 0;
+  let GH = 0;
+  let GS = 0;
+  let baseSeed = 0;
+  let RNG_RIVER = null;
+  let RNG_RESOURCE = null;
+  let heightField = null;
+  let moistureField = null;
+  let riverMeta = [];
+  let riverConfig = null;
 
-const FOREST_SPACING = 9;
-const FOREST_RADIUS = 6;
+  const FOREST_SPACING = 9;
+  const FOREST_RADIUS = 6;
 
 function idx(x, y) {
   return y * GW + x;
@@ -50,7 +63,7 @@ function hash3(x, y, z) {
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
-export function generateTerrain(seed, cfg, dims) {
+function generateTerrain(seed, cfg, dims) {
   baseSeed = seed >>> 0;
   GW = dims.w | 0;
   GH = dims.h | 0;
@@ -138,7 +151,7 @@ export function generateTerrain(seed, cfg, dims) {
 
   return { tiles, trees, rocks, berries, aux };
 }
-export function makeHeightMoisture(seed, w, h, cfg) {
+function makeHeightMoisture(seed, w, h, cfg) {
   const size = w * h;
   const height = new Float32Array(size);
   const moisture = new Float32Array(size);
@@ -204,7 +217,7 @@ export function makeHeightMoisture(seed, w, h, cfg) {
   return { height, moisture };
 }
 
-export function floodFillBasins(height, threshold, minSize, maxSize, w, h) {
+function floodFillBasins(height, threshold, minSize, maxSize, w, h) {
   const size = w * h;
   const mask = new Uint8Array(size);
   const visited = new Uint8Array(size);
@@ -238,7 +251,7 @@ export function floodFillBasins(height, threshold, minSize, maxSize, w, h) {
   return mask;
 }
 
-export function computeSlope(height, w, h) {
+function computeSlope(height, w, h) {
   const size = w * h;
   const slope = new Float32Array(size);
   for (let y = 0; y < h; y++) {
@@ -263,7 +276,7 @@ export function computeSlope(height, w, h) {
   return slope;
 }
 
-export function flowDirAndAccum(height, w, h) {
+function flowDirAndAccum(height, w, h) {
   const size = w * h;
   const dir = new Uint8Array(size);
   dir.fill(255);
@@ -350,7 +363,7 @@ function chooseDownstream(startIdx, x, y, visited, cfg, w, h) {
   }
   return bestIdx;
 }
-export function extractRivers(dir, accum, lakeMask, cfg, w, h) {
+function extractRivers(dir, accum, lakeMask, cfg, w, h) {
   const size = w * h;
   const order = new Array(size);
   for (let i = 0; i < size; i++) order[i] = i;
@@ -498,7 +511,7 @@ function traceRiver(source, dir, accum, lakeMask, cfg, w, h, networkMask, exitKi
   return { indices: trimmedIdx, coords: trimmedCoords, exit };
 }
 
-export function smoothChaikin(points, iterations) {
+function smoothChaikin(points, iterations) {
   let pts = points.map(p => [p[0], p[1]]);
   for (let iter = 0; iter < iterations; iter++) {
     if (pts.length < 2) break;
@@ -517,7 +530,7 @@ export function smoothChaikin(points, iterations) {
   return pts;
 }
 
-export function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
+function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
   const riverMask = new Uint8Array(w * h);
   const widthCache = new Uint8Array(w * h);
 
@@ -565,7 +578,7 @@ export function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
 
   return { riverMask };
 }
-export function assignBaseBiomes(tiles, height, moisture, slope, masks, cfg, w, h) {
+function assignBaseBiomes(tiles, height, moisture, slope, masks, cfg, w, h) {
   const size = w * h;
   const shoreline = masks.shoreline;
 
@@ -633,7 +646,7 @@ export function assignBaseBiomes(tiles, height, moisture, slope, masks, cfg, w, 
   }
 }
 
-export function shapeFertilePatches(tiles, cfg, w, h) {
+function shapeFertilePatches(tiles, cfg, w, h) {
   const size = w * h;
   const visited = new Uint8Array(size);
   const queue = new Int32Array(size);
@@ -737,7 +750,7 @@ export function shapeFertilePatches(tiles, cfg, w, h) {
   if (stats.count > 0) stats.avg = stats.total / stats.count;
   return stats;
 }
-export function poissonCenters(maskFn, spacing, seed) {
+function poissonCenters(maskFn, spacing, seed) {
   const result = [];
   const indices = new Array(GS);
   for (let i = 0; i < GS; i++) indices[i] = i;
@@ -767,7 +780,7 @@ export function poissonCenters(maskFn, spacing, seed) {
   return result;
 }
 
-export function growForestBlobs(tiles, moisture, centers, cfg, w, h) {
+function growForestBlobs(tiles, moisture, centers, cfg, w, h) {
   const size = w * h;
   const intensity = new Float32Array(size);
   const radius = cfg.radius || 6;
@@ -803,7 +816,7 @@ export function growForestBlobs(tiles, moisture, centers, cfg, w, h) {
 
   return intensity;
 }
-export function placeTrees(trees, tiles, intensity, w, h) {
+function placeTrees(trees, tiles, intensity, w, h) {
   const size = w * h;
   const edgeStrength = new Float32Array(size);
 
@@ -840,7 +853,7 @@ export function placeTrees(trees, tiles, intensity, w, h) {
   }
 }
 
-export function ensureRockRatioAndPlaceDeposits(tiles, slope, rocks, cfg, w, h) {
+function ensureRockRatioAndPlaceDeposits(tiles, slope, rocks, cfg, w, h) {
   const size = w * h;
   const rockTiles = [];
   for (let i = 0; i < size; i++) {
@@ -892,7 +905,7 @@ export function ensureRockRatioAndPlaceDeposits(tiles, slope, rocks, cfg, w, h) 
   return placed;
 }
 
-export function placeBerryClusters(tiles, berries, fertileCfg, w, h) {
+function placeBerryClusters(tiles, berries, fertileCfg, w, h) {
   const size = w * h;
   berries.fill(0);
   const radius = fertileCfg.clusterRadius | 0;
@@ -984,7 +997,7 @@ export function placeBerryClusters(tiles, berries, fertileCfg, w, h) {
   return berryTiles;
 }
 
-export function clearSpawnArea(tiles, trees, rocks, berries, cx, cy, r) {
+function clearSpawnArea(tiles, trees, rocks, berries, cx, cy, r) {
   const radiusSq = r * r;
   for (let y = cy - r; y <= cy + r; y++) {
     for (let x = cx - r; x <= cx + r; x++) {
@@ -1132,7 +1145,7 @@ function countOnes(mask) {
   return total;
 }
 
-export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
+function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
   const size = w * h;
   const shade = new Float32Array(size);
   if (!height || height.length !== size || size === 0) {
@@ -1260,3 +1273,28 @@ function logGenerationStats(ctx) {
     generationMs: Number(duration.toFixed(2))
   });
 }
+
+  const terrainAPI = {
+    generateTerrain,
+    makeHeightMoisture,
+    floodFillBasins,
+    computeSlope,
+    flowDirAndAccum,
+    extractRivers,
+    smoothChaikin,
+    rasterizeRivers,
+    assignBaseBiomes,
+    shapeFertilePatches,
+    poissonCenters,
+    growForestBlobs,
+    placeTrees,
+    ensureRockRatioAndPlaceDeposits,
+    placeBerryClusters,
+    clearSpawnArea,
+    makeHillshade
+  };
+
+  if (global && typeof global === 'object') {
+    global.AIV_TERRAIN = terrainAPI;
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));

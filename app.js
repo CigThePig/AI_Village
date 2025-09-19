@@ -1,10 +1,23 @@
-import { generateTerrain, makeHillshade } from './worldgen/terrain.js';
-import { WORLDGEN_DEFAULTS, SHADING_DEFAULTS } from './worldgen/config.js';
+const AIV_SCOPE = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this);
+const terrainAPI = AIV_SCOPE && AIV_SCOPE.AIV_TERRAIN ? AIV_SCOPE.AIV_TERRAIN : null;
+const configAPI = AIV_SCOPE && AIV_SCOPE.AIV_CONFIG ? AIV_SCOPE.AIV_CONFIG : null;
+
+const generateTerrain = terrainAPI ? terrainAPI.generateTerrain : null;
+const makeHillshade = terrainAPI ? terrainAPI.makeHillshade : null;
+const WORLDGEN_DEFAULTS = configAPI ? configAPI.WORLDGEN_DEFAULTS : undefined;
+const SHADING_DEFAULTS = configAPI ? configAPI.SHADING_DEFAULTS : undefined;
+
+if (typeof generateTerrain !== 'function' || typeof makeHillshade !== 'function') {
+  throw new Error('AI Village terrain module unavailable.');
+}
+if (!WORLDGEN_DEFAULTS || !SHADING_DEFAULTS) {
+  throw new Error('AI Village configuration unavailable.');
+}
 
 let setShadingModeImpl = () => {};
 let setShadingParamsImpl = () => {};
 
-export const LIGHTING = {
+const LIGHTING = {
   mode: 'hillshade',
   useMultiplyComposite: true,
   lightmapScale: 0.25,
@@ -23,11 +36,11 @@ const clamp01 = (value) => {
   return value <= 0 ? 0 : value >= 1 ? 1 : value;
 };
 
-export function setShadingMode(mode) {
+function setShadingMode(mode) {
   return setShadingModeImpl(mode);
 }
 
-export function setShadingParams(params = {}) {
+function setShadingParams(params = {}) {
   return setShadingParamsImpl(params);
 }
 
@@ -38,7 +51,7 @@ if (typeof globalThis !== 'undefined') {
   globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
 }
 
-export function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
+function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
   const size = w * h;
   const shade = new Float32Array(size);
   if (!height || height.length !== size || size === 0) {
@@ -783,7 +796,7 @@ if (typeof window !== 'undefined') {
   };
 }
 
-export function ambientAt(currentDayTime) {
+function ambientAt(currentDayTime) {
   const theta = (currentDayTime / DAY_LEN) * 2 * Math.PI;
   const cosv = Math.max(0, Math.cos(theta));
   const ramp = cosv * cosv;
@@ -2445,7 +2458,7 @@ function visibleTileBounds(){
   return {x0, y0, x1, y1};
 }
 
-export function buildHillshadeQ(targetWorld){
+function buildHillshadeQ(targetWorld){
   if (!targetWorld) return;
   const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
   const width = Math.max(1, (targetWorld.width|0) || GRID_W);
@@ -2497,7 +2510,7 @@ export function buildHillshadeQ(targetWorld){
   }
 }
 
-export function buildLightmap(targetWorld, ambient){
+function buildLightmap(targetWorld, ambient){
   if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return;
   const Lq = targetWorld.lightmapQ;
   const Hq = (LIGHTING.mode === 'hillshade') ? targetWorld.hillshadeQ : null;
@@ -2576,7 +2589,7 @@ export function buildLightmap(targetWorld, ambient){
   ctx.putImageData(img, 0, 0);
 }
 
-export function sampleLightAt(targetWorld, wx, wy){
+function sampleLightAt(targetWorld, wx, wy){
   if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return 1.0;
   const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
   const x = wx * scale;
@@ -2603,13 +2616,13 @@ export function sampleLightAt(targetWorld, wx, wy){
   return Math.max(0, Math.min(LIGHTING.lightCap, value));
 }
 
-export function shadeFillColorLit(rgbaString, light){
+function shadeFillColorLit(rgbaString, light){
   const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
   const normalized = L >= 1 ? 1 : L;
   return shadeFillColor(rgbaString, normalized);
 }
 
-export function applySpriteShadeLit(context, x, y, w, h, light){
+function applySpriteShadeLit(context, x, y, w, h, light){
   const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
   const normalized = L >= 1 ? 1 : L;
   return applySpriteShade(context, x, y, w, h, normalized);
@@ -3160,6 +3173,22 @@ function boot(){
     try { requestAnimationFrame(update); }
     catch (e){ reportFatal(e); }
   }
+}
+if (AIV_SCOPE && typeof AIV_SCOPE === 'object') {
+  const appApi = {
+    setShadingMode,
+    setShadingParams,
+    makeAltitudeShade,
+    ambientAt,
+    buildHillshadeQ,
+    buildLightmap,
+    sampleLightAt,
+    shadeFillColorLit,
+    applySpriteShadeLit,
+    LIGHTING
+  };
+  AIV_SCOPE.AIV_APP = Object.assign({}, AIV_SCOPE.AIV_APP || {}, appApi);
+  AIV_SCOPE.LIGHTING = LIGHTING;
 }
 boot();
 
