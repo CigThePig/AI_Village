@@ -2013,6 +2013,75 @@ function visibleTileBounds(){
   return {x0, y0, x1, y1};
 }
 
+function sampleShade(tx, ty){
+  const shadeData = (world && world.hillshade && world.hillshade.length === GRID_SIZE) ? world.hillshade : null;
+  if (!shadeData) return 1;
+  if (!Number.isFinite(tx) || !Number.isFinite(ty)) return 1;
+  const clampedX = clamp(tx, 0, GRID_W - 1);
+  const clampedY = clamp(ty, 0, GRID_H - 1);
+  const fx = Math.floor(clampedX);
+  const fy = Math.floor(clampedY);
+  const cx = Math.min(fx + 1, GRID_W - 1);
+  const cy = Math.min(fy + 1, GRID_H - 1);
+  const wx = clampedX - fx;
+  const wy = clampedY - fy;
+  const topLeft = shadeData[fy * GRID_W + fx];
+  const topRight = shadeData[fy * GRID_W + cx];
+  const bottomLeft = shadeData[cy * GRID_W + fx];
+  const bottomRight = shadeData[cy * GRID_W + cx];
+  const top = topLeft + (topRight - topLeft) * wx;
+  const bottom = bottomLeft + (bottomRight - bottomLeft) * wx;
+  return clamp01(top + (bottom - top) * wy);
+}
+
+function shadeFillColor(color, shade){
+  const normalized = clamp01(shade);
+  if (normalized >= 0.999 || typeof color !== 'string') return color;
+  if (color[0] === '#'){
+    let r, g, b;
+    if (color.length === 4){
+      r = parseInt(color[1] + color[1], 16);
+      g = parseInt(color[2] + color[2], 16);
+      b = parseInt(color[3] + color[3], 16);
+    } else if (color.length === 7){
+      r = parseInt(color.slice(1, 3), 16);
+      g = parseInt(color.slice(3, 5), 16);
+      b = parseInt(color.slice(5, 7), 16);
+    } else {
+      return color;
+    }
+    const scale = (component) => clamp(Math.round(component * normalized), 0, 255);
+    return `rgb(${scale(r)},${scale(g)},${scale(b)})`;
+  }
+  const rgbaMatch = color.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgbaMatch){
+    const parts = rgbaMatch[1].split(',').map(part => part.trim());
+    if (parts.length < 3) return color;
+    const parseComponent = (value) => {
+      const num = Number.parseFloat(value);
+      return Number.isFinite(num) ? num : 0;
+    };
+    const baseR = parseComponent(parts[0]);
+    const baseG = parseComponent(parts[1]);
+    const baseB = parseComponent(parts[2]);
+    const alpha = parts.length >= 4 ? clamp(parseComponent(parts[3]), 0, 1) : 1;
+    const scale = (component) => clamp(Math.round(clamp(component, 0, 255) * normalized), 0, 255);
+    return `rgba(${scale(baseR)},${scale(baseG)},${scale(baseB)},${alpha})`;
+  }
+  return color;
+}
+
+function applySpriteShade(context, x, y, w, h, shade){
+  const normalized = clamp01(shade);
+  const overlay = 1 - normalized;
+  if (overlay <= 0) return;
+  context.save();
+  context.globalCompositeOperation='multiply';
+  context.fillStyle=`rgba(0,0,0,${overlay})`;
+  context.fillRect(x, y, w, h);
+  context.restore();
+}
+
 function render(){
   if(staticDirty) drawStatic();
   ctx.setTransform(1,0,0,1,0,0);
@@ -2084,16 +2153,28 @@ function render(){
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
       const rect = entityDrawRect(x, y, cam);
       const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
+      const shade = sampleShade(x, y);
+      ctx.save();
       ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
+      applySpriteShade(ctx, rect.x, raisedY, rect.size, rect.size, shade);
+      ctx.restore();
     }
     if(world.berries[i]>0){
       const rect = entityDrawRect(x, y, cam);
+      const shade = sampleShade(x, y);
+      ctx.save();
       ctx.drawImage(Tileset.sprite.berry, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+      applySpriteShade(ctx, rect.x, rect.y, rect.size, rect.size, shade);
+      ctx.restore();
     }
     if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
       const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
       const rect = entityDrawRect(x, y, cam);
+      const shade = sampleShade(x, y);
+      ctx.save();
       ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+      applySpriteShade(ctx, rect.x, rect.y, rect.size, rect.size, shade);
+      ctx.restore();
     }
   } }
 
@@ -2110,13 +2191,17 @@ function render(){
   for(const it of itemsOnGround){
     const gx = tileToPxX(it.x, cam);
     const gy = tileToPxY(it.y, cam);
-    ctx.fillStyle = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+    const shade = sampleShade(it.x, it.y);
+    ctx.save();
+    const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+    ctx.fillStyle = shadeFillColor(baseColor, shade);
     const tileSize = TILE*cam.z;
     const centerX = Math.round(gx + tileSize*0.5);
     const centerY = Math.round(gy + tileSize*0.5);
     const size = Math.max(2, Math.round(4*cam.z));
     const half = Math.floor(size/2);
     ctx.fillRect(centerX-half, centerY-half, size, size);
+    ctx.restore();
   }
 
   // villagers
@@ -2169,27 +2254,75 @@ function render(){
 function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
   const fp=getFootprint(b.kind);
+  const center=buildingCenter(b);
+  const shade=sampleShade(center.x, center.y);
   const offsetX = Math.floor((ENTITY_TILE_PX - fp.w*TILE) * s * 0.5);
   const offsetY = Math.floor((ENTITY_TILE_PX - fp.h*TILE) * s * 0.5);
   gx -= offsetX;
   gy -= offsetY;
-  if(b.kind==='campfire'){ g.fillStyle='#7b8591'; g.fillRect(gx+10*s,gy+18*s,12*s,6*s); const f=(tick%6); g.fillStyle=['#ffde7a','#ffc05a','#ff9b4a'][f%3]; g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
-  } else if(b.kind==='storage'){ g.fillStyle='#6a5338'; g.fillRect(gx+6*s,gy+10*s,20*s,14*s); g.fillStyle='#8b6b44'; g.fillRect(gx+6*s,gy+20*s,20*s,2*s); g.fillStyle='#3b2b1a'; g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
-  } else if(b.kind==='hut'){ g.fillStyle='#7d5a3a'; g.fillRect(gx+8*s,gy+16*s,16*s,12*s); g.fillStyle='#caa56a'; g.fillRect(gx+6*s,gy+12*s,20*s,6*s); g.fillStyle='#31251a'; g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
-  } else if(b.kind==='farmplot'){ g.fillStyle='#4a3624'; g.fillRect(gx+4*s,gy+8*s,24*s,16*s); g.fillStyle='#3b2a1d'; g.fillRect(gx+4*s,gy+12*s,24*s,2*s); g.fillRect(gx+4*s,gy+16*s,24*s,2*s); g.fillRect(gx+4*s,gy+20*s,24*s,2*s);
-  } else if(b.kind==='well'){ g.fillStyle='#6f8696'; g.fillRect(gx+10*s,gy+14*s,12*s,10*s); g.fillStyle='#2b3744'; g.fillRect(gx+12*s,gy+18*s,8*s,6*s); g.fillStyle='#927a54'; g.fillRect(gx+8*s,gy+12*s,16*s,2*s); }
-  if(b.built<1){ g.strokeStyle='rgba(255,255,255,0.6)'; g.strokeRect(gx+4*s,gy+4*s,24*s,24*s); const p=(b.progress||0)/(BUILDINGS[b.kind].cost||1); g.fillStyle='#7cc4ff'; g.fillRect(gx+6*s,gy+28*s, Math.floor(20*p)*s, 2*s); }
+  g.save();
+  if(b.kind==='campfire'){
+    g.fillStyle=shadeFillColor('#7b8591', shade);
+    g.fillRect(gx+10*s,gy+18*s,12*s,6*s);
+    const f=(tick%6);
+    const flameColor=['#ffde7a','#ffc05a','#ff9b4a'][f%3];
+    g.fillStyle=shadeFillColor(flameColor, shade);
+    g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
+  } else if(b.kind==='storage'){
+    g.fillStyle=shadeFillColor('#6a5338', shade);
+    g.fillRect(gx+6*s,gy+10*s,20*s,14*s);
+    g.fillStyle=shadeFillColor('#8b6b44', shade);
+    g.fillRect(gx+6*s,gy+20*s,20*s,2*s);
+    g.fillStyle=shadeFillColor('#3b2b1a', shade);
+    g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
+  } else if(b.kind==='hut'){
+    g.fillStyle=shadeFillColor('#7d5a3a', shade);
+    g.fillRect(gx+8*s,gy+16*s,16*s,12*s);
+    g.fillStyle=shadeFillColor('#caa56a', shade);
+    g.fillRect(gx+6*s,gy+12*s,20*s,6*s);
+    g.fillStyle=shadeFillColor('#31251a', shade);
+    g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
+  } else if(b.kind==='farmplot'){
+    g.fillStyle=shadeFillColor('#4a3624', shade);
+    g.fillRect(gx+4*s,gy+8*s,24*s,16*s);
+    g.fillStyle=shadeFillColor('#3b2a1d', shade);
+    g.fillRect(gx+4*s,gy+12*s,24*s,2*s);
+    g.fillRect(gx+4*s,gy+16*s,24*s,2*s);
+    g.fillRect(gx+4*s,gy+20*s,24*s,2*s);
+  } else if(b.kind==='well'){
+    g.fillStyle=shadeFillColor('#6f8696', shade);
+    g.fillRect(gx+10*s,gy+14*s,12*s,10*s);
+    g.fillStyle=shadeFillColor('#2b3744', shade);
+    g.fillRect(gx+12*s,gy+18*s,8*s,6*s);
+    g.fillStyle=shadeFillColor('#927a54', shade);
+    g.fillRect(gx+8*s,gy+12*s,16*s,2*s);
+  }
+  if(b.built<1){
+    g.strokeStyle='rgba(255,255,255,0.6)';
+    g.strokeRect(gx+4*s,gy+4*s,24*s,24*s);
+    const p=(b.progress||0)/(BUILDINGS[b.kind].cost||1);
+    g.fillStyle=shadeFillColor('#7cc4ff', shade);
+    g.fillRect(gx+6*s,gy+28*s, Math.floor(20*p)*s, 2*s);
+  }
+  g.restore();
 }
 
 function drawVillager(v){
-  const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role==='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
+  const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role=='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
   const rect = entityDrawRect(v.x, v.y, cam);
   const spriteSize = 16 * s;
   const gx = Math.floor(rect.x + (rect.size - spriteSize) * 0.5);
   const gy = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
+  const shade = sampleShade(v.x, v.y);
+  ctx.save();
   ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
-  if(v.inv){ ctx.fillStyle=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a'; ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s); }
+  applySpriteShade(ctx, gx, gy, spriteSize, spriteSize, shade);
+  if(v.inv){
+    const packColor=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a';
+    ctx.fillStyle=shadeFillColor(packColor, shade);
+    ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s);
+  }
   const cond=v.condition;
   const baseCx=gx+spriteSize*0.5;
   const baseCy=gy-4*cam.z;
@@ -2205,12 +2338,12 @@ function drawVillager(v){
     const metrics=ctx.measureText(text);
     const boxW=metrics.width+6*cam.z;
     const boxH=fontSize+4*cam.z;
-    ctx.fillStyle='rgba(10,12,16,0.8)';
+    ctx.fillStyle=shadeFillColor('rgba(10,12,16,0.8)', shade);
     ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
     ctx.strokeStyle='rgba(255,255,255,0.25)';
     ctx.lineWidth=Math.max(1, Math.round(0.7*cam.z));
     ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
-    ctx.fillStyle=color;
+    ctx.fillStyle=shadeFillColor(color, shade);
     ctx.fillText(text, cx, cy+0.2*cam.z);
     ctx.restore();
     labelOffset+=boxH+2*cam.z;
@@ -2230,7 +2363,9 @@ function drawVillager(v){
   else if(mood<=0.2){ moodLabel='☹️ Miserable'; moodColor='#ff8c8c'; }
   else if(mood<=0.35){ moodLabel='😟 Low spirits'; moodColor='#f5d58b'; }
   if(moodLabel){ drawLabel(moodLabel,moodColor); }
+  ctx.restore();
 }
+
 
 /* ==================== Items & Loop ==================== */
 function dropItem(x,y,type,qty){ itemsOnGround.push({x,y,type,qty}); }
