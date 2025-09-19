@@ -319,9 +319,60 @@ function applyArrayScaled(target, source, factor, fillValue=0){
 /* ==================== Canvas & Camera ==================== */
 const canvas = document.getElementById('game');
 function context2d(canvas, opts){
-  const context = canvas.getContext('2d', opts);
+  if (!canvas || typeof canvas.getContext !== 'function'){
+    showFatalOverlay(new Error('Unable to access a 2D drawing surface.'));
+    return null;
+  }
+
+  let context = null;
+  let lastError = null;
+
+  if (opts){
+    try {
+      context = canvas.getContext('2d', opts) || null;
+    } catch (err){
+      lastError = err;
+    }
+  }
+
+  if (!context){
+    const shouldRetryWithoutAlpha = opts && Object.prototype.hasOwnProperty.call(opts, 'alpha') && opts.alpha === false;
+    if (shouldRetryWithoutAlpha || !opts){
+      try {
+        context = canvas.getContext('2d') || null;
+      } catch (err){
+        if (!lastError) lastError = err;
+      }
+    }
+  }
+
+  if (!context){
+    const details = [];
+    if (opts){
+      try { details.push(`options=${JSON.stringify(opts)}`); }
+      catch (e){ details.push('options=[unserializable]'); }
+    } else {
+      details.push('options=default');
+    }
+    if (lastError){
+      details.push(`error=${lastError.message || lastError}`);
+    }
+    const message = `Unable to acquire 2D rendering context (${details.join(', ')}).`;
+    if (lastError){
+      console.error(message, lastError);
+    } else {
+      console.error(message);
+    }
+    showFatalOverlay(new Error(message));
+    return null;
+  }
+
   // We size canvases in device pixels (see resize) so disable smoothing once per context for crisp art.
-  context.imageSmoothingEnabled = false;
+  try {
+    context.imageSmoothingEnabled = false;
+  } catch (err){
+    console.warn('Unable to configure image smoothing on context:', err);
+  }
   return context;
 }
 const ctx = context2d(canvas, { alpha:false });
@@ -361,13 +412,20 @@ function uid() {
 /* ==================== Tileset (pixel art generated in code) ==================== */
 const Tileset = { base:{}, waterOverlay:[], zoneGlyphs:{}, villagerSprites:{}, sprite:{ tree:null, berry:null, sprout:[] } };
 function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
-function px(g,x,y,c){ g.fillStyle=c; g.fillRect(x,y,1,1); }
-function rect(g,x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
-function makeSprite(w,h,drawFn){ const c=makeCanvas(w,h), g=context2d(c); drawFn(g); return c; }
+function px(g,x,y,c){ if(!g) return; g.fillStyle=c; g.fillRect(x,y,1,1); }
+function rect(g,x,y,w,h,c){ if(!g) return; g.fillStyle=c; g.fillRect(x,y,w,h); }
+function makeSprite(w,h,drawFn){
+  const c = makeCanvas(w,h);
+  const g = context2d(c);
+  if (!g) return c;
+  if (typeof drawFn === 'function') drawFn(g);
+  return c;
+}
 const SHADOW_TEXTURE = (() => {
   const size = 128;
   const canvas = makeCanvas(size, size);
   const g = context2d(canvas);
+  if (!g) return null;
   const cx = size / 2;
   const cy = size / 2;
   const radius = size / 2;
@@ -381,6 +439,7 @@ const SHADOW_TEXTURE = (() => {
 
 function makeGrassVariant({ base, blades, shadow, overlay, extras }){
   const c=makeCanvas(TILE,TILE), g=context2d(c);
+  if (!g) return c;
   rect(g,0,0,TILE,TILE,base);
   for(let i=0;i<40;i++){
     const color=blades[i % blades.length];
@@ -438,13 +497,14 @@ function makeMarsh(){
     }
   });
 }
-function makeSand(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#b99a52'); for(let i=0;i<28;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#c7ad69':'#a78848'); } return c; }
-function makeSnow(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#d7e6f8'); for(let i=0;i<24;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), '#c9d7ea'); } rect(g,0,TILE-4,TILE,4,'#c0d0e8'); return c; }
-function makeRock(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#59616c'); for(let i=0;i<30;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#8f99a5':'#6c757f'); } rect(g,0,TILE-5,TILE,5,'#4a525b'); return c; }
-function makeWaterBase(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#134a6a'); for (let i = 0; i < 14; i++) { px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#0f3e59':'#0c3248'); } return c; }
-function makeWaterOverlayFrames(){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(TILE,TILE), g=context2d(c); g.globalAlpha=0.22; g.strokeStyle='#4fa3d6'; g.lineWidth=1; g.beginPath(); for(let i=0;i<3;i++){ const y=6+i*10+f*2; g.moveTo(0,y); g.quadraticCurveTo(TILE*0.5,y+2,TILE,y); } g.stroke(); g.globalAlpha=1; frames.push(c); } return frames; }
-function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=context2d(c); rect(g,0,0,TILE,TILE,'#4a3624'); g.globalAlpha=0.25; for(let y=3;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#3b2a1d'); } g.globalAlpha=1; return c; }
+function makeSand(){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g) return c; rect(g,0,0,TILE,TILE,'#b99a52'); for(let i=0;i<28;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#c7ad69':'#a78848'); } return c; }
+function makeSnow(){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g) return c; rect(g,0,0,TILE,TILE,'#d7e6f8'); for(let i=0;i<24;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), '#c9d7ea'); } rect(g,0,TILE-4,TILE,4,'#c0d0e8'); return c; }
+function makeRock(){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g) return c; rect(g,0,0,TILE,TILE,'#59616c'); for(let i=0;i<30;i++){ px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#8f99a5':'#6c757f'); } rect(g,0,TILE-5,TILE,5,'#4a525b'); return c; }
+function makeWaterBase(){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g) return c; rect(g,0,0,TILE,TILE,'#134a6a'); for (let i = 0; i < 14; i++) { px(g,irnd(0,TILE-1),irnd(0,TILE-1), i%2?'#0f3e59':'#0c3248'); } return c; }
+function makeWaterOverlayFrames(){ const frames=[]; for(let f=0; f<3; f++){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g){ frames.push(c); continue; } g.globalAlpha=0.22; g.strokeStyle='#4fa3d6'; g.lineWidth=1; g.beginPath(); for(let i=0;i<3;i++){ const y=6+i*10+f*2; g.moveTo(0,y); g.quadraticCurveTo(TILE*0.5,y+2,TILE,y); } g.stroke(); g.globalAlpha=1; frames.push(c); } return frames; }
+function makeFarmland(){ const c=makeCanvas(TILE,TILE), g=context2d(c); if(!g) return c; rect(g,0,0,TILE,TILE,'#4a3624'); g.globalAlpha=0.25; for(let y=3;y<TILE;y+=6){ rect(g,0,y,TILE,2,'#3b2a1d'); } g.globalAlpha=1; return c; }
 function drawSproutOn(g,stage){
+  if(!g) return;
   const s=Math.min(3,Math.floor(stage));
   if(s<=0) return;
   const centerX=Math.floor(ENTITY_TILE_PX/2);
@@ -2021,7 +2081,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
 /* ==================== Rendering ==================== */
 let staticAlbedoCanvas=null, staticAlbedoCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticAlbedoCtx=context2d(staticAlbedoCanvas); } if(!world) return; const g=staticAlbedoCtx; ensureRowMasksSize();
+function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticAlbedoCtx=context2d(staticAlbedoCanvas); } if(!world) return; const g=staticAlbedoCtx; if(!g) return; ensureRowMasksSize();
   for(let y=0;y<GRID_H;y++){
     let rowHasWater=0;
     const rowStart=y*GRID_W;
@@ -2058,6 +2118,7 @@ function entityDrawRect(tileX, tileY, cam){
 
 function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
   if (!ctx || !world || !world.tiles) return;
+  if (!SHADOW_TEXTURE) return;
   if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
   if (LIGHTING.mode === 'off') return;
 
@@ -2176,14 +2237,7 @@ export function buildHillshadeQ(targetWorld){
 
   let ctx = targetWorld.lightmapCtx;
   if (!ctx || ctx.canvas !== canvas){
-    try {
-      ctx = canvas.getContext('2d', { alpha:false });
-    } catch (e) {
-      ctx = canvas.getContext('2d');
-    }
-    if (ctx){
-      ctx.imageSmoothingEnabled = false;
-    }
+    ctx = context2d(canvas, { alpha:false });
   }
   targetWorld.lightmapCtx = ctx || null;
   if (ctx){
@@ -2368,7 +2422,7 @@ function applySpriteShade(context, x, y, w, h, shade){
 }
 
 function render(){
-  if(!world) return;
+  if(!ctx || !world) return;
 
   world.dayTime = dayTime;
 
