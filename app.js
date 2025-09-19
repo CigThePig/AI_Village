@@ -193,6 +193,13 @@ const WALKABLE = new Set([
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
+const LIGHT_VECTOR = { x:-0.75, y:-0.65 };
+const LIGHT_VECTOR_LENGTH = Math.hypot(LIGHT_VECTOR.x, LIGHT_VECTOR.y) || 1;
+const SHADOW_DIRECTION = {
+  x: -LIGHT_VECTOR.x / LIGHT_VECTOR_LENGTH,
+  y: -LIGHT_VECTOR.y / LIGHT_VECTOR_LENGTH
+};
+const SHADOW_DIRECTION_ANGLE = Math.atan2(SHADOW_DIRECTION.y, SHADOW_DIRECTION.x);
 const SPEEDS = [0.5, 1, 2, 4];
 const PF = {
   qx: new Int16Array(GRID_SIZE),
@@ -2004,6 +2011,80 @@ function entityDrawRect(tileX, tileY, cam){
   return { x: baseX - offset, y: baseY - offset, size };
 }
 
+function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
+  if (!ctx || !world || !world.tiles) return;
+  if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
+  if (normalizeShadingMode(SHADING_DEFAULTS.mode) === 'off') return;
+
+  const tiles = world.tiles;
+  if (!tiles || tiles.length !== GRID_SIZE) return;
+
+  const safeFootprintW = Number.isFinite(footprintW) && footprintW > 0 ? footprintW : 1;
+  const safeFootprintH = Number.isFinite(footprintH) && footprintH > 0 ? footprintH : 1;
+
+  const startX = Math.floor(tileX);
+  const startY = Math.floor(tileY);
+  const tilesWide = Math.max(1, Math.ceil(safeFootprintW));
+  const tilesHigh = Math.max(1, Math.ceil(safeFootprintH));
+  let hasGround = false;
+  for (let oy=0; oy<tilesHigh; oy++){
+    const ty = startY + oy;
+    if (ty < 0 || ty >= GRID_H) continue;
+    const rowStart = ty * GRID_W;
+    for (let ox=0; ox<tilesWide; ox++){
+      const tx = startX + ox;
+      if (tx < 0 || tx >= GRID_W) continue;
+      hasGround = true;
+      if (tiles[rowStart + tx] === TILES.WATER){
+        return;
+      }
+    }
+  }
+  if (!hasGround) return;
+
+  const centerTileX = tileX + safeFootprintW * 0.5;
+  const centerTileY = tileY + safeFootprintH * 0.5;
+
+  let widthPx = TILE * cam.z * safeFootprintW;
+  let heightPx = TILE * cam.z * safeFootprintH;
+  if (screenRect && Number.isFinite(screenRect.w) && Number.isFinite(screenRect.h)){
+    widthPx = Math.max(screenRect.w, 0);
+    heightPx = Math.max(screenRect.h, 0);
+  }
+
+  let baseCenterX = tileToPxX(centerTileX, cam);
+  let baseCenterY = tileToPxY(centerTileY, cam);
+  if (screenRect && Number.isFinite(screenRect.x) && Number.isFinite(screenRect.y)){
+    baseCenterX = screenRect.x + widthPx * 0.5;
+    baseCenterY = screenRect.y + heightPx * 0.5;
+  }
+
+  const baseSize = Math.max(widthPx, heightPx);
+  if (!(baseSize > 0)) return;
+  const radiusX = Math.max(cam.z * 2.2, baseSize * 0.45);
+  const radiusY = Math.max(cam.z * 1.2, baseSize * 0.28);
+  const offsetMagnitude = Math.max(radiusX, radiusY) * 0.42;
+  const centerX = baseCenterX + SHADOW_DIRECTION.x * offsetMagnitude;
+  let centerY = baseCenterY + SHADOW_DIRECTION.y * offsetMagnitude;
+  centerY += radiusY * 0.25;
+
+  const alpha = clamp01(0.22 + 0.05 * cam.z);
+
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  ctx.translate(centerX, centerY);
+  ctx.rotate(SHADOW_DIRECTION_ANGLE);
+  ctx.scale(radiusX, radiusY);
+  const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  gradient.addColorStop(0, `rgba(0,0,0,${alpha})`);
+  gradient.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function visibleTileBounds(){
   const raw = baseVisibleTileBounds(W, H, cam);
   const x0 = Math.max(0, raw.x0);
@@ -2151,6 +2232,7 @@ function render(){
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ const rowStart=y*GRID_W; for(let x=x0;x<=x1;x++){ const i=rowStart+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
+      drawShadow(x, y, 1, 1);
       const rect = entityDrawRect(x, y, cam);
       const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
       const shade = sampleShade(x, y);
@@ -2160,6 +2242,7 @@ function render(){
       ctx.restore();
     }
     if(world.berries[i]>0){
+      drawShadow(x, y, 1, 1);
       const rect = entityDrawRect(x, y, cam);
       const shade = sampleShade(x, y);
       ctx.save();
@@ -2168,6 +2251,7 @@ function render(){
       ctx.restore();
     }
     if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
+      drawShadow(x, y, 1, 1);
       const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
       const rect = entityDrawRect(x, y, cam);
       const shade = sampleShade(x, y);
@@ -2192,15 +2276,17 @@ function render(){
     const gx = tileToPxX(it.x, cam);
     const gy = tileToPxY(it.y, cam);
     const shade = sampleShade(it.x, it.y);
-    ctx.save();
-    const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
-    ctx.fillStyle = shadeFillColor(baseColor, shade);
     const tileSize = TILE*cam.z;
     const centerX = Math.round(gx + tileSize*0.5);
     const centerY = Math.round(gy + tileSize*0.5);
     const size = Math.max(2, Math.round(4*cam.z));
     const half = Math.floor(size/2);
-    ctx.fillRect(centerX-half, centerY-half, size, size);
+    const spriteRect = { x:centerX-half, y:centerY-half, w:size, h:size };
+    drawShadow(it.x, it.y, 1, 1, spriteRect);
+    ctx.save();
+    const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+    ctx.fillStyle = shadeFillColor(baseColor, shade);
+    ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
     ctx.restore();
   }
 
@@ -2256,6 +2342,7 @@ function drawBuildingAt(gx,gy,b){
   const fp=getFootprint(b.kind);
   const center=buildingCenter(b);
   const shade=sampleShade(center.x, center.y);
+  drawShadow(b.x, b.y, fp.w, fp.h);
   const offsetX = Math.floor((ENTITY_TILE_PX - fp.w*TILE) * s * 0.5);
   const offsetY = Math.floor((ENTITY_TILE_PX - fp.h*TILE) * s * 0.5);
   gx -= offsetX;
@@ -2315,6 +2402,7 @@ function drawVillager(v){
   const gx = Math.floor(rect.x + (rect.size - spriteSize) * 0.5);
   const gy = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
   const shade = sampleShade(v.x, v.y);
+  drawShadow(v.x, v.y, 1, 1, { x:gx, y:gy, w:spriteSize, h:spriteSize });
   ctx.save();
   ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
   applySpriteShade(ctx, gx, gy, spriteSize, spriteSize, shade);
