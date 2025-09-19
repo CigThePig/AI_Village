@@ -829,20 +829,22 @@ function newWorld(seed=Date.now()|0){
   }
 
   // --- Configure DebugKit if present ---
-  const debugKit = window.DebugKit;
-  if (debugKit != null && typeof debugKit.configure === 'function') {
-    debugKit.configure({
+  function configureDebugKit(debugKitInstance) {
+    if (debugKitInstance == null || typeof debugKitInstance.configure !== 'function') {
+      return;
+    }
+    debugKitInstance.configure({
       getPipeline: function() {
         return (world.__debug != null) ? world.__debug.pipeline.slice(0) : [];
       },
       getLightingProbe: function() {
         var lmQ = world.lightmapQ || null;
         var hsQ = world.hillshadeQ || null;
-        var lmMM = (typeof debugKit.arrMinMax === 'function' && lmQ != null)
-          ? debugKit.arrMinMax(lmQ)
+        var lmMM = (typeof debugKitInstance.arrMinMax === 'function' && lmQ != null)
+          ? debugKitInstance.arrMinMax(lmQ)
           : null;
-        var hsMM = (typeof debugKit.arrMinMax === 'function' && hsQ != null)
-          ? debugKit.arrMinMax(hsQ)
+        var hsMM = (typeof debugKitInstance.arrMinMax === 'function' && hsQ != null)
+          ? debugKitInstance.arrMinMax(hsQ)
           : null;
 
         return {
@@ -891,6 +893,12 @@ function newWorld(seed=Date.now()|0){
         };
       }
     });
+  }
+
+  if (window.DebugKit != null) {
+    configureDebugKit(window.DebugKit);
+  } else {
+    window.__AIV_DEBUGKIT_READY__ = configureDebugKit;
   }
 
   toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();

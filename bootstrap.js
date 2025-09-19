@@ -62,6 +62,13 @@ console.log('AIV: HTML parsed v3.1');
         script.type = 'text/javascript';
         script.textContent = code + '\n//# sourceURL=' + source.label;
         head.appendChild(script);
+        if (typeof window.__AIV_DEBUGKIT_READY__ === 'function') {
+          try {
+            window.__AIV_DEBUGKIT_READY__(window.DebugKit);
+          } finally {
+            delete window.__AIV_DEBUGKIT_READY__;
+          }
+        }
       })
       .catch(function (err) {
         console.warn('DebugKit load failed from', source.url, err);
