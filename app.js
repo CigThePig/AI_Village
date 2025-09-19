@@ -580,6 +580,7 @@ let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTo
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
 
 let debugKitInstance = null;
+let debugKitWatcherInstalled = false;
 
 function debugKitGetPipeline() {
   const pipe = world?.__debug?.pipeline;
@@ -715,12 +716,44 @@ function configureDebugKitBridge(instance) {
     return;
   }
   debugKitInstance = instance;
-  instance.configure({
-    getPipeline: debugKitGetPipeline,
-    getLightingProbe: debugKitGetLightingProbe,
-    onSafeMode: debugKitEnterSafeMode,
-    getState: debugKitGetState
-  });
+  try {
+    instance.configure({
+      getPipeline: debugKitGetPipeline,
+      getLightingProbe: debugKitGetLightingProbe,
+      onSafeMode: debugKitEnterSafeMode,
+      getState: debugKitGetState
+    });
+  } catch (err) {
+    console.warn('DebugKit configure failed', err);
+  }
+}
+
+function installDebugKitWatcher() {
+  if (debugKitWatcherInstalled || typeof window === 'undefined') {
+    return;
+  }
+  debugKitWatcherInstalled = true;
+  let currentKit = window.DebugKit;
+  const descriptor = Object.getOwnPropertyDescriptor(window, 'DebugKit');
+  const canRedefine = !descriptor || descriptor.configurable === true;
+  if (canRedefine) {
+    Object.defineProperty(window, 'DebugKit', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return currentKit;
+      },
+      set(value) {
+        currentKit = value;
+        if (value && typeof value.configure === 'function') {
+          configureDebugKitBridge(value);
+        }
+      }
+    });
+  }
+  if (currentKit && typeof currentKit.configure === 'function') {
+    configureDebugKitBridge(currentKit);
+  }
 }
 
 function ensureDebugKitConfigured() {
@@ -732,6 +765,7 @@ function ensureDebugKitConfigured() {
 }
 
 if (typeof window !== 'undefined') {
+  installDebugKitWatcher();
   if (window.DebugKit != null) {
     configureDebugKitBridge(window.DebugKit);
   }
