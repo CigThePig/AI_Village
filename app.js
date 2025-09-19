@@ -579,6 +579,176 @@ function buildTileset(){
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
 
+let debugKitInstance = null;
+
+function debugKitGetPipeline() {
+  const pipe = world?.__debug?.pipeline;
+  if (!Array.isArray(pipe) || pipe.length === 0) {
+    return [];
+  }
+  return pipe.map((entry) => {
+    if (!entry) return entry;
+    return {
+      name: entry.name || '',
+      ok: entry.ok === true,
+      extra: entry.extra === undefined ? null : entry.extra
+    };
+  });
+}
+
+function describeCanvasContext(ctx) {
+  if (!ctx || !ctx.canvas) {
+    return null;
+  }
+  const canvas = ctx.canvas;
+  let type = 'unknown';
+  if (typeof ctx.getContextAttributes === 'function') {
+    type = 'webgl';
+  } else if (typeof ctx.getImageData === 'function') {
+    type = '2d';
+  }
+  return {
+    type,
+    size: {
+      width: Number.isFinite(canvas.width) ? canvas.width : null,
+      height: Number.isFinite(canvas.height) ? canvas.height : null
+    }
+  };
+}
+
+function debugKitGetLightingProbe() {
+  const mode = LIGHTING?.mode ?? 'unknown';
+  const useMultiply = LIGHTING?.useMultiplyComposite === true;
+  const scale = Number.isFinite(LIGHTING?.lightmapScale) ? LIGHTING.lightmapScale : null;
+  const hillshadeQ = world?.hillshadeQ || null;
+  const lightmapQ = world?.lightmapQ || null;
+  const statsFn = (debugKitInstance && typeof debugKitInstance.arrMinMax === 'function')
+    ? debugKitInstance.arrMinMax
+    : null;
+  const hillshadeStats = statsFn && hillshadeQ ? statsFn(hillshadeQ) : null;
+  const lightmapStats = statsFn && lightmapQ ? statsFn(lightmapQ) : null;
+  const reasons = [];
+  let canMultiply = useMultiply;
+
+  if (!world) {
+    reasons.push('World not initialized');
+    canMultiply = false;
+  } else {
+    if (mode === 'off') {
+      reasons.push('Lighting mode set to off');
+      canMultiply = false;
+    }
+    if (!world.lightmapCtx) {
+      reasons.push('lightmapCtx missing');
+      canMultiply = false;
+    }
+    if (!lightmapQ) {
+      reasons.push('lightmapQ not built');
+      canMultiply = false;
+    }
+  }
+
+  return {
+    mode,
+    useMultiplyComposite: useMultiply,
+    lightmapScale: scale,
+    contexts: {
+      lightmap: describeCanvasContext(world?.lightmapCtx || null),
+      albedo: describeCanvasContext(world?.staticAlbedoCtx || null)
+    },
+    hillshadeQ,
+    lightmapQ,
+    HqMin: hillshadeStats ? hillshadeStats.min : null,
+    HqMax: hillshadeStats ? hillshadeStats.max : null,
+    LqMin: lightmapStats ? lightmapStats.min : null,
+    LqMax: lightmapStats ? lightmapStats.max : null,
+    canMultiply,
+    reasons
+  };
+}
+
+function debugKitEnterSafeMode() {
+  try {
+    if (typeof applyShadingMode === 'function') {
+      applyShadingMode('off');
+    } else if (LIGHTING) {
+      LIGHTING.mode = 'off';
+      LIGHTING.useMultiplyComposite = false;
+    }
+    if (world) {
+      world.lightmapQ = null;
+      if (world.lightmapCtx && world.lightmapCanvas) {
+        try {
+          world.lightmapCtx.clearRect(0, 0, world.lightmapCanvas.width, world.lightmapCanvas.height);
+        } catch (err) {
+          /* ignore */
+        }
+      }
+      if (typeof markStaticDirty === 'function') {
+        markStaticDirty();
+      }
+    }
+  } catch (err) {
+    console.warn('DebugKit safe mode failed', err);
+  }
+}
+
+function debugKitGetState() {
+  const villagerCount = Array.isArray(villagers) ? villagers.length : 0;
+  let snapshotTime = null;
+  if (world?.clock && Number.isFinite(world.clock.timeOfDay)) {
+    snapshotTime = world.clock.timeOfDay;
+  } else if (Number.isFinite(dayTime)) {
+    snapshotTime = dayTime;
+  }
+  return {
+    frame: world?.__debug?.lastFrame ?? 0,
+    timeOfDay: snapshotTime,
+    villagers: villagerCount,
+    lightingMode: LIGHTING?.mode ?? 'unknown',
+    multiplyComposite: LIGHTING?.useMultiplyComposite === true
+  };
+}
+
+function configureDebugKitBridge(instance) {
+  if (!instance || typeof instance.configure !== 'function') {
+    return;
+  }
+  debugKitInstance = instance;
+  instance.configure({
+    getPipeline: debugKitGetPipeline,
+    getLightingProbe: debugKitGetLightingProbe,
+    onSafeMode: debugKitEnterSafeMode,
+    getState: debugKitGetState
+  });
+}
+
+function ensureDebugKitConfigured() {
+  if (debugKitInstance) {
+    configureDebugKitBridge(debugKitInstance);
+  } else if (typeof window !== 'undefined' && window.DebugKit != null) {
+    configureDebugKitBridge(window.DebugKit);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  if (window.DebugKit != null) {
+    configureDebugKitBridge(window.DebugKit);
+  }
+  const prevReady = typeof window.__AIV_DEBUGKIT_READY__ === 'function'
+    ? window.__AIV_DEBUGKIT_READY__
+    : null;
+  window.__AIV_DEBUGKIT_READY__ = function (kit) {
+    try {
+      configureDebugKitBridge(kit);
+    } finally {
+      if (prevReady && prevReady !== window.__AIV_DEBUGKIT_READY__) {
+        try { prevReady(kit); } catch (err) { console.warn('DebugKit ready hook failed', err); }
+      }
+    }
+  };
+}
+
 export function ambientAt(currentDayTime) {
   const theta = (currentDayTime / DAY_LEN) * 2 * Math.PI;
   const cosv = Math.max(0, Math.cos(theta));
@@ -828,78 +998,7 @@ function newWorld(seed=Date.now()|0){
     };
   }
 
-  // --- Configure DebugKit if present ---
-  function configureDebugKit(debugKitInstance) {
-    if (debugKitInstance == null || typeof debugKitInstance.configure !== 'function') {
-      return;
-    }
-    debugKitInstance.configure({
-      getPipeline: function() {
-        return (world.__debug != null) ? world.__debug.pipeline.slice(0) : [];
-      },
-      getLightingProbe: function() {
-        var lmQ = world.lightmapQ || null;
-        var hsQ = world.hillshadeQ || null;
-        var lmMM = (typeof debugKitInstance.arrMinMax === 'function' && lmQ != null)
-          ? debugKitInstance.arrMinMax(lmQ)
-          : null;
-        var hsMM = (typeof debugKitInstance.arrMinMax === 'function' && hsQ != null)
-          ? debugKitInstance.arrMinMax(hsQ)
-          : null;
-
-        return {
-          mode: (typeof LIGHTING !== 'undefined') ? LIGHTING.mode : 'unknown',
-          useMultiplyComposite: (typeof LIGHTING !== 'undefined') ? LIGHTING.useMultiplyComposite === true : false,
-          lightmapSize: (world.lightmapCanvas != null) ? { w: world.lightmapCanvas.width, h: world.lightmapCanvas.height } : null,
-          hasLightmapCtx: world.lightmapCtx != null,
-          hasHillshade: hsQ != null,
-          hasLightmapQ: lmQ != null,
-          hillshadeMinMax: hsMM,
-          lightmapMinMax: lmMM
-        };
-      },
-      onSafeMode: function(enable) {
-        if (typeof LIGHTING !== 'undefined') {
-          if (enable === true) {
-            LIGHTING.mode = 'off';
-            LIGHTING.useMultiplyComposite = false;
-          } else {
-            // If defaults exist, restore them here explicitly.
-          }
-        }
-        world.lightmapQ = null;
-        if (world.lightmapCtx != null && world.lightmapCanvas != null) {
-          try {
-            world.lightmapCtx.clearRect(0, 0, world.lightmapCanvas.width, world.lightmapCanvas.height);
-          } catch (e) {
-            // noop
-          }
-        }
-      },
-      getState: function() {
-        var villagerList = (world.villagers != null) ? world.villagers : (typeof villagers !== 'undefined' ? villagers : null);
-        var snapshotTime = null;
-        if (world.clock != null && world.clock.timeOfDay != null) {
-          snapshotTime = world.clock.timeOfDay;
-        } else if (typeof dayTime !== 'undefined') {
-          snapshotTime = dayTime;
-        }
-        return {
-          frame: world.__debug != null ? world.__debug.lastFrame : 0,
-          timeOfDay: snapshotTime,
-          villagers: Array.isArray(villagerList) ? villagerList.length : 0,
-          lightingMode: (typeof LIGHTING !== 'undefined') ? LIGHTING.mode : 'unknown',
-          multiplyComposite: (typeof LIGHTING !== 'undefined') ? LIGHTING.useMultiplyComposite === true : false
-        };
-      }
-    });
-  }
-
-  if (window.DebugKit != null) {
-    configureDebugKit(window.DebugKit);
-  } else {
-    window.__AIV_DEBUGKIT_READY__ = configureDebugKit;
-  }
+  ensureDebugKitConfigured();
 
   toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
