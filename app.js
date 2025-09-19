@@ -132,9 +132,10 @@ function showFatalOverlay(err) {
 
 function reportFatal(message, data) {
   let usedDebugKit = false;
-  if (window.DebugKit != null && typeof DebugKit.fatal === 'function') {
+  const debugKit = window.DebugKit;
+  if (debugKit != null && typeof debugKit.fatal === 'function') {
     try {
-      DebugKit.fatal(message, data || null);
+      debugKit.fatal(message, data || null);
       usedDebugKit = true;
     } catch (e) {
       // fall through to overlay fallback
@@ -828,19 +829,20 @@ function newWorld(seed=Date.now()|0){
   }
 
   // --- Configure DebugKit if present ---
-  if (window.DebugKit != null && typeof DebugKit.configure === 'function') {
-    DebugKit.configure({
+  const debugKit = window.DebugKit;
+  if (debugKit != null && typeof debugKit.configure === 'function') {
+    debugKit.configure({
       getPipeline: function() {
         return (world.__debug != null) ? world.__debug.pipeline.slice(0) : [];
       },
       getLightingProbe: function() {
         var lmQ = world.lightmapQ || null;
         var hsQ = world.hillshadeQ || null;
-        var lmMM = (window.DebugKit && typeof DebugKit.arrMinMax === 'function' && lmQ != null)
-          ? DebugKit.arrMinMax(lmQ)
+        var lmMM = (typeof debugKit.arrMinMax === 'function' && lmQ != null)
+          ? debugKit.arrMinMax(lmQ)
           : null;
-        var hsMM = (window.DebugKit && typeof DebugKit.arrMinMax === 'function' && hsQ != null)
-          ? DebugKit.arrMinMax(hsQ)
+        var hsMM = (typeof debugKit.arrMinMax === 'function' && hsQ != null)
+          ? debugKit.arrMinMax(hsQ)
           : null;
 
         return {
@@ -2533,9 +2535,10 @@ function render(){
   }
   function __ck(name, ok, extra) {
     const entry = { name: name, ok: ok === true, extra: extra || null };
-    if (window.DebugKit != null && typeof DebugKit.checkpoint === 'function') {
+    const debugKit = window.DebugKit;
+    if (debugKit != null && typeof debugKit.checkpoint === 'function') {
       try {
-        DebugKit.checkpoint(name, entry.ok, entry.extra);
+        debugKit.checkpoint(name, entry.ok, entry.extra);
       } catch (e) {
         // ignore checkpoint errors
       }
