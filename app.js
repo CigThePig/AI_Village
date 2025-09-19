@@ -4,6 +4,18 @@ import { WORLDGEN_DEFAULTS, SHADING_DEFAULTS } from './worldgen/config.js';
 let setShadingModeImpl = () => {};
 let setShadingParamsImpl = () => {};
 
+export const LIGHTING = {
+  mode: 'hillshade',
+  useMultiplyComposite: true,
+  lightmapScale: 0.25,
+  uiMinLight: 0.90,
+  exposure: 1.0,
+  nightFloor: 0.25,
+  lightCap: 1.40,
+  softLights: true,
+  debugShowLightmap: false
+};
+
 const clamp01 = (value) => {
   if (!Number.isFinite(value)) {
     return value > 0 ? 1 : 0;
@@ -215,6 +227,8 @@ const PF = {
 };
 let waterRowMask = new Uint8Array(GRID_H);
 let zoneRowMask = new Uint8Array(GRID_H);
+let currentAmbient = 1;
+const villagerLabels = [];
 
 function ensureRowMasksSize(){
   if(waterRowMask.length !== GRID_H) waterRowMask = new Uint8Array(GRID_H);
@@ -472,6 +486,14 @@ function buildTileset(){
 let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
 let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
 
+export function ambientAt(currentDayTime) {
+  const theta = (currentDayTime / DAY_LEN) * 2 * Math.PI;
+  const cosv = Math.max(0, Math.cos(theta));
+  const ramp = cosv * cosv;
+  const A = LIGHTING.nightFloor + (1 - LIGHTING.nightFloor) * ramp;
+  return Math.min(1.0, A * LIGHTING.exposure);
+}
+
 function normalizeShadingMode(mode) {
   if (mode === 'off' || mode === 'altitude') return mode;
   return 'hillshade';
@@ -490,8 +512,18 @@ function computeShadeForMode(mode, height) {
 function applyShadingMode(mode) {
   const nextMode = normalizeShadingMode(mode);
   SHADING_DEFAULTS.mode = nextMode;
+  LIGHTING.mode = nextMode;
   if (!world || !world.aux || !world.aux.height) return;
   world.hillshade = computeShadeForMode(nextMode, world.aux.height);
+  if (nextMode === 'off') {
+    world.hillshadeQ = null;
+    world.lightmapQ = null;
+    world.lightmapCanvas = null;
+    world.lightmapCtx = null;
+    world.lightmapImageData = null;
+  } else {
+    buildHillshadeQ(world);
+  }
   markStaticDirty();
 }
 
@@ -566,6 +598,7 @@ function newWorld(seed=Date.now()|0){
   const aux = terrain.aux || {};
   const mode = normalizeShadingMode(SHADING_DEFAULTS.mode);
   SHADING_DEFAULTS.mode = mode;
+  LIGHTING.mode = mode;
   const hillshade = computeShadeForMode(mode, aux.height);
   world={
     seed,
@@ -578,8 +611,19 @@ function newWorld(seed=Date.now()|0){
     season:0,
     tSeason:0,
     aux,
-    hillshade
+    hillshade,
+    width: GRID_W,
+    height: GRID_H,
+    hillshadeQ: null,
+    lightmapQ: null,
+    lightmapCanvas: null,
+    lightmapCtx: null,
+    lightmapImageData: null,
+    staticAlbedoCanvas: null,
+    staticAlbedoCtx: null,
+    emitters: []
   };
+  buildHillshadeQ(world);
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
   world.zone.fill(0);
@@ -1153,6 +1197,13 @@ canvas.addEventListener('wheel', (e)=>{
   const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
   const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
 cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
+});
+
+window.addEventListener('keydown', (e)=>{
+  if((e.key==='l' || e.key==='L') && e.altKey){
+    LIGHTING.debugShowLightmap = !LIGHTING.debugShowLightmap;
+    e.preventDefault();
+  }
 });
 
 /* ==================== Zones/Build/Helpers ==================== */
@@ -1968,9 +2019,9 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
   Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
-let staticCanvas=null, staticCtx=null, staticDirty=true;
+let staticAlbedoCanvas=null, staticAlbedoCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
-function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticCtx=context2d(staticCanvas); } if(!world) return; const g=staticCtx; ensureRowMasksSize();
+function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticAlbedoCtx=context2d(staticAlbedoCanvas); } if(!world) return; const g=staticAlbedoCtx; ensureRowMasksSize();
   for(let y=0;y<GRID_H;y++){
     let rowHasWater=0;
     const rowStart=y*GRID_W;
@@ -1990,39 +2041,8 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
     }
     waterRowMask[y]=rowHasWater;
   }
-  const shade = (world.hillshade && world.hillshade.length === GRID_SIZE) ? world.hillshade : null;
-  if(shade){
-    const ctx=staticCtx;
-    ctx.save();
-    ctx.globalCompositeOperation='multiply';
-    const tilePx=TILE;
-    let lastColorIndex=-1;
-    for(let ty=0; ty<GRID_H; ty++){
-      const rowStart=ty*GRID_W;
-      const yOffset=ty*tilePx;
-      for(let tx=0; tx<GRID_W; tx++){
-        const idx=rowStart+tx;
-        const tileType = world.tiles[idx];
-        if(tileType===TILES.WATER || tileType===TILES.FARMLAND) continue;
-        let s=shade[idx];
-        if(!Number.isFinite(s)) continue;
-        if(s<=0){
-          s=0;
-        } else if(s>=1){
-          continue;
-        }
-        const colorIndex=((s*255)+0.5)|0;
-        if(colorIndex>=255) continue;
-        if(colorIndex!==lastColorIndex){
-          ctx.fillStyle=SHADE_COLOR_CACHE[colorIndex];
-          lastColorIndex=colorIndex;
-        }
-        const xOffset=tx*tilePx;
-        ctx.fillRect(xOffset, yOffset, tilePx, tilePx);
-      }
-    }
-    ctx.restore();
-  }
+  world.staticAlbedoCanvas = staticAlbedoCanvas;
+  world.staticAlbedoCtx = staticAlbedoCtx;
   staticDirty=false; }
 
 function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle='#2c6b34'; g.fillRect(10,12,12,10); g.fillStyle='#2f7f3d'; g.fillRect(12,10,8,4); }
@@ -2039,7 +2059,7 @@ function entityDrawRect(tileX, tileY, cam){
 function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
   if (!ctx || !world || !world.tiles) return;
   if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
-  if (normalizeShadingMode(SHADING_DEFAULTS.mode) === 'off') return;
+  if (LIGHTING.mode === 'off') return;
 
   const tiles = world.tiles;
   if (!tiles || tiles.length !== GRID_SIZE) return;
@@ -2116,25 +2136,187 @@ function visibleTileBounds(){
   return {x0, y0, x1, y1};
 }
 
+export function buildHillshadeQ(targetWorld){
+  if (!targetWorld) return;
+  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
+  const width = Math.max(1, (targetWorld.width|0) || GRID_W);
+  const height = Math.max(1, (targetWorld.height|0) || GRID_H);
+  const qw = Math.max(1, Math.floor(width * scale));
+  const qh = Math.max(1, Math.floor(height * scale));
+  const source = targetWorld.hillshade;
+  if (source && source.length === width * height){
+    const downsampled = new Float32Array(qw * qh);
+    for (let qy = 0; qy < qh; qy++){
+      const y = Math.min(height - 1, Math.floor(qy / scale));
+      const srcRow = y * width;
+      const row = qy * qw;
+      for (let qx = 0; qx < qw; qx++){
+        const x = Math.min(width - 1, Math.floor(qx / scale));
+        downsampled[row + qx] = source[srcRow + x];
+      }
+    }
+    targetWorld.hillshadeQ = downsampled;
+  } else {
+    targetWorld.hillshadeQ = null;
+  }
+
+  targetWorld.lightmapQ = new Float32Array(qw * qh);
+
+  let canvas = targetWorld.lightmapCanvas;
+  if (!canvas || canvas.width !== qw || canvas.height !== qh){
+    if (typeof OffscreenCanvas !== 'undefined'){
+      canvas = new OffscreenCanvas(qw, qh);
+    } else {
+      canvas = makeCanvas(qw, qh);
+    }
+  }
+  canvas.width = qw;
+  canvas.height = qh;
+  targetWorld.lightmapCanvas = canvas;
+
+  let ctx = targetWorld.lightmapCtx;
+  if (!ctx || ctx.canvas !== canvas){
+    try {
+      ctx = canvas.getContext('2d', { alpha:false });
+    } catch (e) {
+      ctx = canvas.getContext('2d');
+    }
+    if (ctx){
+      ctx.imageSmoothingEnabled = false;
+    }
+  }
+  targetWorld.lightmapCtx = ctx || null;
+  if (ctx){
+    if (!targetWorld.lightmapImageData || targetWorld.lightmapImageData.width !== qw || targetWorld.lightmapImageData.height !== qh){
+      targetWorld.lightmapImageData = ctx.createImageData(qw, qh);
+    }
+  } else {
+    targetWorld.lightmapImageData = null;
+  }
+}
+
+export function buildLightmap(targetWorld, ambient){
+  if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return;
+  const Lq = targetWorld.lightmapQ;
+  const Hq = (LIGHTING.mode === 'hillshade') ? targetWorld.hillshadeQ : null;
+  const length = Lq.length;
+  const cap = Number.isFinite(LIGHTING.lightCap) ? LIGHTING.lightCap : 1.0;
+  for (let i = 0; i < length; i++){
+    const base = ambient * (Hq ? Hq[i] : 1);
+    Lq[i] = base > cap ? cap : base;
+  }
+
+  const emitters = Array.isArray(targetWorld.emitters) ? targetWorld.emitters : [];
+  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
+  const qw = targetWorld.lightmapCanvas.width|0;
+  const qh = targetWorld.lightmapCanvas.height|0;
+
+  const addLight = (cx, cy, radiusTiles, intensity, falloff) => {
+    if (!Number.isFinite(intensity) || intensity === 0) return;
+    const r = Math.max(1, Math.floor(radiusTiles * scale));
+    const r2 = r * r;
+    const exponent = Math.max(0.1, Number.isFinite(falloff) ? falloff : 2);
+    for (let dy = -r; dy <= r; dy++){
+      const y = cy + dy;
+      if (y < 0 || y >= qh) continue;
+      for (let dx = -r; dx <= r; dx++){
+        const x = cx + dx;
+        if (x < 0 || x >= qw) continue;
+        const d2 = dx*dx + dy*dy;
+        if (d2 > r2) continue;
+        const ratio = r === 0 ? 0 : Math.sqrt(d2) / r;
+        const fall = Math.max(0, 1 - Math.pow(ratio, exponent));
+        if (fall <= 0) continue;
+        const idx = y * qw + x;
+        const sum = Lq[idx] + intensity * fall;
+        Lq[idx] = sum > cap ? cap : sum;
+      }
+    }
+  };
+
+  for (const emitter of emitters){
+    if (!emitter) continue;
+    const cx = Math.round((Number.isFinite(emitter.x) ? emitter.x : 0) * scale);
+    const cy = Math.round((Number.isFinite(emitter.y) ? emitter.y : 0) * scale);
+    const radius = Number.isFinite(emitter.radius) ? emitter.radius : 0;
+    if (!(radius > 0)) continue;
+    let intensity = Number.isFinite(emitter.intensity) ? emitter.intensity : 0;
+    if (emitter.flicker){
+      intensity *= (1 + 0.05 * Math.sin(targetWorld.dayTime || 0) + (Math.random() * 0.03));
+    }
+    addLight(cx, cy, radius, intensity, emitter.falloff);
+  }
+
+  if (LIGHTING.softLights){
+    for (let y = 1; y < qh - 1; y++){
+      const row = y * qw;
+      for (let x = 1; x < qw - 1; x++){
+        const i = row + x;
+        Lq[i] = (Lq[i] + Lq[i-1] + Lq[i+1] + Lq[i-qw] + Lq[i+qw]) / 5;
+      }
+    }
+  }
+
+  const ctx = targetWorld.lightmapCtx;
+  if (!ctx) return;
+  let img = targetWorld.lightmapImageData;
+  if (!img || img.width !== qw || img.height !== qh){
+    img = ctx.createImageData(qw, qh);
+    targetWorld.lightmapImageData = img;
+  }
+  const data = img.data;
+  for (let i = 0, p = 0; i < length; i++, p += 4){
+    const v = Math.max(0, Math.min(1, Lq[i]));
+    const b = Math.round(v * 255);
+    data[p] = data[p+1] = data[p+2] = b;
+    data[p+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+export function sampleLightAt(targetWorld, wx, wy){
+  if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return 1.0;
+  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
+  const x = wx * scale;
+  const y = wy * scale;
+  const qw = targetWorld.lightmapCanvas.width|0;
+  const qh = targetWorld.lightmapCanvas.height|0;
+  const Lq = targetWorld.lightmapQ;
+  if (!qw || !qh || !Lq || Lq.length === 0) return 1.0;
+
+  const x0 = Math.max(0, Math.min(qw - 1, Math.floor(x)));
+  const y0 = Math.max(0, Math.min(qh - 1, Math.floor(y)));
+  const x1 = Math.min(qw - 1, x0 + 1);
+  const y1 = Math.min(qh - 1, y0 + 1);
+  const tx = x - x0;
+  const ty = y - y0;
+  const i00 = y0 * qw + x0;
+  const i10 = y0 * qw + x1;
+  const i01 = y1 * qw + x0;
+  const i11 = y1 * qw + x1;
+
+  const a = Lq[i00] * (1 - tx) + Lq[i10] * tx;
+  const b = Lq[i01] * (1 - tx) + Lq[i11] * tx;
+  const value = a * (1 - ty) + b * ty;
+  return Math.max(0, Math.min(LIGHTING.lightCap, value));
+}
+
+export function shadeFillColorLit(rgbaString, light){
+  const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
+  const normalized = L >= 1 ? 1 : L;
+  return shadeFillColor(rgbaString, normalized);
+}
+
+export function applySpriteShadeLit(context, x, y, w, h, light){
+  const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
+  const normalized = L >= 1 ? 1 : L;
+  return applySpriteShade(context, x, y, w, h, normalized);
+}
+
 function sampleShade(tx, ty){
-  const shadeData = (world && world.hillshade && world.hillshade.length === GRID_SIZE) ? world.hillshade : null;
-  if (!shadeData) return 1;
-  if (!Number.isFinite(tx) || !Number.isFinite(ty)) return 1;
-  const clampedX = clamp(tx, 0, GRID_W - 1);
-  const clampedY = clamp(ty, 0, GRID_H - 1);
-  const fx = Math.floor(clampedX);
-  const fy = Math.floor(clampedY);
-  const cx = Math.min(fx + 1, GRID_W - 1);
-  const cy = Math.min(fy + 1, GRID_H - 1);
-  const wx = clampedX - fx;
-  const wy = clampedY - fy;
-  const topLeft = shadeData[fy * GRID_W + fx];
-  const topRight = shadeData[fy * GRID_W + cx];
-  const bottomLeft = shadeData[cy * GRID_W + fx];
-  const bottomRight = shadeData[cy * GRID_W + cx];
-  const top = topLeft + (topRight - topLeft) * wx;
-  const bottom = bottomLeft + (bottomRight - bottomLeft) * wx;
-  return clamp01(top + (bottom - top) * wy);
+  if (!world || LIGHTING.mode === 'off') return 1;
+  if (LIGHTING.useMultiplyComposite) return 1;
+  return sampleLightAt(world, tx, ty);
 }
 
 function shadeFillColor(color, shade){
@@ -2186,16 +2368,53 @@ function applySpriteShade(context, x, y, w, h, shade){
 }
 
 function render(){
-  if(staticDirty) drawStatic();
+  if(!world) return;
+
+  world.dayTime = dayTime;
+
+  const shadingMode = normalizeShadingMode(LIGHTING.mode);
+  if (LIGHTING.mode !== shadingMode) LIGHTING.mode = shadingMode;
+  const ambient = shadingMode === 'off' ? 1 : ambientAt(dayTime);
+  currentAmbient = ambient;
+
+  villagerLabels.length = 0;
+
+  if (!Array.isArray(world.emitters)) world.emitters = [];
+  world.emitters.length = 0;
+  if (shadingMode !== 'off'){
+    for (const b of buildings){
+      if(b && b.kind==='campfire' && (b.built||0) >= 1){
+        const fp=getFootprint(b.kind);
+        const emitterX=b.x + (fp?.w||1)*0.5;
+        const emitterY=b.y + (fp?.h||1)*0.5;
+        world.emitters.push({ x:emitterX, y:emitterY, radius:7.5, intensity:0.45, falloff:2.0, flicker:true });
+      }
+    }
+  }
+
+  const useMultiply = shadingMode !== 'off' && LIGHTING.useMultiplyComposite;
+
+  if (shadingMode !== 'off'){
+    const expectedW = Math.max(1, Math.floor(((world.width||GRID_W)) * LIGHTING.lightmapScale));
+    const expectedH = Math.max(1, Math.floor(((world.height||GRID_H)) * LIGHTING.lightmapScale));
+    if (!world.lightmapCanvas || world.lightmapCanvas.width !== expectedW || world.lightmapCanvas.height !== expectedH || !world.lightmapQ){
+      buildHillshadeQ(world);
+    }
+    buildLightmap(world, ambient);
+  }
+
+  if(staticDirty) drawStaticAlbedo();
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle='#0a0c10';
   ctx.fillRect(0,0,W,H);
   // base map scaled by cam.z
   const baseDx = Math.round(-cam.x*TILE*cam.z);
   const baseDy = Math.round(-cam.y*TILE*cam.z);
-  ctx.drawImage(staticCanvas, 0,0, staticCanvas.width, staticCanvas.height,
-    baseDx, baseDy,
-    staticCanvas.width*cam.z, staticCanvas.height*cam.z);
+  if(staticAlbedoCanvas){
+    ctx.drawImage(staticAlbedoCanvas, 0,0, staticAlbedoCanvas.width, staticAlbedoCanvas.height,
+      baseDx, baseDy,
+      staticAlbedoCanvas.width*cam.z, staticAlbedoCanvas.height*cam.z);
+  }
 
   let t0,t1,t2;
   if(PERF.log) t0 = performance.now();
@@ -2251,25 +2470,36 @@ function render(){
     }
   }
 
+  if(!useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
+    ctx.save();
+    ctx.globalCompositeOperation='multiply';
+    const destW = staticAlbedoCanvas ? staticAlbedoCanvas.width*cam.z : GRID_W*TILE*cam.z;
+    const destH = staticAlbedoCanvas ? staticAlbedoCanvas.height*cam.z : GRID_H*TILE*cam.z;
+    ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
+      baseDx, baseDy,
+      destW, destH);
+    ctx.restore();
+  }
+
   // vegetation/crops
   for(let y=y0;y<=y1;y++){ const rowStart=y*GRID_W; for(let x=x0;x<=x1;x++){ const i=rowStart+x;
     if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
       drawShadow(x, y, 1, 1);
       const rect = entityDrawRect(x, y, cam);
       const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
-      const shade = sampleShade(x, y);
+      const light = useMultiply ? 1 : sampleLightAt(world, x, y);
       ctx.save();
       ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
-      applySpriteShade(ctx, rect.x, raisedY, rect.size, rect.size, shade);
+      applySpriteShadeLit(ctx, rect.x, raisedY, rect.size, rect.size, light);
       ctx.restore();
     }
     if(world.berries[i]>0){
       drawShadow(x, y, 1, 1);
       const rect = entityDrawRect(x, y, cam);
-      const shade = sampleShade(x, y);
+      const light = useMultiply ? 1 : sampleLightAt(world, x, y);
       ctx.save();
       ctx.drawImage(Tileset.sprite.berry, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-      applySpriteShade(ctx, rect.x, rect.y, rect.size, rect.size, shade);
+      applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
       ctx.restore();
     }
     if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
@@ -2295,7 +2525,7 @@ function render(){
   for(const it of itemsOnGround){
     const gx = tileToPxX(it.x, cam);
     const gy = tileToPxY(it.y, cam);
-    const shade = sampleShade(it.x, it.y);
+    const light = useMultiply ? 1 : sampleLightAt(world, it.x, it.y);
     const tileSize = TILE*cam.z;
     const centerX = Math.round(gx + tileSize*0.5);
     const centerY = Math.round(gy + tileSize*0.5);
@@ -2305,13 +2535,13 @@ function render(){
     drawShadow(it.x, it.y, 1, 1, spriteRect);
     ctx.save();
     const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
-    ctx.fillStyle = shadeFillColor(baseColor, shade);
+    ctx.fillStyle = shadeFillColorLit(baseColor, light);
     ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
     ctx.restore();
   }
 
   // villagers
-  for(const v of villagers){ drawVillager(v); }
+  for(const v of villagers){ drawVillager(v, useMultiply); }
 
   if(ui.mode==='zones' && brushPreview){
     const {x,y,r}=brushPreview;
@@ -2331,8 +2561,27 @@ function render(){
     }
   }
 
-  // day/night tint (screen space)
-  const t=dayTime/DAY_LEN; let night=(Math.cos((t*2*Math.PI))+1)/2; ctx.fillStyle=`rgba(10,18,30, ${0.25*night})`; ctx.fillRect(0,0,W,H);
+  if (useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
+    ctx.save();
+    ctx.globalCompositeOperation='multiply';
+    const destW = staticAlbedoCanvas ? staticAlbedoCanvas.width*cam.z : GRID_W*TILE*cam.z;
+    const destH = staticAlbedoCanvas ? staticAlbedoCanvas.height*cam.z : GRID_H*TILE*cam.z;
+    ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
+      baseDx, baseDy,
+      destW, destH);
+    ctx.restore();
+  }
+
+  if (LIGHTING.debugShowLightmap && world.lightmapCanvas){
+    ctx.save();
+    ctx.globalAlpha=0.9;
+    ctx.imageSmoothingEnabled=false;
+    const previewW=Math.min(128, Math.max(32, world.lightmapCanvas.width));
+    const previewH=Math.min(128, Math.max(32, world.lightmapCanvas.height));
+    ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
+      12, 12, previewW, previewH);
+    ctx.restore();
+  }
 
   // campfire glow (screen space but positioned via cam)
   for(const b of buildings){
@@ -2349,6 +2598,8 @@ function render(){
     }
   }
 
+  drawQueuedVillagerLabels(ambient);
+
   // HUD counters
   el('food').textContent=storageTotals.food|0; el('wood').textContent=storageTotals.wood|0; el('stone').textContent=storageTotals.stone|0; el('pop').textContent=villagers.length|0;
   if(PERF.log){
@@ -2361,7 +2612,10 @@ function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
   const fp=getFootprint(b.kind);
   const center=buildingCenter(b);
-  const shade = b.kind==='farmplot' ? 1 : sampleShade(center.x, center.y);
+  const useMultiply = LIGHTING.useMultiplyComposite && LIGHTING.mode !== 'off';
+  const sampledLight = useMultiply ? 1 : sampleLightAt(world, center.x, center.y);
+  const shade = b.kind==='farmplot' ? 1 : sampledLight;
+  const campfireShade = b.kind==='campfire' ? Math.max(shade, 0.95) : shade;
   drawShadow(b.x, b.y, fp.w, fp.h);
   const offsetX = Math.floor((ENTITY_TILE_PX - fp.w*TILE) * s * 0.5);
   const offsetY = Math.floor((ENTITY_TILE_PX - fp.h*TILE) * s * 0.5);
@@ -2369,100 +2623,97 @@ function drawBuildingAt(gx,gy,b){
   gy -= offsetY;
   g.save();
   if(b.kind==='campfire'){
-    g.fillStyle=shadeFillColor('#7b8591', shade);
+    g.fillStyle=shadeFillColorLit('#7b8591', campfireShade);
     g.fillRect(gx+10*s,gy+18*s,12*s,6*s);
     const f=(tick%6);
     const flameColor=['#ffde7a','#ffc05a','#ff9b4a'][f%3];
-    g.fillStyle=shadeFillColor(flameColor, shade);
+    g.fillStyle=shadeFillColorLit(flameColor, campfireShade);
     g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
   } else if(b.kind==='storage'){
-    g.fillStyle=shadeFillColor('#6a5338', shade);
+    g.fillStyle=shadeFillColorLit('#6a5338', shade);
     g.fillRect(gx+6*s,gy+10*s,20*s,14*s);
-    g.fillStyle=shadeFillColor('#8b6b44', shade);
+    g.fillStyle=shadeFillColorLit('#8b6b44', shade);
     g.fillRect(gx+6*s,gy+20*s,20*s,2*s);
-    g.fillStyle=shadeFillColor('#3b2b1a', shade);
+    g.fillStyle=shadeFillColorLit('#3b2b1a', shade);
     g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
   } else if(b.kind==='hut'){
-    g.fillStyle=shadeFillColor('#7d5a3a', shade);
+    g.fillStyle=shadeFillColorLit('#7d5a3a', shade);
     g.fillRect(gx+8*s,gy+16*s,16*s,12*s);
-    g.fillStyle=shadeFillColor('#caa56a', shade);
+    g.fillStyle=shadeFillColorLit('#caa56a', shade);
     g.fillRect(gx+6*s,gy+12*s,20*s,6*s);
-    g.fillStyle=shadeFillColor('#31251a', shade);
+    g.fillStyle=shadeFillColorLit('#31251a', shade);
     g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
   } else if(b.kind==='farmplot'){
-    g.fillStyle=shadeFillColor('#4a3624', shade);
+    g.fillStyle=shadeFillColorLit('#4a3624', shade);
     g.fillRect(gx+4*s,gy+8*s,24*s,16*s);
-    g.fillStyle=shadeFillColor('#3b2a1d', shade);
+    g.fillStyle=shadeFillColorLit('#3b2a1d', shade);
     g.fillRect(gx+4*s,gy+12*s,24*s,2*s);
     g.fillRect(gx+4*s,gy+16*s,24*s,2*s);
     g.fillRect(gx+4*s,gy+20*s,24*s,2*s);
   } else if(b.kind==='well'){
-    g.fillStyle=shadeFillColor('#6f8696', shade);
+    g.fillStyle=shadeFillColorLit('#6f8696', shade);
     g.fillRect(gx+10*s,gy+14*s,12*s,10*s);
-    g.fillStyle=shadeFillColor('#2b3744', shade);
+    g.fillStyle=shadeFillColorLit('#2b3744', shade);
     g.fillRect(gx+12*s,gy+18*s,8*s,6*s);
-    g.fillStyle=shadeFillColor('#927a54', shade);
+    g.fillStyle=shadeFillColorLit('#927a54', shade);
     g.fillRect(gx+8*s,gy+12*s,16*s,2*s);
   }
   if(b.built<1){
     g.strokeStyle='rgba(255,255,255,0.6)';
     g.strokeRect(gx+4*s,gy+4*s,24*s,24*s);
     const p=(b.progress||0)/(BUILDINGS[b.kind].cost||1);
-    g.fillStyle=shadeFillColor('#7cc4ff', shade);
+    g.fillStyle=shadeFillColorLit('#7cc4ff', shade);
     g.fillRect(gx+6*s,gy+28*s, Math.floor(20*p)*s, 2*s);
   }
   g.restore();
 }
 
-function drawVillager(v){
-  const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role=='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
+function drawVillager(v, useMultiply){
+  const frames = v.role==='farmer'? Tileset.villagerSprites.farmer : v.role==='worker'? Tileset.villagerSprites.worker : v.role==='explorer'? Tileset.villagerSprites.explorer : Tileset.villagerSprites.sleepy;
   const f=frames[Math.floor((tick/8)%3)], s=cam.z;
   const rect = entityDrawRect(v.x, v.y, cam);
   const spriteSize = 16 * s;
   const gx = Math.floor(rect.x + (rect.size - spriteSize) * 0.5);
   const gy = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
-  const shade = sampleShade(v.x, v.y);
+  const light = useMultiply ? 1 : sampleLightAt(world, v.x, v.y);
   drawShadow(v.x, v.y, 1, 1, { x:gx, y:gy, w:spriteSize, h:spriteSize });
   ctx.save();
   ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
-  applySpriteShade(ctx, gx, gy, spriteSize, spriteSize, shade);
+  applySpriteShadeLit(ctx, gx, gy, spriteSize, spriteSize, light);
   if(v.inv){
     const packColor=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a';
-    ctx.fillStyle=shadeFillColor(packColor, shade);
+    ctx.fillStyle=shadeFillColorLit(packColor, light);
     ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s);
   }
-  const cond=v.condition;
+  ctx.restore();
+
   const baseCx=gx+spriteSize*0.5;
   const baseCy=gy-4*cam.z;
   let labelOffset=0;
-  function drawLabel(text,color){
+  const queueLabel=(text,color)=>{
+    if(!text) return;
     const fontSize=Math.max(6,6*cam.z);
-    const cx=baseCx;
-    const cy=baseCy-labelOffset;
-    ctx.save();
-    ctx.font=`600 ${fontSize}px system-ui, -apple-system, "Segoe UI", sans-serif`;
-    ctx.textAlign='center';
-    ctx.textBaseline='middle';
-    const metrics=ctx.measureText(text);
-    const boxW=metrics.width+6*cam.z;
     const boxH=fontSize+4*cam.z;
-    ctx.fillStyle=shadeFillColor('rgba(10,12,16,0.8)', shade);
-    ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
-    ctx.strokeStyle='rgba(255,255,255,0.25)';
-    ctx.lineWidth=Math.max(1, Math.round(0.7*cam.z));
-    ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
-    ctx.fillStyle=shadeFillColor(color, shade);
-    ctx.fillText(text, cx, cy+0.2*cam.z);
-    ctx.restore();
+    villagerLabels.push({
+      text,
+      color,
+      cx:baseCx,
+      cy:baseCy-labelOffset,
+      fontSize,
+      boxH,
+      camZ:cam.z
+    });
     labelOffset+=boxH+2*cam.z;
-  }
+  };
+
+  const cond=v.condition;
   if(cond && cond!=='normal'){
     let label=null, color='#ffcf66';
     if(cond==='hungry'){ label='Hungry'; color='#ffcf66'; }
     else if(cond==='starving'){ label='Starving'; color='#ff6b6b'; }
     else if(cond==='sick'){ label='Collapsed'; color='#d76bff'; }
     else if(cond==='recovering'){ label='Recovering'; color='#7cc4ff'; }
-    if(label){ drawLabel(label,color); }
+    if(label){ queueLabel(label,color); }
   }
   const mood=v.happy;
   let moodLabel=null, moodColor='#8fe58c';
@@ -2470,9 +2721,32 @@ function drawVillager(v){
   else if(mood>=0.65){ moodLabel='🙂 Cheerful'; moodColor='#b9f5ae'; }
   else if(mood<=0.2){ moodLabel='☹️ Miserable'; moodColor='#ff8c8c'; }
   else if(mood<=0.35){ moodLabel='😟 Low spirits'; moodColor='#f5d58b'; }
-  if(moodLabel){ drawLabel(moodLabel,moodColor); }
-  ctx.restore();
+  if(moodLabel){ queueLabel(moodLabel,moodColor); }
 }
+
+function drawQueuedVillagerLabels(uiLight){
+  if(villagerLabels.length===0) return;
+  const clamped = Math.max(LIGHTING.uiMinLight, uiLight);
+  for(const label of villagerLabels){
+    const { text, color, cx, cy, fontSize, boxH, camZ } = label;
+    ctx.save();
+    ctx.font=`600 ${fontSize}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    const metrics=ctx.measureText(text);
+    const boxW=metrics.width+6*camZ;
+    ctx.fillStyle=shadeFillColorLit('rgba(10,12,16,0.8)', clamped);
+    ctx.fillRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+    ctx.strokeStyle='rgba(255,255,255,0.25)';
+    ctx.lineWidth=Math.max(1, Math.round(0.7*camZ));
+    ctx.strokeRect(cx-boxW/2, cy-boxH/2, boxW, boxH);
+    ctx.fillStyle=shadeFillColorLit(color, clamped);
+    ctx.fillText(text, cx, cy+0.2*camZ);
+    ctx.restore();
+  }
+  villagerLabels.length=0;
+}
+
 
 
 /* ==================== Items & Loop ==================== */
