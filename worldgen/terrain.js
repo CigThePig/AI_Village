@@ -1159,37 +1159,40 @@ export function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
   lz /= ln;
 
   const normalZ = 1;
+  const heights = height;
+  const width = w;
+  const heightTiles = h;
+  const lastRowIndex = heightTiles - 1;
+  const lastColIndex = width - 1;
 
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const i = y * w + x;
-      const north = i - w;
-      const south = i + w;
-      const h00 = height[north - 1];
-      const h01 = height[north];
-      const h02 = height[north + 1];
-      const h10 = height[i - 1];
-      const h12 = height[i + 1];
-      const h20 = height[south - 1];
-      const h21 = height[south];
-      const h22 = height[south + 1];
+  for (let y = 1; y < lastRowIndex; y++) {
+    const row = y * width;
+    const northRow = row - width;
+    const southRow = row + width;
+    for (let x = 1; x < lastColIndex; x++) {
+      const idx = row + x;
+      const idxNorth = northRow + x;
+      const idxSouth = southRow + x;
+
+      const h00 = heights[idxNorth - 1];
+      const h01 = heights[idxNorth];
+      const h02 = heights[idxNorth + 1];
+      const h10 = heights[idx - 1];
+      const h12 = heights[idx + 1];
+      const h20 = heights[idxSouth - 1];
+      const h21 = heights[idxSouth];
+      const h22 = heights[idxSouth + 1];
 
       const gx = ((h02 + 2 * h12 + h22) - (h00 + 2 * h10 + h20)) * slopeScale;
       const gy = ((h20 + 2 * h21 + h22) - (h00 + 2 * h01 + h02)) * slopeScale;
-
-      let nx = -gx;
-      let ny = -gy;
-      let nz = normalZ;
-      const invLen = 1 / Math.hypot(nx, ny, nz);
-      nx *= invLen;
-      ny *= invLen;
-      nz *= invLen;
-
-      let lambert = nx * lx + ny * ly + nz * lz;
+      const invLen = 1 / Math.sqrt(gx * gx + gy * gy + normalZ * normalZ);
+      let lambert = (-gx * lx - gy * ly + normalZ * lz) * invLen;
       if (lambert < -1) lambert = -1;
       else if (lambert > 1) lambert = 1;
-      const lit = clamp(ambient + intensity * lambert, 0, 1);
-      shade[i] = lit;
+      let lit = ambient + intensity * lambert;
+      if (lit < 0) lit = 0;
+      else if (lit > 1) lit = 1;
+      shade[idx] = lit;
     }
   }
 

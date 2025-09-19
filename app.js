@@ -200,6 +200,13 @@ const SHADOW_DIRECTION = {
   y: -LIGHT_VECTOR.y / LIGHT_VECTOR_LENGTH
 };
 const SHADOW_DIRECTION_ANGLE = Math.atan2(SHADOW_DIRECTION.y, SHADOW_DIRECTION.x);
+const SHADE_COLOR_CACHE = (() => {
+  const cache = new Array(256);
+  for (let i = 0; i < 256; i++) {
+    cache[i] = `rgb(${i},${i},${i})`;
+  }
+  return cache;
+})();
 const SPEEDS = [0.5, 1, 2, 4];
 const PF = {
   qx: new Int16Array(GRID_SIZE),
@@ -343,6 +350,20 @@ function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c
 function px(g,x,y,c){ g.fillStyle=c; g.fillRect(x,y,1,1); }
 function rect(g,x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
 function makeSprite(w,h,drawFn){ const c=makeCanvas(w,h), g=context2d(c); drawFn(g); return c; }
+const SHADOW_TEXTURE = (() => {
+  const size = 128;
+  const canvas = makeCanvas(size, size);
+  const g = context2d(canvas);
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size / 2;
+  const gradient = g.createRadialGradient(cx, cy, 0, cx, cy, radius);
+  gradient.addColorStop(0, 'rgba(0,0,0,1)');
+  gradient.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gradient;
+  g.fillRect(0, 0, size, size);
+  return canvas;
+})();
 
 function makeGrassVariant({ base, blades, shadow, overlay, extras }){
   const c=makeCanvas(TILE,TILE), g=context2d(c);
@@ -1972,31 +1993,34 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
   const shade = (world.hillshade && world.hillshade.length === GRID_SIZE) ? world.hillshade : null;
   if(shade){
     const ctx=staticCtx;
-    const img=ctx.getImageData(0,0, staticCanvas.width, staticCanvas.height);
-    const data=img.data;
+    ctx.save();
+    ctx.globalCompositeOperation='multiply';
     const tilePx=TILE;
-    const canvasWidth=staticCanvas.width;
+    let lastColorIndex=-1;
     for(let ty=0; ty<GRID_H; ty++){
       const rowStart=ty*GRID_W;
       const yOffset=ty*tilePx;
       for(let tx=0; tx<GRID_W; tx++){
         const idx=rowStart+tx;
         if(world.tiles[idx]===TILES.WATER) continue;
-        const s=shade[idx];
-        if(s===1) continue;
-        const xOffset=tx*tilePx;
-        for(let py=0; py<tilePx; py++){
-          let off=((yOffset+py)*canvasWidth + xOffset)*4;
-          for(let px=0; px<tilePx; px++){
-            data[off+0]=(data[off+0]*s)|0;
-            data[off+1]=(data[off+1]*s)|0;
-            data[off+2]=(data[off+2]*s)|0;
-            off+=4;
-          }
+        let s=shade[idx];
+        if(!Number.isFinite(s)) continue;
+        if(s<=0){
+          s=0;
+        } else if(s>=1){
+          continue;
         }
+        const colorIndex=((s*255)+0.5)|0;
+        if(colorIndex>=255) continue;
+        if(colorIndex!==lastColorIndex){
+          ctx.fillStyle=SHADE_COLOR_CACHE[colorIndex];
+          lastColorIndex=colorIndex;
+        }
+        const xOffset=tx*tilePx;
+        ctx.fillRect(xOffset, yOffset, tilePx, tilePx);
       }
     }
-    ctx.putImageData(img,0,0);
+    ctx.restore();
   }
   staticDirty=false; }
 
@@ -2070,19 +2094,16 @@ function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
 
   const alpha = clamp01(0.22 + 0.05 * cam.z);
 
+  const prevSmoothing = ctx.imageSmoothingEnabled;
   ctx.save();
   ctx.globalCompositeOperation='multiply';
+  ctx.globalAlpha = alpha;
   ctx.translate(centerX, centerY);
   ctx.rotate(SHADOW_DIRECTION_ANGLE);
-  ctx.scale(radiusX, radiusY);
-  const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-  gradient.addColorStop(0, `rgba(0,0,0,${alpha})`);
-  gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(0, 0, 1, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(SHADOW_TEXTURE, -radiusX, -radiusY, radiusX * 2, radiusY * 2);
   ctx.restore();
+  ctx.imageSmoothingEnabled = prevSmoothing;
 }
 
 function visibleTileBounds(){
