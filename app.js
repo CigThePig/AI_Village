@@ -130,9 +130,41 @@ function showFatalOverlay(err) {
   };
 }
 
+function reportFatal(message, data) {
+  let usedDebugKit = false;
+  if (window.DebugKit != null && typeof DebugKit.fatal === 'function') {
+    try {
+      DebugKit.fatal(message, data || null);
+      usedDebugKit = true;
+    } catch (e) {
+      // fall through to overlay fallback
+    }
+  }
+  if (usedDebugKit !== true) {
+    let fallback = message;
+    if ((fallback == null || fallback === '') && data != null) {
+      if (typeof data === 'object' && (data.stack || data.message)) {
+        fallback = data;
+      } else {
+        fallback = String(data);
+      }
+    }
+    if (fallback == null || fallback === '') {
+      fallback = 'Fatal error';
+    }
+    showFatalOverlay(fallback);
+  }
+}
+
 // Surface any unhandled error
-window.addEventListener('error', (e) => { showFatalOverlay(e.error || e.message); });
-window.addEventListener('unhandledrejection', (e) => { showFatalOverlay(e.reason || e); });
+window.addEventListener('error', (e) => {
+  const detail = e && (e.error || e.message || e);
+  reportFatal(detail, e);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const detail = e && (e.reason || e);
+  reportFatal(detail, e);
+});
 
 /* ==================== Constants & Types ==================== */
 const coords = (() => {
@@ -320,7 +352,7 @@ function applyArrayScaled(target, source, factor, fillValue=0){
 const canvas = document.getElementById('game');
 function context2d(canvas, opts){
   if (!canvas || typeof canvas.getContext !== 'function'){
-    showFatalOverlay(new Error('Unable to access a 2D drawing surface.'));
+    reportFatal(new Error('Unable to access a 2D drawing surface.'));
     return null;
   }
 
@@ -363,7 +395,7 @@ function context2d(canvas, opts){
     } else {
       console.error(message);
     }
-    showFatalOverlay(new Error(message));
+    reportFatal(new Error(message));
     return null;
   }
 
@@ -786,6 +818,79 @@ function newWorld(seed=Date.now()|0){
     }
     villagers.push(newVillager(spawnX, spawnY));
   }
+
+  // --- Debug namespace ---
+  if (world.__debug == null) {
+    world.__debug = {
+      pipeline: [],
+      lastFrame: 0
+    };
+  }
+
+  // --- Configure DebugKit if present ---
+  if (window.DebugKit != null && typeof DebugKit.configure === 'function') {
+    DebugKit.configure({
+      getPipeline: function() {
+        return (world.__debug != null) ? world.__debug.pipeline.slice(0) : [];
+      },
+      getLightingProbe: function() {
+        var lmQ = world.lightmapQ || null;
+        var hsQ = world.hillshadeQ || null;
+        var lmMM = (window.DebugKit && typeof DebugKit.arrMinMax === 'function' && lmQ != null)
+          ? DebugKit.arrMinMax(lmQ)
+          : null;
+        var hsMM = (window.DebugKit && typeof DebugKit.arrMinMax === 'function' && hsQ != null)
+          ? DebugKit.arrMinMax(hsQ)
+          : null;
+
+        return {
+          mode: (typeof LIGHTING !== 'undefined') ? LIGHTING.mode : 'unknown',
+          useMultiplyComposite: (typeof LIGHTING !== 'undefined') ? LIGHTING.useMultiplyComposite === true : false,
+          lightmapSize: (world.lightmapCanvas != null) ? { w: world.lightmapCanvas.width, h: world.lightmapCanvas.height } : null,
+          hasLightmapCtx: world.lightmapCtx != null,
+          hasHillshade: hsQ != null,
+          hasLightmapQ: lmQ != null,
+          hillshadeMinMax: hsMM,
+          lightmapMinMax: lmMM
+        };
+      },
+      onSafeMode: function(enable) {
+        if (typeof LIGHTING !== 'undefined') {
+          if (enable === true) {
+            LIGHTING.mode = 'off';
+            LIGHTING.useMultiplyComposite = false;
+          } else {
+            // If defaults exist, restore them here explicitly.
+          }
+        }
+        world.lightmapQ = null;
+        if (world.lightmapCtx != null && world.lightmapCanvas != null) {
+          try {
+            world.lightmapCtx.clearRect(0, 0, world.lightmapCanvas.width, world.lightmapCanvas.height);
+          } catch (e) {
+            // noop
+          }
+        }
+      },
+      getState: function() {
+        var villagerList = (world.villagers != null) ? world.villagers : (typeof villagers !== 'undefined' ? villagers : null);
+        var snapshotTime = null;
+        if (world.clock != null && world.clock.timeOfDay != null) {
+          snapshotTime = world.clock.timeOfDay;
+        } else if (typeof dayTime !== 'undefined') {
+          snapshotTime = dayTime;
+        }
+        return {
+          frame: world.__debug != null ? world.__debug.lastFrame : 0,
+          timeOfDay: snapshotTime,
+          villagers: Array.isArray(villagerList) ? villagerList.length : 0,
+          lightingMode: (typeof LIGHTING !== 'undefined') ? LIGHTING.mode : 'unknown',
+          multiplyComposite: (typeof LIGHTING !== 'undefined') ? LIGHTING.useMultiplyComposite === true : false
+        };
+      }
+    });
+  }
+
   toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
@@ -2422,6 +2527,24 @@ function applySpriteShade(context, x, y, w, h, shade){
 }
 
 function render(){
+  if (world && world.__debug != null) {
+    world.__debug.pipeline = [];
+    world.__debug.lastFrame = (world.__debug.lastFrame != null) ? (world.__debug.lastFrame + 1) : 1;
+  }
+  function __ck(name, ok, extra) {
+    const entry = { name: name, ok: ok === true, extra: extra || null };
+    if (window.DebugKit != null && typeof DebugKit.checkpoint === 'function') {
+      try {
+        DebugKit.checkpoint(name, entry.ok, entry.extra);
+      } catch (e) {
+        // ignore checkpoint errors
+      }
+    }
+    if (world && world.__debug != null && Array.isArray(world.__debug.pipeline)) {
+      world.__debug.pipeline.push(entry);
+    }
+  }
+
   if(!ctx || !world) return;
 
   world.dayTime = dayTime;
@@ -2447,18 +2570,18 @@ function render(){
   }
 
   const useMultiply = shadingMode !== 'off' && LIGHTING.useMultiplyComposite;
+  let compositeLogged = false;
+  let compositeError = null;
+  let spritesError = null;
 
-  if (shadingMode !== 'off'){
-    const expectedW = Math.max(1, Math.floor(((world.width||GRID_W)) * LIGHTING.lightmapScale));
-    const expectedH = Math.max(1, Math.floor(((world.height||GRID_H)) * LIGHTING.lightmapScale));
-    if (!world.lightmapCanvas || world.lightmapCanvas.width !== expectedW || world.lightmapCanvas.height !== expectedH || !world.lightmapQ){
-      buildHillshadeQ(world);
-    }
-    buildLightmap(world, ambient);
-  }
+  const logComposite = (ok, extra) => {
+    __ck('composite:multiply', ok, extra);
+    compositeLogged = true;
+  };
 
   if(staticDirty) drawStaticAlbedo();
   ctx.setTransform(1,0,0,1,0,0);
+  __ck('albedo:begin', true, null);
   ctx.fillStyle='#0a0c10';
   ctx.fillRect(0,0,W,H);
   // base map scaled by cam.z
@@ -2524,6 +2647,34 @@ function render(){
     }
   }
 
+  __ck('albedo:end', true, null);
+
+  const lightingReady = (typeof LIGHTING !== 'undefined' && LIGHTING.mode != 'off')
+    && (world.hillshadeQ != null || world.lightmapQ != null);
+  __ck('lighting:ready', lightingReady === true, {
+    mode: (typeof LIGHTING !== 'undefined') ? LIGHTING.mode : 'unknown',
+    hasHillshadeQ: world.hillshadeQ != null,
+    hasLightmapQ: world.lightmapQ != null
+  });
+
+  try {
+    if (typeof LIGHTING !== 'undefined' && LIGHTING.mode != 'off') {
+      const expectedW = Math.max(1, Math.floor(((world.width||GRID_W)) * LIGHTING.lightmapScale));
+      const expectedH = Math.max(1, Math.floor(((world.height||GRID_H)) * LIGHTING.lightmapScale));
+      if (!world.lightmapCanvas || world.lightmapCanvas.width !== expectedW || world.lightmapCanvas.height !== expectedH || !world.lightmapQ){
+        buildHillshadeQ(world);
+      }
+      buildLightmap(world, ambient);
+      const size = (world.lightmapCanvas != null) ? { w: world.lightmapCanvas.width, h: world.lightmapCanvas.height } : null;
+      __ck('lightmap:build', true, { size });
+    } else {
+      __ck('lightmap:build', false, { reason: 'lighting off' });
+    }
+  } catch (e) {
+    const err = e && e.message ? e.message : e;
+    __ck('lightmap:build', false, { error: String(err) });
+  }
+
   if(!useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
     ctx.save();
     ctx.globalCompositeOperation='multiply';
@@ -2535,130 +2686,169 @@ function render(){
     ctx.restore();
   }
 
-  // vegetation/crops
-  for(let y=y0;y<=y1;y++){ const rowStart=y*GRID_W; for(let x=x0;x<=x1;x++){ const i=rowStart+x;
-    if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
-      drawShadow(x, y, 1, 1);
-      const rect = entityDrawRect(x, y, cam);
-      const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
-      const light = useMultiply ? 1 : sampleLightAt(world, x, y);
+  try {
+    // vegetation/crops
+    for(let y=y0;y<=y1;y++){ const rowStart=y*GRID_W; for(let x=x0;x<=x1;x++){ const i=rowStart+x;
+      if(world.tiles[i]===TILES.FOREST && world.trees[i]>0){
+        drawShadow(x, y, 1, 1);
+        const rect = entityDrawRect(x, y, cam);
+        const raisedY = rect.y - Math.round(cam.z*TREE_VERTICAL_RAISE);
+        const light = useMultiply ? 1 : sampleLightAt(world, x, y);
+        ctx.save();
+        ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
+        applySpriteShadeLit(ctx, rect.x, raisedY, rect.size, rect.size, light);
+        ctx.restore();
+      }
+      if(world.berries[i]>0){
+        drawShadow(x, y, 1, 1);
+        const rect = entityDrawRect(x, y, cam);
+        const light = useMultiply ? 1 : sampleLightAt(world, x, y);
+        ctx.save();
+        ctx.drawImage(Tileset.sprite.berry, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+        applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
+        ctx.restore();
+      }
+      if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
+        drawShadow(x, y, 1, 1);
+        const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
+        const rect = entityDrawRect(x, y, cam);
+        ctx.save();
+        ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+        ctx.restore();
+      }
+    } }
+
+    if(PERF.log) t1 = performance.now();
+
+    // buildings
+    for(const b of buildings){
+      const gx = tileToPxX(b.x, cam);
+      const gy = tileToPxY(b.y, cam);
+      drawBuildingAt(gx, gy, b);
+    }
+
+    // items
+    for(const it of itemsOnGround){
+      const gx = tileToPxX(it.x, cam);
+      const gy = tileToPxY(it.y, cam);
+      const light = useMultiply ? 1 : sampleLightAt(world, it.x, it.y);
+      const tileSize = TILE*cam.z;
+      const centerX = Math.round(gx + tileSize*0.5);
+      const centerY = Math.round(gy + tileSize*0.5);
+      const size = Math.max(2, Math.round(4*cam.z));
+      const half = Math.floor(size/2);
+      const spriteRect = { x:centerX-half, y:centerY-half, w:size, h:size };
+      drawShadow(it.x, it.y, 1, 1, spriteRect);
       ctx.save();
-      ctx.drawImage(Tileset.sprite.tree, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
-      applySpriteShadeLit(ctx, rect.x, raisedY, rect.size, rect.size, light);
+      const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+      ctx.fillStyle = shadeFillColorLit(baseColor, light);
+      ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
       ctx.restore();
     }
-    if(world.berries[i]>0){
-      drawShadow(x, y, 1, 1);
-      const rect = entityDrawRect(x, y, cam);
-      const light = useMultiply ? 1 : sampleLightAt(world, x, y);
-      ctx.save();
-      ctx.drawImage(Tileset.sprite.berry, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-      applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
-      ctx.restore();
-    }
-    if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>0){
-      drawShadow(x, y, 1, 1);
-      const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
-      const rect = entityDrawRect(x, y, cam);
-      ctx.save();
-      ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-      ctx.restore();
-    }
-  } }
 
-  if(PERF.log) t1 = performance.now();
+    // villagers
+    for(const v of villagers){ drawVillager(v, useMultiply); }
 
-  // buildings
-  for(const b of buildings){
-    const gx = tileToPxX(b.x, cam);
-    const gy = tileToPxY(b.y, cam);
-    drawBuildingAt(gx, gy, b);
-  }
-
-  // items
-  for(const it of itemsOnGround){
-    const gx = tileToPxX(it.x, cam);
-    const gy = tileToPxY(it.y, cam);
-    const light = useMultiply ? 1 : sampleLightAt(world, it.x, it.y);
-    const tileSize = TILE*cam.z;
-    const centerX = Math.round(gx + tileSize*0.5);
-    const centerY = Math.round(gy + tileSize*0.5);
-    const size = Math.max(2, Math.round(4*cam.z));
-    const half = Math.floor(size/2);
-    const spriteRect = { x:centerX-half, y:centerY-half, w:size, h:size };
-    drawShadow(it.x, it.y, 1, 1, spriteRect);
-    ctx.save();
-    const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
-    ctx.fillStyle = shadeFillColorLit(baseColor, light);
-    ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
-    ctx.restore();
-  }
-
-  // villagers
-  for(const v of villagers){ drawVillager(v, useMultiply); }
-
-  if(ui.mode==='zones' && brushPreview){
-    const {x,y,r}=brushPreview;
-    ctx.strokeStyle='rgba(124,196,255,0.9)';
-    const strokeWidth=Math.max(1, Math.round(cam.z));
-    ctx.lineWidth=strokeWidth;
-    for(let yy=y-r; yy<=y+r; yy++){
-      for(let xx=x-r; xx<=x+r; xx++){
-        if(xx<0||yy<0||xx>=GRID_W||yy>=GRID_H) continue;
-        const sx = tileToPxX(xx, cam);
-        const sy = tileToPxY(yy, cam);
-        const tileSize=TILE*cam.z;
-        const inset=Math.min(Math.max(1, Math.round(cam.z*0.5)), Math.floor(tileSize*0.5));
-        const rectSize=Math.max(0, Math.round(tileSize - inset*2));
-        ctx.strokeRect(sx+inset, sy+inset, rectSize, rectSize);
+    if(ui.mode==='zones' && brushPreview){
+      const {x,y,r}=brushPreview;
+      ctx.strokeStyle='rgba(124,196,255,0.9)';
+      const strokeWidth=Math.max(1, Math.round(cam.z));
+      ctx.lineWidth=strokeWidth;
+      for(let yy=y-r; yy<=y+r; yy++){
+        for(let xx=x-r; xx<=x+r; xx++){
+          if(xx<0||yy<0||xx>=GRID_W||yy>=GRID_H) continue;
+          const sx = tileToPxX(xx, cam);
+          const sy = tileToPxY(yy, cam);
+          const tileSize=TILE*cam.z;
+          const inset=Math.min(Math.max(1, Math.round(cam.z*0.5)), Math.floor(tileSize*0.5));
+          const rectSize=Math.max(0, Math.round(tileSize - inset*2));
+          ctx.strokeRect(sx+inset, sy+inset, rectSize, rectSize);
+        }
       }
     }
+
+    if (typeof LIGHTING !== 'undefined' && LIGHTING.useMultiplyComposite === true && LIGHTING.mode != 'off') {
+      try {
+        if (useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
+          ctx.save();
+          ctx.globalCompositeOperation='multiply';
+          const destW = staticAlbedoCanvas ? staticAlbedoCanvas.width*cam.z : GRID_W*TILE*cam.z;
+          const destH = staticAlbedoCanvas ? staticAlbedoCanvas.height*cam.z : GRID_H*TILE*cam.z;
+          ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
+            baseDx, baseDy,
+            destW, destH);
+          ctx.restore();
+          logComposite(true, null);
+        } else {
+          logComposite(false, { reason: 'no-lightmap' });
+        }
+      } catch (err) {
+        compositeError = err;
+        const message = err && err.message ? err.message : err;
+        logComposite(false, { error: String(message) });
+      }
+    } else {
+      logComposite(false, { reason: 'disabled' });
+    }
+
+    if (LIGHTING.debugShowLightmap && world.lightmapCanvas){
+      ctx.save();
+      ctx.globalAlpha=0.9;
+      ctx.imageSmoothingEnabled=false;
+      const previewW=Math.min(128, Math.max(32, world.lightmapCanvas.width));
+      const previewH=Math.min(128, Math.max(32, world.lightmapCanvas.height));
+      ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
+        12, 12, previewW, previewH);
+      ctx.restore();
+    }
+
+    // campfire glow (screen space but positioned via cam)
+    for(const b of buildings){
+      if(b.kind==='campfire'){
+        const center=buildingCenter(b);
+        const gx = tileToPxX(center.x, cam);
+        const gy = tileToPxY(center.y, cam);
+        const r = (24+4*Math.sin(tick*0.2))*cam.z;
+        const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r);
+        grd.addColorStop(0,'rgba(255,180,90,0.35)');
+        grd.addColorStop(1,'rgba(255,120,60,0)');
+        ctx.fillStyle=grd;
+        ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill();
+      }
+    }
+
+    drawQueuedVillagerLabels(ambient);
+
+    // HUD counters
+    el('food').textContent=storageTotals.food|0; el('wood').textContent=storageTotals.wood|0; el('stone').textContent=storageTotals.stone|0; el('pop').textContent=villagers.length|0;
+    if(PERF.log){
+      t2 = performance.now();
+      if((tick % 60) === 0) console.log(`render: overlays ${(t1-t0).toFixed(2)}ms, total ${(t2-t0).toFixed(2)}ms`);
+    }
+  } catch (err) {
+    spritesError = err;
   }
 
-  if (useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
-    ctx.save();
-    ctx.globalCompositeOperation='multiply';
-    const destW = staticAlbedoCanvas ? staticAlbedoCanvas.width*cam.z : GRID_W*TILE*cam.z;
-    const destH = staticAlbedoCanvas ? staticAlbedoCanvas.height*cam.z : GRID_H*TILE*cam.z;
-    ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
-      baseDx, baseDy,
-      destW, destH);
-    ctx.restore();
-  }
-
-  if (LIGHTING.debugShowLightmap && world.lightmapCanvas){
-    ctx.save();
-    ctx.globalAlpha=0.9;
-    ctx.imageSmoothingEnabled=false;
-    const previewW=Math.min(128, Math.max(32, world.lightmapCanvas.width));
-    const previewH=Math.min(128, Math.max(32, world.lightmapCanvas.height));
-    ctx.drawImage(world.lightmapCanvas, 0,0, world.lightmapCanvas.width, world.lightmapCanvas.height,
-      12, 12, previewW, previewH);
-    ctx.restore();
-  }
-
-  // campfire glow (screen space but positioned via cam)
-  for(const b of buildings){
-    if(b.kind==='campfire'){
-      const center=buildingCenter(b);
-      const gx = tileToPxX(center.x, cam);
-      const gy = tileToPxY(center.y, cam);
-      const r = (24+4*Math.sin(tick*0.2))*cam.z;
-      const grd=ctx.createRadialGradient(gx,gy,4*cam.z, gx,gy,r);
-      grd.addColorStop(0,'rgba(255,180,90,0.35)');
-      grd.addColorStop(1,'rgba(255,120,60,0)');
-      ctx.fillStyle=grd;
-      ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill();
+  if (!compositeLogged) {
+    if (spritesError) {
+      logComposite(false, { reason: 'skipped' });
+    } else {
+      logComposite(false, { reason: 'disabled' });
     }
   }
 
-  drawQueuedVillagerLabels(ambient);
+  if (spritesError) {
+    const message = spritesError && spritesError.message ? spritesError.message : spritesError;
+    __ck('sprites-ui', false, { error: String(message) });
+  } else {
+    __ck('sprites-ui', true, null);
+  }
 
-  // HUD counters
-  el('food').textContent=storageTotals.food|0; el('wood').textContent=storageTotals.wood|0; el('stone').textContent=storageTotals.stone|0; el('pop').textContent=villagers.length|0;
-  if(PERF.log){
-    t2 = performance.now();
-    if((tick % 60) === 0) console.log(`render: overlays ${(t1-t0).toFixed(2)}ms, total ${(t2-t0).toFixed(2)}ms`);
+  if (spritesError) {
+    throw spritesError;
+  }
+  if (compositeError) {
+    throw compositeError;
   }
 }
 
@@ -2820,11 +3010,11 @@ function boot(){
       el('help').style.display='block';
     }
   } catch (e){
-    showFatalOverlay(e);
+    reportFatal(e);
   } finally {
     // Ensure the loop starts no matter what
     try { requestAnimationFrame(update); }
-    catch (e){ showFatalOverlay(e); }
+    catch (e){ reportFatal(e); }
   }
 }
 boot();
