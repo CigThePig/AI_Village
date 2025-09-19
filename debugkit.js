@@ -34,6 +34,9 @@
   let logId = 0;
   let connectionListenerAttached = false;
   let trayCollapsed = false;
+  let appGetLightingProbe = null;
+  let appGetPipeline = null;
+  let appEnterSafeMode = null;
 
   const doc = document;
   const win = window;
@@ -323,6 +326,16 @@
     return Math.max(min, Math.min(max, n));
   }
 
+  // Optional: a quick min/max helper for Float32Array-like inputs
+  function arrMinMax(a) {
+    if (!a || !a.length) return { min: null, max: null };
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < a.length; i++) {
+      const v = a[i]; if (v < mn) mn = v; if (v > mx) mx = v;
+    }
+    return { min: +mn.toFixed(3), max: +mx.toFixed(3) };
+  }
+
   function shouldRedactKey(key) {
     const lower = String(key).toLowerCase();
     return REDACT_QUERY.some(q => lower.includes(q));
@@ -520,6 +533,8 @@
   const selectorInput = el('input', { type: 'text', placeholder: 'CSS selector', className: 'dbg-selector' });
   const rectBtn = el('button', null, 'Rect');
   const shotBtn = el('button', null, 'Shot');
+  const diagBtn = el('button', null, 'Diag');
+  const safeBtn = el('button', null, 'Safe');
 
   copyBtn.classList.add('dbg-aux');
   exportBtn.classList.add('dbg-aux');
@@ -564,6 +579,7 @@
     rectBtn,
     shotBtn
   );
+  rowC.append(diagBtn, safeBtn);
 
   head.append(rowA, rowB, rowC);
   tray.append(head, body);
@@ -956,6 +972,51 @@
   connBtn.addEventListener('click', () => {
     logConnection('Connection info');
     attachConnectionListener();
+  });
+
+  diagBtn.addEventListener('click', () => {
+    try {
+      const pipe = appGetPipeline ? appGetPipeline() : null;
+      if (pipe && Array.isArray(pipe)) {
+        add('NOTE', 'Pipeline checkpoints', pipe);
+      } else {
+        add('WARN', 'No pipeline info from app. Provide getPipeline() in DebugKit.configure().');
+      }
+      const probe = appGetLightingProbe ? appGetLightingProbe() : null;
+      if (probe) {
+        const summary = {
+          mode: probe.mode,
+          useMultiply: probe.useMultiplyComposite,
+          scale: probe.lightmapScale,
+          ctx: probe.contexts,
+          Hq: { present: !!probe.hillshadeQ, min: probe.HqMin, max: probe.HqMax },
+          Lq: { present: !!probe.lightmapQ, min: probe.LqMin, max: probe.LqMax },
+          canMultiply: probe.canMultiply,
+          reasons: probe.reasons || []
+        };
+        add('STATE', 'Lighting probe', summary);
+        if (summary.canMultiply === false && summary.reasons && summary.reasons.length) {
+          add('ERROR', 'Lighting not ready', summary.reasons.join('; '));
+        }
+      } else {
+        add('WARN', 'No lighting probe from app. Provide getLightingProbe() in DebugKit.configure().');
+      }
+    } catch (err) {
+      add('ERROR', 'Diag failed', fmt(err));
+    }
+  });
+
+  safeBtn.addEventListener('click', () => {
+    try {
+      if (appEnterSafeMode) {
+        appEnterSafeMode();
+        add('NOTE', 'Safe mode requested by DebugKit.');
+      } else {
+        add('WARN', 'No onSafeMode() provided in DebugKit.configure().');
+      }
+    } catch (err) {
+      add('ERROR', 'Safe mode failed', fmt(err));
+    }
   });
 
   permsBtn.addEventListener('click', () => {
@@ -1686,8 +1747,73 @@
         }
       }
     },
+    checkpoint(name, ok, extra) {
+      add(ok ? 'NOTE' : 'ERROR', 'CHK ' + name, extra === undefined ? undefined : ensureDataSafe(extra));
+    },
     refreshEnv
   };
+
+  const origConfigure = state.configure;
+  state.configure = function (opts = {}) {
+    origConfigure(opts);
+    if (typeof opts.getLightingProbe === 'function') appGetLightingProbe = opts.getLightingProbe;
+    if (typeof opts.getPipeline === 'function') appGetPipeline = opts.getPipeline;
+    if (typeof opts.onSafeMode === 'function') appEnterSafeMode = opts.onSafeMode;
+    return state;
+  };
+
+  state.fatal = function (message, data) {
+    try {
+      if (!doc || !doc.body) {
+        add('ERROR', 'fatal() failed', 'Document body unavailable');
+        return;
+      }
+      const shield = doc.createElement('div');
+      Object.assign(shield.style, {
+        position: 'fixed', inset: 0, background: 'rgba(10,12,18,0.92)',
+        color: '#fff', zIndex: 2147483647, display: 'flex',
+        alignItems: 'center', justifyContent: 'center', padding: '24px'
+      });
+      const box = doc.createElement('div');
+      box.style.maxWidth = '720px';
+      box.style.font = "500 16px/1.45 system-ui, -apple-system, Segoe UI, sans-serif";
+      box.innerHTML = '<div style="font-size:20px;font-weight:700;margin-bottom:8px">Render unavailable</div>'
+        + '<div style="opacity:.9;margin-bottom:12px">' + (message || 'Unknown rendering error') + '</div>'
+        + '<pre style="max-height:40vh;overflow:auto;background:#0f1522;padding:12px;border-radius:8px;white-space:pre-wrap;word-break:break-word;"></pre>'
+        + '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
+        +   '<button id="dbgSafe" style="padding:8px 12px;border-radius:8px;background:#19253c;color:#e8eefc;border:1px solid #2a3550">Safe Mode</button>'
+        +   '<button id="dbgReload" style="padding:8px 12px;border-radius:8px;background:#19253c;color:#e8eefc;border:1px solid #2a3550">Reload</button>'
+        + '</div>';
+      shield.appendChild(box);
+      doc.body.appendChild(shield);
+      const pre = box.querySelector('pre');
+      if (pre) {
+        pre.textContent = data ? (typeof data === 'string' ? data : safeStringify(ensureDataSafe(data))) : '(no details)';
+      }
+      const safeOverlayBtn = box.querySelector('#dbgSafe');
+      if (safeOverlayBtn) {
+        safeOverlayBtn.onclick = () => {
+          try { if (appEnterSafeMode) appEnterSafeMode(); } catch (_) {}
+          if (shield.parentNode) {
+            shield.parentNode.removeChild(shield);
+          }
+        };
+      }
+      const reloadBtn = box.querySelector('#dbgReload');
+      if (reloadBtn) {
+        reloadBtn.onclick = () => {
+          const u = new URL(location.href);
+          u.searchParams.set('buster', Date.now());
+          location.href = u.toString();
+        };
+      }
+      add('ERROR', 'Fatal overlay shown', { message, details: data });
+    } catch (err) {
+      add('ERROR', 'fatal() failed', fmt(err));
+    }
+  };
+
+  state.arrMinMax = arrMinMax;
 
   win.DebugKit = state;
 
