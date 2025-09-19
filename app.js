@@ -2002,7 +2002,8 @@ function drawStatic(){ if(!staticCanvas){ staticCanvas=makeCanvas(GRID_W*TILE, G
       const yOffset=ty*tilePx;
       for(let tx=0; tx<GRID_W; tx++){
         const idx=rowStart+tx;
-        if(world.tiles[idx]===TILES.WATER) continue;
+        const tileType = world.tiles[idx];
+        if(tileType===TILES.WATER || tileType===TILES.FARMLAND) continue;
         let s=shade[idx];
         if(!Number.isFinite(s)) continue;
         if(s<=0){
@@ -2275,10 +2276,8 @@ function render(){
       drawShadow(x, y, 1, 1);
       const stageIndex=Math.min(2, Math.floor(world.growth[i]/80));
       const rect = entityDrawRect(x, y, cam);
-      const shade = sampleShade(x, y);
       ctx.save();
       ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-      applySpriteShade(ctx, rect.x, rect.y, rect.size, rect.size, shade);
       ctx.restore();
     }
   } }
@@ -2362,7 +2361,7 @@ function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
   const fp=getFootprint(b.kind);
   const center=buildingCenter(b);
-  const shade=sampleShade(center.x, center.y);
+  const shade = b.kind==='farmplot' ? 1 : sampleShade(center.x, center.y);
   drawShadow(b.x, b.y, fp.w, fp.h);
   const offsetX = Math.floor((ENTITY_TILE_PX - fp.w*TILE) * s * 0.5);
   const offsetY = Math.floor((ENTITY_TILE_PX - fp.h*TILE) * s * 0.5);
