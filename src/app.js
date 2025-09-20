@@ -1044,8 +1044,9 @@ function newWorld(seed=Date.now()|0){
     staticAlbedoCtx: null,
     emitters: []
   };
+  buildHillshadeQ(nextWorld);
+  world = nextWorld;
   gameState.world = nextWorld;
-  buildHillshadeQ(world);
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
   world.zone.fill(0);
