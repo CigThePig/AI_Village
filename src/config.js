@@ -1,0 +1,9 @@
+export const TILE_SIZE = 16;
+export const ENTITY_TILE_SIZE = 32;
+export const GRID_WIDTH = 192;
+export const GRID_HEIGHT = 192;
+export const SPEED_OPTIONS = [0.5, 1, 2, 4];
+export const CAMERA_MIN_Z = 1.2;
+export const CAMERA_MAX_Z = 4.5;
+export const DAY_LENGTH = 60 * 40;
+export const LAYER_ORDER = Object.freeze(['terrain', 'water', 'entities', 'ui']);
