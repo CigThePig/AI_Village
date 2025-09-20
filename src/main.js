@@ -27,22 +27,31 @@ async function waitForDependencies() {
   if (hasWorldgenDependencies()) {
     return;
   }
-  await new Promise((resolve) => {
-    const maxAttempts = 300;
+  const POLL_INTERVAL_MS = 10;
+  const MAX_ATTEMPTS = 300;
+  await new Promise((resolve, reject) => {
     let attempts = 0;
     const interval = setInterval(() => {
       attempts++;
-      if (hasWorldgenDependencies() || attempts >= maxAttempts) {
+      if (hasWorldgenDependencies()) {
         clearInterval(interval);
         resolve();
+        return;
       }
-    }, 10);
+      if (attempts >= MAX_ATTEMPTS) {
+        clearInterval(interval);
+        reject(new Error('AI Village terrain dependencies failed to load before timeout.'));
+      }
+    }, POLL_INTERVAL_MS);
   });
 }
 
 (async function bootstrap() {
   try {
     await waitForDependencies();
+    if (!hasWorldgenDependencies()) {
+      throw new Error('AI Village terrain dependencies became unavailable after waiting.');
+    }
     const module = await import('./app.js');
     if (module && typeof module.bootGame === 'function') {
       module.bootGame();
