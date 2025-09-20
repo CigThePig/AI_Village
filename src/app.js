@@ -1,3 +1,16 @@
+import { createInitialState } from './state.js';
+import {
+  TILE_SIZE,
+  ENTITY_TILE_SIZE,
+  GRID_WIDTH,
+  GRID_HEIGHT,
+  SPEED_OPTIONS,
+  CAMERA_MIN_Z,
+  CAMERA_MAX_Z,
+  DAY_LENGTH,
+  LAYER_ORDER
+} from './config.js';
+
 const AIV_SCOPE = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this);
 const terrainAPI = AIV_SCOPE && AIV_SCOPE.AIV_TERRAIN ? AIV_SCOPE.AIV_TERRAIN : null;
 const configAPI = AIV_SCOPE && AIV_SCOPE.AIV_CONFIG ? AIV_SCOPE.AIV_CONFIG : null;
@@ -75,8 +88,6 @@ function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
-(function(){
-'use strict';
 
 // ---- Safe storage wrapper ----
 const Storage = (() => {
@@ -182,10 +193,10 @@ window.addEventListener('unhandledrejection', (e) => {
 
 /* ==================== Constants & Types ==================== */
 const coords = (() => {
-  const TILE = 16;
-  const ENTITY_TILE_PX = 32;
-  let GRID_W = 192;
-  let GRID_H = 192;
+  const TILE = TILE_SIZE;
+  const ENTITY_TILE_PX = ENTITY_TILE_SIZE;
+  let GRID_W = GRID_WIDTH;
+  let GRID_H = GRID_HEIGHT;
 
   function tileToPxX(tx, cam){ return Math.floor((tx - cam.x) * TILE * cam.z); }
   function tileToPxY(ty, cam){ return Math.floor((ty - cam.y) * TILE * cam.z); }
@@ -265,7 +276,7 @@ const SHADE_COLOR_CACHE = (() => {
   }
   return cache;
 })();
-const SPEEDS = [0.5, 1, 2, 4];
+const SPEEDS = SPEED_OPTIONS;
 const PF = {
   qx: new Int16Array(GRID_SIZE),
   qy: new Int16Array(GRID_SIZE),
@@ -274,7 +285,6 @@ const PF = {
 let waterRowMask = new Uint8Array(GRID_H);
 let zoneRowMask = new Uint8Array(GRID_H);
 let currentAmbient = 1;
-const villagerLabels = [];
 
 function ensureRowMasksSize(){
   if(waterRowMask.length !== GRID_H) waterRowMask = new Uint8Array(GRID_H);
@@ -426,7 +436,7 @@ canvas.style.touchAction = 'none';
 let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 let W=0, H=0;
 let cam = { x:0, y:0, z:2.2 }; // x,y in tiles; draw scales by z
-const MIN_Z=1.2, MAX_Z=4.5;
+const MIN_Z=CAMERA_MIN_Z, MAX_Z=CAMERA_MAX_Z;
 
 function resize(){
   DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
@@ -589,8 +599,91 @@ function buildTileset(){
 }
 
 /* ==================== World State ==================== */
-let world=null, buildings=[], villagers=[], jobs=[], itemsOnGround=[], storageTotals={food:0,wood:0,stone:0}, storageReserved={food:0,wood:0,stone:0};
-let tick=0, paused=false, speedIdx=1, dayTime=0; const DAY_LEN=60*40;
+const gameState = createInitialState({ seed: Date.now() | 0, cfg: null });
+const { units, time, rng, stocks, queue, population } = gameState;
+const buildings = units.buildings;
+const villagers = units.villagers;
+const jobs = units.jobs;
+const itemsOnGround = units.itemsOnGround;
+const storageTotals = stocks.totals;
+const storageReserved = stocks.reserved;
+const villagerLabels = queue.villagerLabels;
+const priorities = population.priorities;
+const DAY_LEN = DAY_LENGTH;
+
+let world = gameState.world;
+Object.defineProperty(gameState, 'world', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    return world;
+  },
+  set(value) {
+    world = value || null;
+  }
+});
+
+let tick = Number.isFinite(time.tick) ? time.tick | 0 : 0;
+let paused = time.paused === true;
+let speedIdx = Number.isFinite(time.speedIdx) ? time.speedIdx | 0 : 1;
+let dayTime = Number.isFinite(time.dayTime) ? time.dayTime | 0 : 0;
+Object.defineProperties(time, {
+  tick: {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return tick;
+    },
+    set(value) {
+      tick = Number.isFinite(value) ? value | 0 : 0;
+    }
+  },
+  paused: {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return paused;
+    },
+    set(value) {
+      paused = value === true;
+    }
+  },
+  speedIdx: {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return speedIdx;
+    },
+    set(value) {
+      speedIdx = Number.isFinite(value) ? value | 0 : 0;
+    }
+  },
+  dayTime: {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return dayTime;
+    },
+    set(value) {
+      dayTime = Number.isFinite(value) ? value | 0 : 0;
+    }
+  }
+});
+
+let R = typeof rng.generator === 'function' ? rng.generator : Math.random;
+Object.defineProperty(rng, 'generator', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    return R;
+  },
+  set(value) {
+    if (typeof value === 'function') {
+      R = value;
+    }
+  }
+});
+rng.seed = Number.isFinite(rng.seed) ? rng.seed >>> 0 : (Date.now() | 0);
 
 let debugKitInstance = null;
 let debugKitWatcherInstalled = false;
@@ -899,18 +992,27 @@ const FOOTPRINT = {
 };
 
 function newWorld(seed=Date.now()|0){
-  R = mulberry32(seed>>>0);
+  const normalizedSeed = seed >>> 0;
+  rng.seed = normalizedSeed;
+  rng.generator = mulberry32(normalizedSeed);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0;
-  storageTotals={food:8, wood:12, stone:0};
-  storageReserved={food:0, wood:0, stone:0};
-  tick=0; dayTime=0;
+  storageTotals.food = 8;
+  storageTotals.wood = 12;
+  storageTotals.stone = 0;
+  storageReserved.food = 0;
+  storageReserved.wood = 0;
+  storageReserved.stone = 0;
+  time.tick = 0;
+  time.dayTime = 0;
+  tick = time.tick;
+  dayTime = time.dayTime;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
   const aux = terrain.aux || {};
   const mode = normalizeShadingMode(SHADING_DEFAULTS.mode);
   SHADING_DEFAULTS.mode = mode;
   LIGHTING.mode = mode;
   const hillshade = computeShadeForMode(mode, aux.height);
-  world={
+  const nextWorld={
     seed,
     tiles:terrain.tiles,
     zone:new Uint8Array(GRID_SIZE),
@@ -933,6 +1035,7 @@ function newWorld(seed=Date.now()|0){
     staticAlbedoCtx: null,
     emitters: []
   };
+  gameState.world = nextWorld;
   buildHillshadeQ(world);
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
@@ -1554,7 +1657,6 @@ document.getElementById('sheetBuild').addEventListener('click', (e)=>{
   const detail=def?.tooltip?` — ${def.tooltip}`:'';
   Toast.show(`Tap map to place: ${label}${detail}`);
 });
-const priorities={ food:0.7, build:0.5, explore:0.3 };
 document.getElementById('prioFood').addEventListener('input', e=> priorities.food=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioBuild').addEventListener('input', e=> priorities.build=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioExplore').addEventListener('input', e=> priorities.explore=(parseInt(e.target.value,10)||0)/100 );
@@ -2322,8 +2424,14 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     ensureBuildingData(b);
     buildings.push(b);
   });
-  storageTotals=Object.assign({food:0,wood:0,stone:0}, d.storageTotals||{});
-  storageReserved=Object.assign({food:0,wood:0,stone:0}, d.storageReserved||{});
+  const loadedTotals = Object.assign({food:0,wood:0,stone:0}, d.storageTotals||{});
+  storageTotals.food = loadedTotals.food||0;
+  storageTotals.wood = loadedTotals.wood||0;
+  storageTotals.stone = loadedTotals.stone||0;
+  const loadedReserved = Object.assign({food:0,wood:0,stone:0}, d.storageReserved||{});
+  storageReserved.food = loadedReserved.food||0;
+  storageReserved.wood = loadedReserved.wood||0;
+  storageReserved.stone = loadedReserved.stone||0;
   villagers.length=0;
   (d.villagers||[]).forEach(v=>{
     if(!v) return;
@@ -2686,6 +2794,7 @@ function render(){
   if (world && world.__debug != null) {
     world.__debug.pipeline = [];
     world.__debug.lastFrame = (world.__debug.lastFrame != null) ? (world.__debug.lastFrame + 1) : 1;
+    world.__debug.layerOrder = LAYER_ORDER;
   }
   function __ck(name, ok, extra) {
     const entry = { name: name, ok: ok === true, extra: extra || null };
@@ -3185,11 +3294,15 @@ if (AIV_SCOPE && typeof AIV_SCOPE === 'object') {
     sampleLightAt,
     shadeFillColorLit,
     applySpriteShadeLit,
-    LIGHTING
+    LIGHTING,
+    state: gameState,
+    boot
   };
   AIV_SCOPE.AIV_APP = Object.assign({}, AIV_SCOPE.AIV_APP || {}, appApi);
   AIV_SCOPE.LIGHTING = LIGHTING;
 }
-boot();
 
-})();
+export { boot as bootGame };
+export { gameState as state };
+export { LIGHTING };
+export { setShadingMode, setShadingParams, makeAltitudeShade, ambientAt, buildHillshadeQ, buildLightmap, sampleLightAt, shadeFillColorLit, applySpriteShadeLit };
