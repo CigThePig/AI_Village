@@ -679,7 +679,7 @@ Object.defineProperties(time, {
 let lastBlackboardTick = tick;
 let lastBlackboardLogTick = tick;
 
-let R = typeof rng.generator === 'function' ? rng.generator : Math.random;
+R = typeof rng.generator === 'function' ? rng.generator : Math.random;
 Object.defineProperty(rng, 'generator', {
   configurable: true,
   enumerable: true,
