@@ -49,6 +49,7 @@ export function createInitialState({ seed, cfg } = {}) {
     rng,
     stocks,
     queue,
-    population
+    population,
+    bb: null
   };
 }
