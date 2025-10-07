@@ -94,42 +94,97 @@ const PERF = { log:false }; // flip to true to log basic timings
 
 // ---- Safe storage wrapper ----
 const Storage = (() => {
-  let available = false;
+  const host = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : null);
+  let store = null;
   try {
-    const k = '__aiv_test__' + Math.random();
-    window.localStorage.setItem(k, '1');
-    window.localStorage.removeItem(k);
-    available = true;
+    if (host && host.localStorage) {
+      store = host.localStorage;
+    }
   } catch (e) {
-    available = false;
+    store = null;
   }
-  function get(key, def=null) {
-    if (!available) return def;
+
+  let available = false;
+  if (store) {
     try {
-      const v = window.localStorage.getItem(key);
+      const k = '__aiv_test__' + Math.random();
+      store.setItem(k, '1');
+      store.removeItem(k);
+      available = true;
+    } catch (e) {
+      available = false;
+    }
+  }
+
+  function get(key, def = null) {
+    if (!available || !store) return def;
+    try {
+      const v = store.getItem(key);
       return v === null ? def : v;
-    } catch (e) { return def; }
+    } catch (e) {
+      return def;
+    }
   }
+
   function set(key, value) {
-    if (!available) return false;
-    try { window.localStorage.setItem(key, value); return true; }
-    catch (e) { return false; }
+    if (!available || !store) return false;
+    try {
+      store.setItem(key, value);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
+
   function del(key) {
-    if (!available) return false;
-    try { window.localStorage.removeItem(key); return true; }
-    catch (e) { return false; }
+    if (!available || !store) return false;
+    try {
+      store.removeItem(key);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
+
   return {
-    get available(){ return available; },
-    set available(v){ available = !!v; },
+    get available() { return available; },
+    set available(v) { available = !!v; },
     get,
     set,
     del
   };
 })();
 
+function describeError(value) {
+  if (value == null) {
+    return 'Fatal error';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value instanceof Error) {
+    return value.stack || value.message || String(value);
+  }
+  if (typeof value === 'object') {
+    const stack = value.stack || value.message;
+    if (stack) {
+      return stack;
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (jsonErr) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
 function showFatalOverlay(err) {
+  if (typeof document === 'undefined') {
+    console.error('Startup error', describeError(err));
+    return;
+  }
+  const message = describeError(err);
   let div = document.getElementById('fatal-overlay');
   if (!div) {
     div = document.createElement('div');
@@ -142,9 +197,31 @@ function showFatalOverlay(err) {
     `;
     document.body.appendChild(div);
   }
-  div.innerHTML = `<b>Startup error</b><br><pre style="white-space:pre-wrap">${(err && (err.stack||err.message||String(err)))}</pre>
-    <button id="btnContinueNoSave" style="margin-top:8px">Continue (no save)</button>`;
-  const btn = document.getElementById('btnContinueNoSave');
+  if (typeof div.replaceChildren === 'function') {
+    div.replaceChildren();
+  } else {
+    while (div.firstChild) {
+      div.removeChild(div.firstChild);
+    }
+  }
+
+  const title = document.createElement('b');
+  title.textContent = 'Startup error';
+  div.appendChild(title);
+  div.appendChild(document.createElement('br'));
+
+  const pre = document.createElement('pre');
+  pre.style.whiteSpace = 'pre-wrap';
+  pre.textContent = message;
+  div.appendChild(pre);
+
+  const button = document.createElement('button');
+  button.id = 'btnContinueNoSave';
+  button.style.marginTop = '8px';
+  button.textContent = 'Continue (no save)';
+  div.appendChild(button);
+
+  const btn = button;
   btn.onclick = () => {
     // Try to recover by disabling storage and starting the loop if needed
     if (typeof Storage !== 'undefined') {
