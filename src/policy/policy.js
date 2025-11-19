@@ -26,7 +26,24 @@ const DEFAULT_JOB_STYLE = Object.freeze({
   workerRoleBonus: 0.06,
   hungerFarmThreshold: 0.6,
   hungerFarmBonus: 0.03,
+  famineFoodBonus: 0.12,
+  famineNonEssentialPenalty: 0.08,
+  buildPushBonus: 0.05,
+  growthPushBonus: 0.06,
+  buildMaterialPenaltyWeight: 0.12,
+  buildMaterialReserveTarget: 4,
+  farmingSkillWeight: 0.4,
+  constructionSkillWeight: 0.3,
   minPickScore: 0
+});
+
+const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
+  hungry: 0.78,
+  starving: 1.02,
+  minHungry: 0.65,
+  minStarving: 0.95,
+  famineTightening: 0.14,
+  coldSeasonTightening: 0.05
 });
 
 export const policy = {
@@ -61,6 +78,7 @@ export const policy = {
   },
   moodTargets: { ...DEFAULT_MOOD_TARGETS },
   style: {
-    jobScoring: { ...DEFAULT_JOB_STYLE }
+    jobScoring: { ...DEFAULT_JOB_STYLE },
+    hunger: { ...DEFAULT_HUNGER_THRESHOLDS }
   }
 };

@@ -19,6 +19,18 @@ function getCaps(policy) {
   return policy?.caps || {};
 }
 
+function resolveSkill(value, fallback = 0.5) {
+  if (Number.isFinite(value)) return clamp(value, 0, 1);
+  return clamp(fallback, 0, 1);
+}
+
+function computeFamineSeverity(blackboard) {
+  if (!blackboard || !blackboard.famine) return 0;
+  const villagerCount = Math.max(1, blackboard.villagers || 0);
+  const weightedNeed = (blackboard.starvingVillagers || 0) + (blackboard.hungryVillagers || 0) * 0.5;
+  return clamp(weightedNeed / villagerCount, 0, 1);
+}
+
 export function score(job, villager, policy, blackboard) {
   if (!job || !villager || !policy) {
     return -Infinity;
@@ -38,6 +50,18 @@ export function score(job, villager, policy, blackboard) {
   const workerRoleBonus = Number.isFinite(style.workerRoleBonus) ? style.workerRoleBonus : 0;
   const hungerFarmThreshold = Number.isFinite(style.hungerFarmThreshold) ? style.hungerFarmThreshold : Infinity;
   const hungerFarmBonus = Number.isFinite(style.hungerFarmBonus) ? style.hungerFarmBonus : 0;
+  const famineFoodBonus = Number.isFinite(style.famineFoodBonus) ? style.famineFoodBonus : 0;
+  const famineNonEssentialPenalty = Number.isFinite(style.famineNonEssentialPenalty) ? style.famineNonEssentialPenalty : 0;
+  const buildPushBonus = Number.isFinite(style.buildPushBonus) ? style.buildPushBonus : 0;
+  const growthPushBonus = Number.isFinite(style.growthPushBonus) ? style.growthPushBonus : 0;
+  const buildMaterialPenaltyWeight = Number.isFinite(style.buildMaterialPenaltyWeight) ? style.buildMaterialPenaltyWeight : 0;
+  const buildMaterialReserveTarget = Number.isFinite(style.buildMaterialReserveTarget) ? style.buildMaterialReserveTarget : 0;
+  const farmingSkillWeight = Number.isFinite(style.farmingSkillWeight)
+    ? style.farmingSkillWeight
+    : farmerRoleBonus * 2;
+  const constructionSkillWeight = Number.isFinite(style.constructionSkillWeight)
+    ? style.constructionSkillWeight
+    : workerRoleBonus * 2;
 
   const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
   let effectivePriority = rawPriority;
@@ -72,16 +96,47 @@ export function score(job, villager, policy, blackboard) {
     }
   }
 
-  if (villager.role === 'farmer' && FARM_JOB_TYPES.has(job.type)) {
-    value += farmerRoleBonus;
+  if (FARM_JOB_TYPES.has(job.type)) {
+    const farmingSkill = resolveSkill(villager.farmingSkill, villager.role === 'farmer' ? 0.7 : 0.5);
+    value += (farmingSkill - 0.5) * farmingSkillWeight;
   }
-  if (villager.role === 'worker' && HEAVY_JOB_TYPES.has(job.type)) {
-    value += workerRoleBonus;
+  if (HEAVY_JOB_TYPES.has(job.type)) {
+    const constructionSkill = resolveSkill(villager.constructionSkill, villager.role === 'worker' ? 0.65 : 0.5);
+    value += (constructionSkill - 0.5) * constructionSkillWeight;
   }
 
   const hunger = Number.isFinite(villager.hunger) ? villager.hunger : 0;
   if (hunger > hungerFarmThreshold && FARM_JOB_TYPES.has(job.type)) {
     value += hungerFarmBonus;
+  }
+
+  if (blackboard) {
+    const famineSeverity = computeFamineSeverity(blackboard);
+    if (blackboard.famine && famineSeverity > 0) {
+      if (FARM_JOB_TYPES.has(job.type)) {
+        value += famineFoodBonus * famineSeverity;
+      } else {
+        value -= famineNonEssentialPenalty * famineSeverity;
+      }
+    }
+
+    if (blackboard.buildPush && job.type === 'build') {
+      value += buildPushBonus;
+    }
+    if (blackboard.growthPush && FARM_JOB_TYPES.has(job.type)) {
+      value += growthPushBonus;
+    }
+
+    if (job.type === 'build' && buildMaterialPenaltyWeight !== 0 && buildMaterialReserveTarget > 0) {
+      const villagersCount = Math.max(1, blackboard.villagers || 0);
+      const target = buildMaterialReserveTarget * villagersCount;
+      const availableMaterials = (blackboard.availableWood || 0) + (blackboard.availableStone || 0);
+      const deficit = Math.max(0, target - availableMaterials);
+      if (deficit > 0) {
+        const penalty = buildMaterialPenaltyWeight * (deficit / target);
+        value -= penalty;
+      }
+    }
   }
 
   return value;
