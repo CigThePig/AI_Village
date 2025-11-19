@@ -81,6 +81,9 @@ console.log('AIV: HTML parsed v3.1');
   });
 })();
 
+// Wait a bit longer than the dependency bootstrap timeout so we don't
+// surface a false negative on slower devices or when the terrain bundle
+// takes a moment to attach globals.
 setTimeout(function () {
   if (!window.__AIV_BOOT__) {
     const versionEl = document.getElementById('version');
@@ -89,4 +92,4 @@ setTimeout(function () {
     }
     console.error('AIV: JS did not run — likely CSP or stale cache');
   }
-}, 1000);
+}, 4000);
