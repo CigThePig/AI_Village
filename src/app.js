@@ -689,10 +689,35 @@ const buildings = units.buildings;
 const villagers = units.villagers;
 const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
+const itemTileIndex = new Map();
+let itemTileIndexDirty = true;
 const storageTotals = stocks.totals;
 const storageReserved = stocks.reserved;
 const villagerLabels = queue.villagerLabels;
 const DAY_LEN = DAY_LENGTH;
+
+function markItemsDirty() {
+  itemTileIndexDirty = true;
+}
+
+function rebuildItemTileIndex() {
+  if (!itemTileIndexDirty) return;
+  itemTileIndex.clear();
+  for (let i = itemsOnGround.length - 1; i >= 0; i--) {
+    const it = itemsOnGround[i];
+    if (!it) continue;
+    const key = it.y * GRID_W + it.x;
+    if (!itemTileIndex.has(key)) {
+      itemTileIndex.set(key, i);
+    }
+  }
+  itemTileIndexDirty = false;
+}
+
+function removeItemAtIndex(index) {
+  itemsOnGround.splice(index, 1);
+  markItemsDirty();
+}
 
 let world = gameState.world;
 Object.defineProperty(gameState, 'world', {
@@ -1081,7 +1106,7 @@ function newWorld(seed=Date.now()|0){
   const normalizedSeed = seed >>> 0;
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
-  jobs.length=0; buildings.length=0; itemsOnGround.length=0;
+  jobs.length=0; buildings.length=0; itemsOnGround.length=0; markItemsDirty();
   storageTotals.food = 8;
   storageTotals.wood = 12;
   storageTotals.stone = 0;
@@ -3348,9 +3373,12 @@ function drawQueuedVillagerLabels(uiLight){
 
 
 /* ==================== Items & Loop ==================== */
-function dropItem(x,y,type,qty){ itemsOnGround.push({x,y,type,qty}); }
+function dropItem(x,y,type,qty){
+  itemsOnGround.push({x,y,type,qty});
+  markItemsDirty();
+}
 let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC;
-function update(){ const now=performance.now(); if(paused){ last=now; render(); requestAnimationFrame(update); return; } let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; const jobInterval=policy.routine.jobGenerationTickInterval||20; const seasonInterval=policy.routine.seasonTickInterval||10; const blackboardInterval=policy.routine.blackboardCadenceTicks||30; const logConfig=policy.routine.blackboardLogging||null; const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60); for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(jobInterval>0 && tick%jobInterval===0) generateJobs(); if(seasonInterval>0 && tick%seasonInterval===0) seasonTick(); if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){ gameState.bb=computeBlackboard(gameState); lastBlackboardTick=tick; if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){ console.debug('[blackboard]', gameState.bb); lastBlackboardLogTick=tick; } } for(const v of villagers){ if(!v.inv){ for(let k=0;k<itemsOnGround.length;k++){ const it=itemsOnGround[k]; if((v.x|0)===it.x && (v.y|0)===it.y){ v.inv={type:it.type,qty:it.qty}; itemsOnGround.splice(k,1); k--; break; } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
+function update(){ const now=performance.now(); if(paused){ last=now; render(); requestAnimationFrame(update); return; } let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; const jobInterval=policy.routine.jobGenerationTickInterval||20; const seasonInterval=policy.routine.seasonTickInterval||10; const blackboardInterval=policy.routine.blackboardCadenceTicks||30; const logConfig=policy.routine.blackboardLogging||null; const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60); for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(jobInterval>0 && tick%jobInterval===0) generateJobs(); if(seasonInterval>0 && tick%seasonInterval===0) seasonTick(); if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){ gameState.bb=computeBlackboard(gameState); lastBlackboardTick=tick; if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){ console.debug('[blackboard]', gameState.bb); lastBlackboardLogTick=tick; } } rebuildItemTileIndex(); for(const v of villagers){ if(!v.inv){ if(itemTileIndexDirty) rebuildItemTileIndex(); const key=((v.y|0)*GRID_W)+(v.x|0); const itemIndex=itemTileIndex.get(key); if(itemIndex!==undefined){ const it=itemsOnGround[itemIndex]; if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
 
 /* ==================== Boot ==================== */
 function boot(){
