@@ -1,7 +1,7 @@
 import { createInitialState } from './state.js';
 import { policy } from './policy/policy.js';
 import { computeBlackboard } from './ai/blackboard.js';
-import { score as scoreJob } from './ai/scoring.js';
+import { score as scoreJob, computeFamineSeverity } from './ai/scoring.js';
 import {
   TILE_SIZE,
   ENTITY_TILE_SIZE,
@@ -1922,6 +1922,24 @@ function finishJob(v, remove=false){
   }
   v.targetJob=null;
 }
+
+function applySkillGain(v, key, amount=0.02, softCap=0.9, hardCap=1){
+  const current = clamp(Number.isFinite(v[key]) ? v[key] : 0, 0, hardCap);
+  let delta = amount;
+  if (current >= softCap) {
+    const span = Math.max(0.0001, hardCap - softCap);
+    const progress = clamp((current - softCap) / span, 0, 1);
+    delta *= Math.max(0.15, 1 - progress);
+  }
+  const next = clamp(current + delta, 0, hardCap);
+  if (next > current) {
+    v[key] = next;
+    v.happy = clamp(v.happy + Math.min(0.01, (next - current) * 1.5), 0, 1);
+  } else {
+    v[key] = current;
+  }
+  return v[key];
+}
 function generateJobs(){
   for(let y=0;y<GRID_H;y++){
     for(let x=0;x<GRID_W;x++){
@@ -1990,6 +2008,7 @@ function villagerTick(v){
   if(v.nextStarveWarning===undefined) v.nextStarveWarning=0;
   if(v.sickTimer===undefined) v.sickTimer=0;
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
+  const style = policy?.style?.jobScoring || {};
   v.hunger += HUNGER_RATE;
   const tileX=v.x|0, tileY=v.y|0;
   const warm=nearbyWarmth(tileX,tileY);
@@ -2052,7 +2071,12 @@ function villagerTick(v){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
   }
-  if(v.energy<0.15){ if(goRest(v)) return; }
+  const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.22;
+  const fatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
+  const restFatigueBoost = Number.isFinite(style.restFatigueBoost) ? style.restFatigueBoost : 0.08;
+  const fatigueFlag = !!gameState?.bb?.energy?.fatigue;
+  const shouldRest = v.energy < restThreshold || (fatigueFlag && v.energy < restThreshold + restFatigueBoost) || v.energy < (fatigueThreshold * 0.8);
+  if(shouldRest){ if(goRest(v)) return; }
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
   const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
@@ -2125,7 +2149,40 @@ function consumeFood(v){
   }
   return false;
 }
-function foragingJob(v){ if(tick<v._nextPathTick) return false; const r=10,sx=v.x|0,sy=v.y|0; let best=null,bd=999; for(let y=sy-r;y<=sy+r;y++){ for(let x=sx-r;x<=sx+r;x++){ const i=idx(x,y); if(i<0) continue; if(world.berries[i]>0){ const d=Math.abs(x-sx)+Math.abs(y-sy); if(d<bd){bd=d; best={x,y,i};} } } } if(best){ const p=pathfind(v.x|0,v.y|0,best.x,best.y,120); if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; } } return false; }
+function foragingJob(v){
+  if(tick<v._nextPathTick) return false;
+  const style = policy?.style?.jobScoring || {};
+  const bb = gameState?.bb;
+  const famineSeverity = computeFamineSeverity(bb);
+  const baseRadius = 10;
+  const maxRadius = Number.isFinite(style.adaptiveForageMaxRadius) ? style.adaptiveForageMaxRadius : 18;
+  const radius = Math.max(baseRadius, Math.round(baseRadius + famineSeverity * Math.max(0, maxRadius - baseRadius)));
+  const basePathLimit = 120;
+  const maxPathLimit = Number.isFinite(style.adaptiveForageMaxPath) ? style.adaptiveForageMaxPath : 240;
+  const pathLimit = Math.max(basePathLimit, Math.round(basePathLimit + famineSeverity * Math.max(0, maxPathLimit - basePathLimit)));
+  const sx=v.x|0,sy=v.y|0; let best=null,bd=999;
+  if(!v._forageFailures) v._forageFailures=new Map();
+  for (const [key, until] of Array.from(v._forageFailures.entries())) {
+    if (until <= tick) v._forageFailures.delete(key);
+  }
+  for(let y=sy-radius;y<=sy+radius;y++){
+    for(let x=sx-radius;x<=sx+radius;x++){
+      const i=idx(x,y);
+      if(i<0) continue;
+      if(world.berries[i]>0){
+        if(v._forageFailures.has(i)) continue;
+        const d=Math.abs(x-sx)+Math.abs(y-sy);
+        if(d<bd){bd=d; best={x,y,i};}
+      }
+    }
+  }
+  if(best){
+    const p=pathfind(v.x|0,v.y|0,best.x,best.y,pathLimit);
+    if(p){ v.path=p; v.state='forage'; v.targetI=best.i; v.thought=moodThought(v,'Foraging'); v._nextPathTick=tick+12; return true; }
+    v._forageFailures.set(best.i, tick+180);
+  }
+  return false;
+}
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'&&b.built>=1); if(hut){ const entry=findEntryTileNear(hut, v.x|0, v.y|0) || {x:Math.round(buildingCenter(hut).x), y:Math.round(buildingCenter(hut).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
 function pickJobFor(v){
@@ -2134,6 +2191,7 @@ function pickJobFor(v){
   const minScore = typeof policy?.style?.jobScoring?.minPickScore === 'number'
     ? policy.style.jobScoring.minPickScore
     : 0;
+  const jobStyle = policy?.style?.jobScoring || {};
   for(const j of jobs){
     let supplyStatus=null;
     let buildTarget=null;
@@ -2143,6 +2201,21 @@ function pickJobFor(v){
       supplyStatus=buildingSupplyStatus(buildTarget);
       if(!supplyStatus.hasAnySupply){
         j.waitingForMaterials=true;
+        requestBuildHauls(buildTarget);
+        const assistLimit = Number.isFinite(jobStyle.builderHaulAssistLimit) ? jobStyle.builderHaulAssistLimit : 1;
+        if(assistLimit>0){
+          const haulJobs=jobs.filter(h=>h.type==='haul' && h.bid===buildTarget.id && h.stage!=='deliver' && !h.cancelled);
+          const activeHaulers=haulJobs.reduce((sum,h)=>sum+(h.assigned||0),0);
+          if(activeHaulers<assistLimit){
+            const openHaul=haulJobs.find(h=>(h.assigned||0)===0);
+            if(openHaul){
+              const haulDistance=Math.abs((v.x|0)-openHaul.x)+Math.abs((v.y|0)-openHaul.y);
+              const haulView={ type:openHaul.type, prio:openHaul.prio, distance:haulDistance };
+              const haulScore=scoreJob(haulView, v, policy, blackboard);
+              if(haulScore>bs){ bs=haulScore; best=openHaul; }
+            }
+          }
+        }
         continue;
       }
       if(j.assigned>=1 && !supplyStatus.fullyDelivered){
@@ -2209,6 +2282,7 @@ else if(v.state==='mine'){
     v.thought=moodThought(v,'Nothing to mine');
   }
   v.state='idle';
+  applySkillGain(v, 'constructionSkill', 0.016, 0.88, 1);
   finishJob(v, remove);
 }
 else if(v.state==='forage'){
@@ -2239,6 +2313,7 @@ else if(v.state==='sow'){
     v.thought=moodThought(v,'Too wet to sow');
   }
   v.state='idle';
+  applySkillGain(v, 'farmingSkill', 0.012, 0.9, 1);
   finishJob(v, true);
 }
 else if(v.state==='harvest'){
@@ -2259,6 +2334,7 @@ else if(v.state==='harvest'){
   }
   world.growth[i]=0;
   v.state='idle';
+  applySkillGain(v, 'farmingSkill', 0.018, 0.9, 1);
   finishJob(v, true);
 }
 else if(v.state==='build'){
@@ -2314,6 +2390,7 @@ else if(v.state==='build'){
     v.thought=moodThought(v,'Site missing');
     remove=true;
   }
+  applySkillGain(v, 'constructionSkill', remove ? 0.02 : 0.012, 0.9, 1);
   v.state='idle';
   finishJob(v, remove);
 }
@@ -2390,6 +2467,7 @@ else if(v.state==='haul_deliver'){
       v.thought=moodThought(v,'Returned supplies');
     }
     if(b){ b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
+    applySkillGain(v, 'constructionSkill', 0.01, 0.9, 1);
   } else if(job && job.type==='haul' && job.stage==='pickup'){
     const qty=job.qty||0;
     if(res){

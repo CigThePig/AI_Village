@@ -24,7 +24,7 @@ function resolveSkill(value, fallback = 0.5) {
   return clamp(fallback, 0, 1);
 }
 
-function computeFamineSeverity(blackboard) {
+export function computeFamineSeverity(blackboard) {
   if (!blackboard || !blackboard.famine) return 0;
   const villagerCount = Math.max(1, blackboard.villagers || 0);
   const weightedNeed = (blackboard.starvingVillagers || 0) + (blackboard.hungryVillagers || 0) * 0.5;
@@ -62,6 +62,12 @@ export function score(job, villager, policy, blackboard) {
   const constructionSkillWeight = Number.isFinite(style.constructionSkillWeight)
     ? style.constructionSkillWeight
     : workerRoleBonus * 2;
+  const energyFatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
+  const energyHeavyJobPenalty = Number.isFinite(style.energyHeavyJobPenalty) ? style.energyHeavyJobPenalty : 0;
+  const energyRestBonus = Number.isFinite(style.energyRestBonus) ? style.energyRestBonus : 0;
+  const seasonWinterHarvestLead = Number.isFinite(style.seasonWinterHarvestLead) ? style.seasonWinterHarvestLead : 0.25;
+  const seasonHarvestWinterBonus = Number.isFinite(style.seasonHarvestWinterBonus) ? style.seasonHarvestWinterBonus : 0;
+  const seasonWinterSowPenalty = Number.isFinite(style.seasonWinterSowPenalty) ? style.seasonWinterSowPenalty : 0;
 
   const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
   let effectivePriority = rawPriority;
@@ -105,6 +111,18 @@ export function score(job, villager, policy, blackboard) {
     value += (constructionSkill - 0.5) * constructionSkillWeight;
   }
 
+  const energy = Number.isFinite(villager.energy) ? villager.energy : 1;
+  if (energyHeavyJobPenalty !== 0 && energy < energyFatigueThreshold) {
+    const deficit = energyFatigueThreshold - energy;
+    const penalty = clamp(deficit / Math.max(energyFatigueThreshold, 0.0001), 0, 1) * energyHeavyJobPenalty;
+    if (HEAVY_JOB_TYPES.has(job.type)) {
+      value -= penalty;
+    }
+    if (job.type === 'rest') {
+      value += penalty * energyRestBonus;
+    }
+  }
+
   const hunger = Number.isFinite(villager.hunger) ? villager.hunger : 0;
   if (hunger > hungerFarmThreshold && FARM_JOB_TYPES.has(job.type)) {
     value += hungerFarmBonus;
@@ -135,6 +153,19 @@ export function score(job, villager, policy, blackboard) {
       if (deficit > 0) {
         const penalty = buildMaterialPenaltyWeight * (deficit / target);
         value -= penalty;
+      }
+    }
+
+    const season = Number.isFinite(blackboard.season) ? blackboard.season : null;
+    if (season !== null) {
+      const progress = clamp(Number.isFinite(blackboard.seasonProgress) ? blackboard.seasonProgress : 0, 0, 1);
+      const approachingWinter = season === 2 && progress >= (1 - seasonWinterHarvestLead);
+      const inWinter = season === 3;
+      if ((approachingWinter || inWinter) && job.type === 'harvest') {
+        value += seasonHarvestWinterBonus;
+      }
+      if (inWinter && job.type === 'sow') {
+        value -= seasonWinterSowPenalty;
       }
     }
   }
