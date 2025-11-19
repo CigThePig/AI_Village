@@ -681,8 +681,9 @@ function buildTileset(){
 /* ==================== World State ==================== */
 const gameState = createInitialState({ seed: Date.now() | 0, cfg: null });
 policy.attach(gameState);
+gameState.policy = policy;
 if (!gameState.bb) {
-  gameState.bb = computeBlackboard(gameState);
+  gameState.bb = computeBlackboard(gameState, policy);
 }
 const { units, time, rng, stocks, queue, population } = gameState;
 const buildings = units.buildings;
@@ -1264,7 +1265,7 @@ function newWorld(seed=Date.now()|0){
 
   toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
-function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
+function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; const farmingSkill=Math.min(1, Math.max(0, rnd(0.35,0.75)+(role==='farmer'?0.1:0))); const constructionSkill=Math.min(1, Math.max(0, rnd(0.35,0.7)+(role==='worker'?0.12:0))); return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, farmingSkill, constructionSkill, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
 function addBuilding(kind,x,y,opts={}){
   const def=BUILDINGS[kind]||{};
   const built=opts.built?1:0;
@@ -2503,7 +2504,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -2551,7 +2552,9 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
       vx=clamp(Math.round(vx*buildingScale),0,GRID_W-1);
       vy=clamp(Math.round(vy*buildingScale),0,GRID_H-1);
     }
-    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0 });
+    const farmingSkill = Number.isFinite(v.fs) ? clamp(v.fs, 0, 1) : (v.role==='farmer'?0.7:0.5);
+    const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
+    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill });
   });
   Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
@@ -3378,7 +3381,7 @@ function dropItem(x,y,type,qty){
   markItemsDirty();
 }
 let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC;
-function update(){ const now=performance.now(); if(paused){ last=now; render(); requestAnimationFrame(update); return; } let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; const jobInterval=policy.routine.jobGenerationTickInterval||20; const seasonInterval=policy.routine.seasonTickInterval||10; const blackboardInterval=policy.routine.blackboardCadenceTicks||30; const logConfig=policy.routine.blackboardLogging||null; const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60); for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(jobInterval>0 && tick%jobInterval===0) generateJobs(); if(seasonInterval>0 && tick%seasonInterval===0) seasonTick(); if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){ gameState.bb=computeBlackboard(gameState); lastBlackboardTick=tick; if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){ console.debug('[blackboard]', gameState.bb); lastBlackboardLogTick=tick; } } rebuildItemTileIndex(); for(const v of villagers){ if(!v.inv){ if(itemTileIndexDirty) rebuildItemTileIndex(); const key=((v.y|0)*GRID_W)+(v.x|0); const itemIndex=itemTileIndex.get(key); if(itemIndex!==undefined){ const it=itemsOnGround[itemIndex]; if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
+function update(){ const now=performance.now(); if(paused){ last=now; render(); requestAnimationFrame(update); return; } let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; const jobInterval=policy.routine.jobGenerationTickInterval||20; const seasonInterval=policy.routine.seasonTickInterval||10; const blackboardInterval=policy.routine.blackboardCadenceTicks||30; const logConfig=policy.routine.blackboardLogging||null; const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60); for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(jobInterval>0 && tick%jobInterval===0) generateJobs(); if(seasonInterval>0 && tick%seasonInterval===0) seasonTick(); if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){ gameState.bb=computeBlackboard(gameState, policy); lastBlackboardTick=tick; if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){ console.debug('[blackboard]', gameState.bb); lastBlackboardLogTick=tick; } } rebuildItemTileIndex(); for(const v of villagers){ if(!v.inv){ if(itemTileIndexDirty) rebuildItemTileIndex(); const key=((v.y|0)*GRID_W)+(v.x|0); const itemIndex=itemTileIndex.get(key); if(itemIndex!==undefined){ const it=itemsOnGround[itemIndex]; if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
 
 /* ==================== Boot ==================== */
 function boot(){

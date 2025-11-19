@@ -1,25 +1,66 @@
-const HUNGER_THRESHOLDS = Object.freeze({
+const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
   hungry: 0.78,
-  starving: 1.02
+  starving: 1.02,
+  minHungry: 0.65,
+  minStarving: 0.95,
+  famineTightening: 0.14,
+  coldSeasonTightening: 0.05
 });
 
 const FARM_JOB_TYPES = new Set(['sow', 'harvest']);
 const BUILD_JOB_TYPES = new Set(['build']);
 
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+function resolveHungerConfig(policy) {
+  const config = policy?.style?.hunger || policy?.style?.jobScoring?.hungerThresholds;
+  if (!config || typeof config !== 'object') {
+    return DEFAULT_HUNGER_THRESHOLDS;
+  }
+  return {
+    hungry: Number.isFinite(config.hungry) ? config.hungry : DEFAULT_HUNGER_THRESHOLDS.hungry,
+    starving: Number.isFinite(config.starving) ? config.starving : DEFAULT_HUNGER_THRESHOLDS.starving,
+    minHungry: Number.isFinite(config.minHungry) ? config.minHungry : DEFAULT_HUNGER_THRESHOLDS.minHungry,
+    minStarving: Number.isFinite(config.minStarving) ? config.minStarving : DEFAULT_HUNGER_THRESHOLDS.minStarving,
+    famineTightening: Number.isFinite(config.famineTightening) ? config.famineTightening : DEFAULT_HUNGER_THRESHOLDS.famineTightening,
+    coldSeasonTightening: Number.isFinite(config.coldSeasonTightening) ? config.coldSeasonTightening : DEFAULT_HUNGER_THRESHOLDS.coldSeasonTightening
+  };
+}
+
+function computeHungerThresholds(villagers, availableFood, policy, state) {
+  const cfg = resolveHungerConfig(policy);
+  const villagerCount = Math.max(1, villagers);
+  const foodGap = clamp((villagers - availableFood) / villagerCount, 0, 1);
+  const famineTighten = cfg.famineTightening * foodGap;
+
+  const season = state?.world?.season;
+  const isColdSeason = season === 3; // winter
+  const coldPenalty = isColdSeason ? cfg.coldSeasonTightening : 0;
+
+  const hungry = clamp(cfg.hungry - famineTighten - coldPenalty, cfg.minHungry, cfg.hungry);
+  const starving = clamp(cfg.starving - famineTighten - coldPenalty, cfg.minStarving, cfg.starving);
+  return { hungry, starving };
+}
+
 function coalesceNumber(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function countVillagerNeeds(villagers) {
+function countVillagerNeeds(villagers, thresholds) {
   let hungry = 0;
   let starving = 0;
   for (const villager of villagers) {
     if (!villager) continue;
     const hunger = coalesceNumber(villager.hunger, 0);
     const condition = villager.condition;
-    if (hunger > HUNGER_THRESHOLDS.starving || condition === 'starving' || condition === 'sick') {
+    if (hunger > thresholds.starving || condition === 'starving' || condition === 'sick') {
       starving++;
-    } else if (hunger > HUNGER_THRESHOLDS.hungry || condition === 'hungry') {
+    } else if (hunger > thresholds.hungry || condition === 'hungry') {
       hungry++;
     }
   }
@@ -48,15 +89,19 @@ function inspectJobs(jobs) {
   return { buildPush, growthPush };
 }
 
-export function computeBlackboard(state) {
+export function computeBlackboard(state, policy) {
   const villagers = Array.isArray(state?.units?.villagers) ? state.units.villagers : [];
   const jobs = Array.isArray(state?.units?.jobs) ? state.units.jobs : [];
   const totals = state?.stocks?.totals || null;
   const reserved = state?.stocks?.reserved || null;
   const tick = coalesceNumber(state?.time?.tick, 0);
 
-  const { hungry, starving } = countVillagerNeeds(villagers);
   const availableFood = availableResource(totals, reserved, 'food');
+  const hungerThresholds = computeHungerThresholds(villagers.length, availableFood, policy, state);
+  const { hungry, starving } = countVillagerNeeds(villagers, hungerThresholds);
+  const availableWood = availableResource(totals, reserved, 'wood');
+  const availableStone = availableResource(totals, reserved, 'stone');
+
   const famine = starving > 0 || availableFood <= Math.max(0, villagers.length - hungry);
   const { buildPush, growthPush } = inspectJobs(jobs);
 
@@ -64,10 +109,13 @@ export function computeBlackboard(state) {
     tick,
     villagers: villagers.length,
     availableFood,
+    availableWood,
+    availableStone,
     hungryVillagers: hungry,
     starvingVillagers: starving,
     famine,
     buildPush,
-    growthPush
+    growthPush,
+    hungerThresholds
   };
 }
