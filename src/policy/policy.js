@@ -34,7 +34,18 @@ const DEFAULT_JOB_STYLE = Object.freeze({
   buildMaterialReserveTarget: 4,
   farmingSkillWeight: 0.4,
   constructionSkillWeight: 0.3,
-  minPickScore: 0
+  minPickScore: 0,
+  energyFatigueThreshold: 0.32,
+  restEnergyThreshold: 0.22,
+  restFatigueBoost: 0.08,
+  energyHeavyJobPenalty: 0.25,
+  energyRestBonus: 0.15,
+  seasonWinterHarvestLead: 0.25,
+  seasonHarvestWinterBonus: 0.08,
+  seasonWinterSowPenalty: 0.1,
+  builderHaulAssistLimit: 2,
+  adaptiveForageMaxRadius: 18,
+  adaptiveForageMaxPath: 320
 });
 
 const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({

@@ -9,6 +9,7 @@ const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
 
 const FARM_JOB_TYPES = new Set(['sow', 'harvest']);
 const BUILD_JOB_TYPES = new Set(['build']);
+const DEFAULT_FATIGUE_THRESHOLD = 0.32;
 
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) return min;
@@ -89,12 +90,41 @@ function inspectJobs(jobs) {
   return { buildPush, growthPush };
 }
 
+function computeEnergyStats(villagers, policy) {
+  const fatigueThreshold = Number.isFinite(policy?.style?.jobScoring?.energyFatigueThreshold)
+    ? policy.style.jobScoring.energyFatigueThreshold
+    : DEFAULT_FATIGUE_THRESHOLD;
+  let totalEnergy = 0;
+  let minEnergy = Infinity;
+  let fatigued = 0;
+  let count = 0;
+
+  for (const villager of villagers) {
+    if (!villager) continue;
+    const energy = clamp(coalesceNumber(villager.energy, 1), 0, 1);
+    totalEnergy += energy;
+    count++;
+    if (energy < minEnergy) {
+      minEnergy = energy;
+    }
+    if (energy < fatigueThreshold) {
+      fatigued++;
+    }
+  }
+
+  const avgEnergy = count > 0 ? totalEnergy / count : 1;
+  if (minEnergy === Infinity) minEnergy = 1;
+  return { avgEnergy, minEnergy, fatiguedVillagers: fatigued, fatigue: fatigued > 0 };
+}
+
 export function computeBlackboard(state, policy) {
   const villagers = Array.isArray(state?.units?.villagers) ? state.units.villagers : [];
   const jobs = Array.isArray(state?.units?.jobs) ? state.units.jobs : [];
   const totals = state?.stocks?.totals || null;
   const reserved = state?.stocks?.reserved || null;
   const tick = coalesceNumber(state?.time?.tick, 0);
+  const season = coalesceNumber(state?.world?.season, 0);
+  const seasonProgress = clamp(coalesceNumber(state?.world?.tSeason, 0) / (60 * 10), 0, 1);
 
   const availableFood = availableResource(totals, reserved, 'food');
   const hungerThresholds = computeHungerThresholds(villagers.length, availableFood, policy, state);
@@ -104,10 +134,13 @@ export function computeBlackboard(state, policy) {
 
   const famine = starving > 0 || availableFood <= Math.max(0, villagers.length - hungry);
   const { buildPush, growthPush } = inspectJobs(jobs);
+  const energy = computeEnergyStats(villagers, policy);
 
   return {
     tick,
     villagers: villagers.length,
+    season,
+    seasonProgress,
     availableFood,
     availableWood,
     availableStone,
@@ -116,6 +149,7 @@ export function computeBlackboard(state, policy) {
     famine,
     buildPush,
     growthPush,
-    hungerThresholds
+    hungerThresholds,
+    energy
   };
 }
