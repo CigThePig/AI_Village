@@ -11,7 +11,8 @@ export function createInitialState({ seed, cfg } = {}) {
     buildings: Array.isArray(unitsConfig.buildings) ? unitsConfig.buildings.slice() : [],
     villagers: Array.isArray(unitsConfig.villagers) ? unitsConfig.villagers.slice() : [],
     jobs: Array.isArray(unitsConfig.jobs) ? unitsConfig.jobs.slice() : [],
-    itemsOnGround: Array.isArray(unitsConfig.itemsOnGround) ? unitsConfig.itemsOnGround.slice() : []
+    itemsOnGround: Array.isArray(unitsConfig.itemsOnGround) ? unitsConfig.itemsOnGround.slice() : [],
+    animals: Array.isArray(unitsConfig.animals) ? unitsConfig.animals.slice() : []
   };
 
   const timeDefaults = {
