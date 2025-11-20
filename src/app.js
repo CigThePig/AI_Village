@@ -711,6 +711,7 @@ const villagers = units.villagers;
 const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
 const animals = units.animals;
+const pendingBirths = [];
 const jobNeedState = { food: false, wood: false, stone: false };
 const jobSuppression = new Map();
 const itemTileIndex = new Map();
@@ -1360,7 +1361,7 @@ function assignAdultTraits(v, role=rollAdultRole()){
   v.farmingSkill=farmingSkill;
   v.constructionSkill=constructionSkill;
 }
-function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[] }; assignAdultTraits(v); return v; }
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0 }; assignAdultTraits(v); return v; }
 function newChildVillager(x,y,parents){
   const v=newVillager(x,y);
   v.role='child';
@@ -2642,6 +2643,11 @@ const HUNGER_RATE=0.00105;
 const ENERGY_DRAIN_BASE=0.0011;
 const PREGNANCY_TICKS=DAY_LEN*2;
 const CHILDHOOD_TICKS=DAY_LEN*5;
+const PREGNANCY_ATTEMPT_COOLDOWN_TICKS=Math.floor(DAY_LEN*1.1);
+const PREGNANCY_ATTEMPT_CHANCE=0.12;
+const POPULATION_SOFT_BUFFER=2;
+const POPULATION_HARD_CAP=80;
+const FOOD_HEADROOM_PER_VILLAGER=1.25;
 const REST_BASE_TICKS=90;
 const REST_EXTRA_PER_ENERGY=110;
 const REST_ENERGY_RECOVERY=0.0024;
@@ -2664,6 +2670,7 @@ function villagerTick(v){
   if(!Number.isFinite(v.childhoodTimer)) v.childhoodTimer=v.lifeStage==='child'?CHILDHOOD_TICKS:0;
   if(!Array.isArray(v.parents)) v.parents=[];
   if(v.pregnancyMateId===undefined) v.pregnancyMateId=null;
+  if(!Number.isFinite(v.nextPregnancyTick)) v.nextPregnancyTick=0;
   v.ageTicks++;
   if(v.lifeStage==='child'){
     if(v.childhoodTimer>0) v.childhoodTimer--;
@@ -2945,11 +2952,20 @@ function housingCapacity(){
   const huts=countBuildingsByKind('hut');
   return Math.max(6, huts.built*2 + 4);
 }
+function populationLimit(availableFood){
+  const housingGate=housingCapacity()+POPULATION_SOFT_BUFFER;
+  const foodGate=Math.max(0, Math.floor((availableFood||0)/FOOD_HEADROOM_PER_VILLAGER));
+  const rawLimit=Math.min(housingGate, foodGate);
+  return Math.max(6, Math.min(POPULATION_HARD_CAP, rawLimit));
+}
 function canSupportBirth(){
   const availableFood=storageTotals.food||0;
-  const housingRoom=housingCapacity()-villagers.length;
-  const wellFed=availableFood>Math.max(3, villagers.length);
-  return housingRoom>0 && wellFed;
+  const projectedPop=villagers.length+pendingBirths.length;
+  const housingRoom=housingCapacity()-projectedPop;
+  if(housingRoom<=0) return false;
+  const underCap=projectedPop<populationLimit(availableFood);
+  const wellFed=availableFood>Math.max(4, projectedPop*0.8);
+  return underCap && wellFed;
 }
 function findBirthMate(v){
   let best=null;
@@ -2958,6 +2974,7 @@ function findBirthMate(v){
     if(other===v) continue;
     if(other.lifeStage!=='adult') continue;
     if(other.pregnancyTimer>0) continue;
+    if((other.nextPregnancyTick||0)>tick) continue;
     if((other.starveStage||0)>=2) continue;
     if(other.condition!=='normal' && other.condition!=='hungry') continue;
     const dist=Math.abs((other.x|0)-(v.x|0))+Math.abs((other.y|0)-(v.y|0));
@@ -2971,12 +2988,26 @@ function tryStartPregnancy(v){
   if((v.starveStage||0)>=1) return;
   if(v.condition==='sick') return;
   if(v.energy<0.4 || v.happy<0.35) return;
-  if(!canSupportBirth()) return;
-  if(R()>0.0009) return; // keep rare
+  if(tick<(v.nextPregnancyTick||0)) return;
+  if(!canSupportBirth()){
+    v.nextPregnancyTick=Math.max(v.nextPregnancyTick||0, tick+Math.floor(PREGNANCY_ATTEMPT_COOLDOWN_TICKS*0.5));
+    return;
+  }
+  if(R()>PREGNANCY_ATTEMPT_CHANCE){
+    v.nextPregnancyTick=tick+PREGNANCY_ATTEMPT_COOLDOWN_TICKS;
+    return;
+  }
   const mate=findBirthMate(v);
+  const cooldownUntil=tick+PREGNANCY_ATTEMPT_COOLDOWN_TICKS;
+  if(!mate){
+    v.nextPregnancyTick=cooldownUntil;
+    return;
+  }
   v.pregnancyTimer=PREGNANCY_TICKS;
-  v.pregnancyMateId=mate?mate.id:null;
+  v.pregnancyMateId=mate.id;
   v.thought=moodThought(v,'Expecting');
+  v.nextPregnancyTick=cooldownUntil;
+  mate.nextPregnancyTick=Math.max(mate.nextPregnancyTick||0, cooldownUntil);
 }
 function spawnChildNearParents(parent, mate){
   const centerX=Math.round((parent.x + (mate?mate.x:parent.x))/2);
@@ -2991,10 +3022,17 @@ function spawnChildNearParents(parent, mate){
     if(i<0) continue;
     if(tileOccupiedByBuilding(x,y)) continue;
     if(world.tiles[i]===TILES.WATER) continue;
-    villagers.push(newChildVillager(x,y,parents));
+    pendingBirths.push({x,y,parents});
     return true;
   }
   return false;
+}
+function flushPendingBirths(){
+  if(pendingBirths.length===0) return;
+  for(const birth of pendingBirths){
+    villagers.push(newChildVillager(birth.x,birth.y,birth.parents));
+  }
+  pendingBirths.length=0;
 }
 function completePregnancy(v){
   const mate=v.pregnancyMateId?villagers.find(o=>o.id===v.pregnancyMateId):null;
@@ -3010,6 +3048,7 @@ function promoteChildToAdult(v){
   v.lifeStage='adult';
   v.childhoodTimer=0;
   assignAdultTraits(v);
+  v.nextPregnancyTick=Math.max(v.nextPregnancyTick||0, tick+PREGNANCY_ATTEMPT_COOLDOWN_TICKS);
   v.thought=moodThought(v,'Grew up');
 }
 function collectFoodHubs(v, radius=12){
@@ -4641,6 +4680,7 @@ function update(){
       }
     }
     for(const v of villagers){ villagerTick(v); }
+    flushPendingBirths();
   }
   render();
   requestAnimationFrame(update);
