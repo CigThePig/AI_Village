@@ -1113,7 +1113,7 @@ function newWorld(seed=Date.now()|0){
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0; markItemsDirty();
-  storageTotals.food = 8;
+  storageTotals.food = 24;
   storageTotals.wood = 12;
   storageTotals.stone = 0;
   storageReserved.food = 0;
@@ -2050,7 +2050,15 @@ function planZones(bb){
   if(!world) return false;
   const anchor=findPrimaryAnchor();
   const villagerCount=Math.max(1, villagers.length||0);
-  const farmTarget=Math.max(6, villagerCount*3);
+  const baseFarmTarget=Math.max(6, Math.ceil(villagerCount*3));
+  const famineSeverity = computeFamineSeverity(bb);
+  const lowFood = (bb?.availableFood ?? Infinity) < villagerCount * 2;
+  let farmTarget=baseFarmTarget;
+  if(bb?.famine || lowFood){
+    const famineScale = 1.25 + famineSeverity * 0.75;
+    const safetyFloor = Math.max(baseFarmTarget, Math.ceil(villagerCount * 3.5));
+    farmTarget = Math.max(safetyFloor, Math.ceil(baseFarmTarget * famineScale));
+  }
   const farmTiles=countZoneTiles(ZONES.FARM);
   const woodPressure=resourcePressure('wood', 6);
   const stonePressure=resourcePressure('stone', 3);
@@ -2393,6 +2401,10 @@ function evaluateResourceNeed(kind, available, villagerCount, cfg, thresholdKey)
 function shouldGenerateJobType(type, bb, cfg){
   if(!bb) return true;
   const villagersCount = Math.max(1, bb.villagers || 0);
+  if(type==='forage'){
+    if(bb.famine) return true;
+    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager');
+  }
   if(type==='sow' || type==='harvest'){
     if(bb.famine) return true;
     return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager');
@@ -2455,6 +2467,10 @@ function generateJobs(){
   const allowSow = shouldGenerateJobType('sow', bb, creationCfg);
   const allowChop = shouldGenerateJobType('chop', bb, creationCfg);
   const allowMine = shouldGenerateJobType('mine', bb, creationCfg);
+  const villagerCount = Math.max(1, bb?.villagers || villagers.length || 0);
+  const famineSeverity = computeFamineSeverity(bb);
+  const allowForage = shouldGenerateJobType('forage', bb, creationCfg)
+    && (bb?.famine || (bb?.availableFood ?? storageTotals.food ?? 0) < villagerCount * 1.5);
   for(let y=0;y<GRID_H;y++){
     for(let x=0;x<GRID_W;x++){
       const i=y*GRID_W+x;
@@ -2474,6 +2490,38 @@ function generateJobs(){
         if(allowMine && zoneHasWorkNow(z, i) && !violatesSpacing(x,y,'mine',creationCfg)){
           addJob({type:'mine',x,y, prio:0.5+(policy.sliders.build||0)*0.5});
         }
+      }
+    }
+  }
+  if(allowForage){
+    const anchor = findPrimaryAnchor() || { x: Math.round(GRID_W/2), y: Math.round(GRID_H/2) };
+    const clampX=(val)=>clamp(val,0,GRID_W-1);
+    const clampY=(val)=>clamp(val,0,GRID_H-1);
+    const radius = Math.max(8, Math.round(10 + famineSeverity * 8));
+    const minX=Math.max(0, clampX(anchor.x - radius));
+    const maxX=Math.min(GRID_W-1, clampX(anchor.x + radius));
+    const minY=Math.max(0, clampY(anchor.y - radius));
+    const maxY=Math.min(GRID_H-1, clampY(anchor.y + radius));
+    const foragePrio = Math.min(1, 0.85 + famineSeverity * 0.15 + (policy.sliders.food||0)*0.25);
+    const maxJobs = Math.max(2, Math.ceil(villagerCount * 0.75));
+    const candidates=[];
+    for(let y=minY;y<=maxY;y++){
+      for(let x=minX;x<=maxX;x++){
+        const i=y*GRID_W+x;
+        if(world.berries[i]<=0) continue;
+        if(tileOccupiedByBuilding(x,y)) continue;
+        if(violatesSpacing(x,y,'forage',creationCfg)) continue;
+        const dist=Math.abs(x-anchor.x)+Math.abs(y-anchor.y);
+        candidates.push({x,y,i,dist});
+      }
+    }
+    candidates.sort((a,b)=>a.dist-b.dist);
+    let added=0;
+    for(const c of candidates){
+      if(added>=maxJobs) break;
+      if(hasSimilarJob({type:'forage',x:c.x,y:c.y})) continue;
+      if(addJob({type:'forage',x:c.x,y:c.y,targetI:c.i, prio:foragePrio})){
+        added++;
       }
     }
   }
@@ -2507,11 +2555,11 @@ function generateJobs(){
     job.hasAllReserved = status.hasAllReserved;
   }
 }
-const STARVE_THRESH={ hungry:0.78, starving:1.02, sick:1.15 };
-const STARVE_COLLAPSE_TICKS=90;
-const STARVE_RECOVERY_TICKS=240;
+const STARVE_THRESH={ hungry:0.82, starving:1.08, sick:1.22 };
+const STARVE_COLLAPSE_TICKS=140;
+const STARVE_RECOVERY_TICKS=280;
 const STARVE_TOAST_COOLDOWN=420;
-const HUNGER_RATE=0.00135;
+const HUNGER_RATE=0.00105;
 const ENERGY_DRAIN_BASE=0.0011;
 const PREGNANCY_TICKS=DAY_LEN*2;
 const CHILDHOOD_TICKS=DAY_LEN*5;
@@ -2694,6 +2742,9 @@ function villagerTick(v){
     if(p){
       v.path=p;
       v.state=j.type==='haul'?'haul_pickup':j.type;
+      if(j.type==='forage' && Number.isInteger(j.targetI)){
+        v.targetI=j.targetI;
+      }
       v.targetJob=j;
       v.thought=j.type==='haul'?moodThought(v,'Hauling'):moodThought(v,j.type.toUpperCase());
       j.assigned++;
@@ -3059,6 +3110,7 @@ function scoreExistingJobForVillager(j, v, blackboard){
   if(j.type==='chop'&&world.trees[i]===0) return -Infinity;
   if(j.type==='mine'&&world.rocks[i]===0) return -Infinity;
   if(j.type==='sow'&&world.growth[i]>0) return -Infinity;
+  if(j.type==='forage' && world.berries[j.targetI ?? i]<=0) return -Infinity;
   let distance;
   if(j.type==='build'){
     distance=buildTarget?distanceToFootprint(v.x|0, v.y|0, buildTarget):Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
@@ -3145,6 +3197,7 @@ function pickJobFor(v){
     if(j.type==='chop'&&world.trees[i]===0) continue;
     if(j.type==='mine'&&world.rocks[i]===0) continue;
     if(j.type==='sow'&&world.growth[i]>0) continue;
+    if(j.type==='forage' && world.berries[j.targetI ?? i]<=0) continue;
     let distance;
     if(j.type==='build'){
       distance=buildTarget?distanceToFootprint(v.x|0, v.y|0, buildTarget):Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
@@ -3203,7 +3256,7 @@ else if(v.state==='mine'){
   finishJob(v, remove);
 }
 else if(v.state==='forage'){
-  if(world.berries[v.targetI]>0){
+  if(Number.isInteger(v.targetI) && world.berries[v.targetI]>0){
     world.berries[v.targetI]--;
     if((v.starveStage||0)>=2 || v.condition==='sick'){
       v.hunger-=0.6;
@@ -3214,8 +3267,11 @@ else if(v.state==='forage'){
       v.inv={type:ITEM.FOOD,qty:1};
       v.thought=moodThought(v,'Got berries');
     }
+  } else {
+    v.thought=moodThought(v,'Berries gone');
   }
   v.state='idle';
+  finishJob(v, true);
 }
 else if(v.state==='seek_food'){
   if(!v.inv){

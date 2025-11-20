@@ -52,26 +52,27 @@ const DEFAULT_JOB_STYLE = Object.freeze({
 });
 
 const DEFAULT_JOB_CREATION = Object.freeze({
-  minFoodPerVillager: 0.9,
+  minFoodPerVillager: 0.6,
   minWoodPerVillager: 1.2,
   minStonePerVillager: 0.6,
-  hysteresis: 0.35,
+  hysteresis: 0.2,
   minSpacing: {
-    sow: 1,
-    harvest: 1,
+    sow: 0,
+    harvest: 0,
+    forage: 1,
     chop: 2,
     mine: 2,
     build: 0
   },
-  suppressionTicks: 240,
-  unreachableRetryTicks: 180
+  suppressionTicks: 180,
+  unreachableRetryTicks: 140
 });
 
 const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
-  hungry: 0.78,
-  starving: 1.02,
-  minHungry: 0.65,
-  minStarving: 0.95,
+  hungry: 0.82,
+  starving: 1.08,
+  minHungry: 0.7,
+  minStarving: 1.0,
   famineTightening: 0.14,
   coldSeasonTightening: 0.05
 });

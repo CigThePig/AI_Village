@@ -1,6 +1,6 @@
 const HEAVY_JOB_TYPES = new Set(['chop', 'mine', 'build', 'haul']);
-const NURTURE_JOB_TYPES = new Set(['sow', 'harvest']);
-const FARM_JOB_TYPES = new Set(['sow', 'harvest']);
+const NURTURE_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
+const FARM_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) {

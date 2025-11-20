@@ -28,7 +28,7 @@ export function createInitialState({ seed, cfg } = {}) {
   };
 
   const stocks = {
-    totals: Object.assign({ food: 0, wood: 0, stone: 0 }, stocksConfig.totals),
+    totals: Object.assign({ food: 24, wood: 0, stone: 0 }, stocksConfig.totals),
     reserved: Object.assign({ food: 0, wood: 0, stone: 0 }, stocksConfig.reserved)
   };
 

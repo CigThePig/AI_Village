@@ -1,8 +1,8 @@
 const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
-  hungry: 0.78,
-  starving: 1.02,
-  minHungry: 0.65,
-  minStarving: 0.95,
+  hungry: 0.82,
+  starving: 1.08,
+  minHungry: 0.7,
+  minStarving: 1.0,
   famineTightening: 0.14,
   coldSeasonTightening: 0.05
 });
