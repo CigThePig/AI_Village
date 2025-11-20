@@ -18,13 +18,13 @@
 </div>
 
 <div class="hud-top">
-  <div class="pill" id="stats">
+  <div class="pill pill-stats" id="stats">
     <div class="stat">🍞 <span id="food">0</span><small>food</small></div>
     <div class="stat">🪵 <span id="wood">0</span><small>wood</small></div>
     <div class="stat">🪨 <span id="stone">0</span><small>stone</small></div>
     <div class="stat">👥 <span id="pop">0</span><small>pop</small></div>
   </div>
-  <div class="pill">
+  <div class="pill pill-controls">
     <button class="btn" id="btnPause">⏸</button>
     <button class="btn" id="btnSpeed">1×</button>
     <button class="btn" id="btnSave">💾</button>
@@ -42,6 +42,7 @@
 </div>
 
 <div class="sheet" id="sheetZones">
+  <div class="sheet-handle" aria-hidden="true"></div>
   <h3>Zones (pixel markers) <button class="sheet-close" aria-label="Close">✕</button></h3>
   <div class="grid">
     <div class="tile" data-zone="farm">🌾 Farm</div>
@@ -54,6 +55,7 @@
 </div>
 
 <div class="sheet" id="sheetBuild">
+  <div class="sheet-handle" aria-hidden="true"></div>
   <h3>Build <button class="sheet-close" aria-label="Close">✕</button></h3>
   <div class="grid">
     <div class="tile" data-build="hut">🏚️ Hut (10 wood)</div>
@@ -64,6 +66,7 @@
 </div>
 
 <div class="sheet" id="sheetPrior">
+  <div class="sheet-handle" aria-hidden="true"></div>
   <h3>Village Priorities <button class="sheet-close" aria-label="Close">✕</button></h3>
   <div class="priorities-columns">
     <div class="priorities-column">
