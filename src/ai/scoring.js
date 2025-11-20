@@ -68,6 +68,8 @@ export function score(job, villager, policy, blackboard) {
   const seasonWinterHarvestLead = Number.isFinite(style.seasonWinterHarvestLead) ? style.seasonWinterHarvestLead : 0.25;
   const seasonHarvestWinterBonus = Number.isFinite(style.seasonHarvestWinterBonus) ? style.seasonHarvestWinterBonus : 0;
   const seasonWinterSowPenalty = Number.isFinite(style.seasonWinterSowPenalty) ? style.seasonWinterSowPenalty : 0;
+  const travelCostWeight = Number.isFinite(style.travelCostWeight) ? style.travelCostWeight : 0;
+  const famineUrgencyWeight = Number.isFinite(style.famineUrgencyWeight) ? style.famineUrgencyWeight : 0;
 
   const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
   let effectivePriority = rawPriority;
@@ -83,6 +85,11 @@ export function score(job, villager, policy, blackboard) {
 
   const distance = Number.isFinite(job.distance) ? job.distance : 0;
   let value = effectivePriority - distance * distanceFalloff;
+
+  if (travelCostWeight !== 0) {
+    const speed = Number.isFinite(villager.speed) ? Math.max(0.25, villager.speed) : 1;
+    value -= (distance / speed) * travelCostWeight;
+  }
 
   const happy = Number.isFinite(villager.happy) ? villager.happy : 0.5;
   const mood = clamp((happy - 0.5) * 2, -1, 1);
@@ -153,6 +160,17 @@ export function score(job, villager, policy, blackboard) {
       if (deficit > 0) {
         const penalty = buildMaterialPenaltyWeight * (deficit / target);
         value -= penalty;
+      }
+    }
+
+    if (famineUrgencyWeight !== 0) {
+      const famineSeverity = computeFamineSeverity(blackboard);
+      if (famineSeverity > 0) {
+        if (FARM_JOB_TYPES.has(job.type) || job.type === 'harvest') {
+          value += famineSeverity * famineUrgencyWeight;
+        } else {
+          value -= famineSeverity * (famineUrgencyWeight * 0.5);
+        }
       }
     }
 

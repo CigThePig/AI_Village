@@ -690,6 +690,8 @@ const buildings = units.buildings;
 const villagers = units.villagers;
 const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
+const jobNeedState = { food: false, wood: false, stone: false };
+const jobSuppression = new Map();
 const itemTileIndex = new Map();
 let itemTileIndexDirty = true;
 const storageTotals = stocks.totals;
@@ -2293,7 +2295,97 @@ function placeBlueprint(kind,x,y, opts={}){
 }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
-function addJob(job){ job.id=uid(); job.assigned=0; jobs.push(job); return job; }
+function getJobCreationConfig(){
+  return policy?.style?.jobCreation || {};
+}
+
+function ensureBlackboardSnapshot(){
+  const cadence = Number.isFinite(policy?.routine?.blackboardCadenceTicks)
+    ? policy.routine.blackboardCadenceTicks
+    : 30;
+  if(!gameState.bb || (tick-lastBlackboardTick)>cadence){
+    gameState.bb = computeBlackboard(gameState, policy);
+    lastBlackboardTick = tick;
+  }
+  return gameState.bb;
+}
+
+function jobKey(job){
+  if(!job || !job.type) return null;
+  const base = `${job.type}:${Number.isFinite(job.x)?job.x:'?'},${Number.isFinite(job.y)?job.y:'?'}`;
+  if(job.bid!==undefined){
+    return `${base}:b${job.bid}`;
+  }
+  return base;
+}
+
+function isJobSuppressed(job){
+  const key = jobKey(job);
+  if(!key) return false;
+  const until = jobSuppression.get(key);
+  if(until===undefined) return false;
+  if(until<=tick){
+    jobSuppression.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function suppressJob(job, duration=0){
+  const key = jobKey(job);
+  if(!key || duration<=0) return;
+  jobSuppression.set(key, tick+duration);
+}
+
+function hasSimilarJob(job){
+  return jobs.some(j=>j && j.type===job.type && j.x===job.x && j.y===job.y && (j.bid||null)===(job.bid||null));
+}
+
+function violatesSpacing(x,y,type,cfg){
+  const spacing = cfg?.minSpacing?.[type];
+  if(!Number.isFinite(spacing) || spacing<=0) return false;
+  for(const j of jobs){
+    if(!j || j.type!==type) continue;
+    const dist = Math.abs((j.x||0)-x)+Math.abs((j.y||0)-y);
+    if(dist<=spacing) return true;
+  }
+  return false;
+}
+
+function evaluateResourceNeed(kind, available, villagerCount, cfg, thresholdKey){
+  const threshold = Number.isFinite(cfg?.[thresholdKey]) ? cfg[thresholdKey] : 0;
+  const hysteresis = Number.isFinite(cfg?.hysteresis) ? cfg.hysteresis : 0;
+  const ratio = villagerCount>0 ? available/Math.max(1,villagerCount) : available;
+  const prevNeed = jobNeedState[kind]===true;
+  let need = ratio < threshold;
+  if(!need && prevNeed && ratio < (threshold + hysteresis)){
+    need = true;
+  }
+  jobNeedState[kind] = need;
+  return need;
+}
+
+function shouldGenerateJobType(type, bb, cfg){
+  if(!bb) return true;
+  const villagersCount = Math.max(1, bb.villagers || 0);
+  if(type==='sow' || type==='harvest'){
+    if(bb.famine) return true;
+    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager');
+  }
+  if(type==='chop'){
+    return evaluateResourceNeed('wood', bb.availableWood || 0, villagersCount, cfg, 'minWoodPerVillager');
+  }
+  if(type==='mine'){
+    return evaluateResourceNeed('stone', bb.availableStone || 0, villagersCount, cfg, 'minStonePerVillager');
+  }
+  return true;
+}
+
+function addJob(job){
+  if(!job || !job.type) return null;
+  if(hasSimilarJob(job) || isJobSuppressed(job)) return null;
+  job.id=uid(); job.assigned=0; jobs.push(job); return job;
+}
 function moodMotivation(v){ return clamp((v.happy-0.5)*2,-1,1); }
 function moodPrefix(v){
   if(v.happy>=0.8) return '😊 ';
@@ -2333,23 +2425,28 @@ function applySkillGain(v, key, amount=0.02, softCap=0.9, hardCap=1){
   return v[key];
 }
 function generateJobs(){
+  const creationCfg = getJobCreationConfig();
+  const bb = ensureBlackboardSnapshot();
+  const allowSow = shouldGenerateJobType('sow', bb, creationCfg);
+  const allowChop = shouldGenerateJobType('chop', bb, creationCfg);
+  const allowMine = shouldGenerateJobType('mine', bb, creationCfg);
   for(let y=0;y<GRID_H;y++){
     for(let x=0;x<GRID_W;x++){
       const i=y*GRID_W+x;
       if(tileOccupiedByBuilding(x,y)) continue;
       const z=world.zone[i];
       if(z===ZONES.FARM){
-        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='sow'&&j.x===x&&j.y===y)){
+        if(allowSow && zoneHasWorkNow(z, i) && !violatesSpacing(x,y,'sow',creationCfg)){
           addJob({type:'sow',x,y, prio:0.6+(policy.sliders.food||0)*0.6});
         }
       }
       else if(z===ZONES.CUT){
-        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='chop'&&j.x===x&&j.y===y)){
+        if(allowChop && zoneHasWorkNow(z, i) && !violatesSpacing(x,y,'chop',creationCfg)){
           addJob({type:'chop',x,y, prio:0.5+(policy.sliders.build||0)*0.5});
         }
       }
       else if(z===ZONES.MINE){
-        if(zoneHasWorkNow(z, i) && !jobs.some(j=>j.type==='mine'&&j.x===x&&j.y===y)){
+        if(allowMine && zoneHasWorkNow(z, i) && !violatesSpacing(x,y,'mine',creationCfg)){
           addJob({type:'mine',x,y, prio:0.5+(policy.sliders.build||0)*0.5});
         }
       }
@@ -2408,6 +2505,7 @@ function villagerTick(v){
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
   if(v.restTimer===undefined) v.restTimer=0;
   const style = policy?.style?.jobScoring || {};
+  const blackboard = ensureBlackboardSnapshot();
   const resting=v.state==='resting';
   const hungerRate=resting?HUNGER_RATE*REST_HUNGER_MULT:HUNGER_RATE;
   v.hunger += hungerRate;
@@ -2503,9 +2601,11 @@ function villagerTick(v){
   const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.22;
   const fatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
   const restFatigueBoost = Number.isFinite(style.restFatigueBoost) ? style.restFatigueBoost : 0.08;
-  const fatigueFlag = !!gameState?.bb?.energy?.fatigue;
+  const fatigueFlag = !!blackboard?.energy?.fatigue;
   const shouldRest = v.energy < restThreshold || (fatigueFlag && v.energy < restThreshold + restFatigueBoost) || v.energy < (fatigueThreshold * 0.8);
   if(shouldRest){ if(goRest(v)) return; }
+  const reprioritizeMargin = Number.isFinite(style.reprioritizeMargin) ? style.reprioritizeMargin : 0.06;
+  if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
   const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
@@ -2551,6 +2651,13 @@ function villagerTick(v){
       v._nextPathTick=tick+12;
       return;
     }
+    const retryTicks = Number.isFinite(getJobCreationConfig()?.unreachableRetryTicks)
+      ? getJobCreationConfig().unreachableRetryTicks
+      : 0;
+    if(retryTicks>0){
+      suppressJob(j, retryTicks);
+    }
+    v._nextPathTick=tick+12;
   }
   if(handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
 }
@@ -2815,9 +2922,68 @@ function foragingJob(v){
 }
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'&&b.built>=1); if(hut){ const entry=findEntryTileNear(hut, v.x|0, v.y|0) || {x:Math.round(buildingCenter(hut).x), y:Math.round(buildingCenter(hut).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
 function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
+function scoreExistingJobForVillager(j, v, blackboard){
+  if(!j) return -Infinity;
+  let supplyStatus=null;
+  let buildTarget=null;
+  if(j.type==='build'){
+    buildTarget=buildings.find(bb=>bb.id===j.bid);
+    if(!buildTarget || buildTarget.built>=1) return -Infinity;
+    supplyStatus=buildingSupplyStatus(buildTarget);
+    if(!supplyStatus.hasAnySupply){
+      j.waitingForMaterials=true;
+      return -Infinity;
+    }
+  }
+  const i=idx(j.x,j.y);
+  if(j.type==='chop'&&world.trees[i]===0) return -Infinity;
+  if(j.type==='mine'&&world.rocks[i]===0) return -Infinity;
+  if(j.type==='sow'&&world.growth[i]>0) return -Infinity;
+  let distance;
+  if(j.type==='build'){
+    distance=buildTarget?distanceToFootprint(v.x|0, v.y|0, buildTarget):Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+  } else {
+    distance=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+  }
+  const jobView={
+    type:j.type,
+    prio:j.prio,
+    distance,
+    supply:supplyStatus
+  };
+  if(j.type==='build' && supplyStatus){
+    j.waitingForMaterials=!supplyStatus.fullyDelivered;
+  }
+  return scoreJob(jobView, v, policy, blackboard);
+}
+function maybeInterruptJob(v, { blackboard=null, margin=0 } = {}){
+  const currentJob = v.targetJob;
+  if(!currentJob) return false;
+  const bb = blackboard || ensureBlackboardSnapshot();
+  const famineEmergency = bb?.famine === true && currentJob.type!=='harvest' && currentJob.type!=='sow' && currentJob.type!=='forage';
+  const jobStyle = policy?.style?.jobScoring || {};
+  const reprioritizeMargin = Number.isFinite(margin) ? margin : (Number.isFinite(jobStyle.reprioritizeMargin) ? jobStyle.reprioritizeMargin : 0);
+  if(!famineEmergency && reprioritizeMargin<=0) return false;
+
+  const wasAssigned = currentJob.assigned||0;
+  if(wasAssigned>0){ currentJob.assigned=Math.max(0, wasAssigned-1); }
+  const candidate = pickJobFor(v);
+  if(wasAssigned>0){ currentJob.assigned=wasAssigned; }
+  if(!candidate || candidate===currentJob) return false;
+
+  const currentScore = scoreExistingJobForVillager(currentJob, v, bb);
+  const candidateScore = scoreExistingJobForVillager(candidate, v, bb);
+  if(candidateScore>currentScore+reprioritizeMargin || famineEmergency){
+    finishJob(v);
+    if(v.path) v.path.length=0;
+    v.state='idle';
+    return true;
+  }
+  return false;
+}
 function pickJobFor(v){
   let best=null,bs=-Infinity;
-  const blackboard = gameState.bb;
+  const blackboard = ensureBlackboardSnapshot();
   const minScore = typeof policy?.style?.jobScoring?.minPickScore === 'number'
     ? policy.style.jobScoring.minPickScore
     : 0;
@@ -3208,6 +3374,9 @@ function seasonTick(){
     world.season=(world.season+1)%4;
   }
   const hasFarmBoosters=buildings.some(b=>b.built>=1 && (b.kind==='farmplot'||b.kind==='well'));
+  const creationCfg = getJobCreationConfig();
+  const bb = ensureBlackboardSnapshot();
+  const allowHarvest = shouldGenerateJobType('harvest', bb, creationCfg);
   for(let i=0;i<world.growth.length;i++){
     if(world.tiles[i]!==TILES.FARMLAND) continue;
     const prev=world.growth[i];
@@ -3226,7 +3395,7 @@ function seasonTick(){
     const next=Math.min(240, prev+delta);
     world.growth[i]=next;
     if(prev<160 && next>=160){
-      if(!jobs.some(j=>j.type==='harvest'&&j.x===x&&j.y===y)){
+      if(allowHarvest && !violatesSpacing(x,y,'harvest',creationCfg)){
         addJob({type:'harvest',x,y, prio:0.65+(policy.sliders.food||0)*0.6});
       }
     }
