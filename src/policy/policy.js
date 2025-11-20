@@ -45,7 +45,26 @@ const DEFAULT_JOB_STYLE = Object.freeze({
   seasonWinterSowPenalty: 0.1,
   builderHaulAssistLimit: 2,
   adaptiveForageMaxRadius: 18,
-  adaptiveForageMaxPath: 320
+  adaptiveForageMaxPath: 320,
+  travelCostWeight: 0.02,
+  famineUrgencyWeight: 0.08,
+  reprioritizeMargin: 0.06
+});
+
+const DEFAULT_JOB_CREATION = Object.freeze({
+  minFoodPerVillager: 0.9,
+  minWoodPerVillager: 1.2,
+  minStonePerVillager: 0.6,
+  hysteresis: 0.35,
+  minSpacing: {
+    sow: 1,
+    harvest: 1,
+    chop: 2,
+    mine: 2,
+    build: 0
+  },
+  suppressionTicks: 240,
+  unreachableRetryTicks: 180
 });
 
 const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
@@ -90,6 +109,7 @@ export const policy = {
   moodTargets: { ...DEFAULT_MOOD_TARGETS },
   style: {
     jobScoring: { ...DEFAULT_JOB_STYLE },
-    hunger: { ...DEFAULT_HUNGER_THRESHOLDS }
+    hunger: { ...DEFAULT_HUNGER_THRESHOLDS },
+    jobCreation: { ...DEFAULT_JOB_CREATION }
   }
 };
