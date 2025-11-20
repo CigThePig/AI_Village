@@ -1066,9 +1066,9 @@ if (typeof globalThis !== 'undefined') {
   globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
 }
 const BUILDINGS = {
-  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0 },
+  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Warms and cheers villagers within 4 tiles.' },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
-  hut:      { label: 'Hut',      cost:10, wood:10, stone: 0 },
+  hut:      { label: 'Hut',      cost:10, wood:10, stone: 0, effects:{ radius:3, moodBonus:0.0008 }, tooltip:'Shelter that gently lifts moods nearby.' },
   farmplot: {
     label: 'Farm Plot',
     cost: 4,
@@ -1459,27 +1459,33 @@ function buildingSupplyStatus(b){
 function agricultureBonusesAt(x,y){
   let growthBonus=0, harvestBonus=0, moodBonus=0;
   if(!buildings.length) return {growthBonus, harvestBonus, moodBonus};
+  const influenceFor=(radius, dist)=>{
+    if(radius>0){ return dist>radius?0:Math.max(0,1-dist/(radius+1)); }
+    return dist===0?1:0;
+  };
   for(const b of buildings){
     if(b.built<1) continue;
-    if(b.kind!=='farmplot' && b.kind!=='well') continue;
+    const def=BUILDINGS[b.kind]||{};
+    const eff=def.effects||{};
     const dist=distanceToFootprint(x,y,b);
     if(b.kind==='farmplot'){
-      const eff=BUILDINGS.farmplot.effects||{};
       const radius=(eff.radius|0);
-      if(radius>0){ if(dist>radius) continue; }
-      else if(dist>0){ continue; }
-      const influence=radius>0?Math.max(0,1-dist/(radius+1)):1;
+      const influence=influenceFor(radius, dist);
+      if(influence<=0) continue;
       if(eff.growthBonus){ growthBonus+=eff.growthBonus*influence; }
       if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
     } else if(b.kind==='well'){
-      const eff=BUILDINGS.well.effects||{};
       const radius=(eff.hydrationRadius|0);
-      if(radius>0){ if(dist>radius) continue; }
-      else if(dist>0){ continue; }
-      const influence=radius>0?Math.max(0,1-dist/(radius+1)):1;
+      const influence=influenceFor(radius, dist);
+      if(influence<=0) continue;
       if(eff.hydrationGrowthBonus){ growthBonus+=eff.hydrationGrowthBonus*influence; }
       if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
       if(eff.moodBonus){ moodBonus+=eff.moodBonus*influence; }
+    } else if(eff.moodBonus){
+      const radius=(eff.radius|0);
+      const influence=influenceFor(radius, dist);
+      if(influence<=0) continue;
+      moodBonus+=eff.moodBonus*influence;
     }
   }
   return { growthBonus, harvestBonus, moodBonus };
@@ -1999,6 +2005,12 @@ const STARVE_RECOVERY_TICKS=240;
 const STARVE_TOAST_COOLDOWN=420;
 const HUNGER_RATE=0.00135;
 const ENERGY_DRAIN_BASE=0.0011;
+const REST_BASE_TICKS=90;
+const REST_EXTRA_PER_ENERGY=110;
+const REST_ENERGY_RECOVERY=0.0024;
+const REST_MOOD_TICK=0.0009;
+const REST_FINISH_MOOD=0.05;
+const REST_HUNGER_MULT=0.42;
 function issueStarveToast(v,text,force=false){ const ready=(v.nextStarveWarning||0)<=tick; if(force||ready){ Toast.show(text); v.nextStarveWarning=tick+STARVE_TOAST_COOLDOWN; } }
 function enterSickState(v){ if(v.condition==='sick') return; v.condition='sick'; v.sickTimer=STARVE_COLLAPSE_TICKS; v.starveStage=Math.max(3,v.starveStage||0); finishJob(v); if(v.path) v.path.length=0; v.state='sick'; v.thought=moodThought(v,'Collapsed'); issueStarveToast(v,'A villager collapsed from hunger! They need food now.',true); }
 function handleVillagerFed(v,source='food'){ const wasCritical=(v.condition==='sick')||((v.starveStage||0)>=2); v.sickTimer=0; v.starveStage=0; if(wasCritical){ v.condition='recovering'; v.recoveryTimer=STARVE_RECOVERY_TICKS; } else { v.condition='normal'; v.recoveryTimer=Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS/3)); } v.nextStarveWarning=tick+Math.floor(STARVE_TOAST_COOLDOWN*0.6); if(v.state==='sick') v.state='idle'; v.thought=moodThought(v,wasCritical?'Recovering':'Content'); v.happy=clamp(v.happy+0.05,0,1); if(wasCritical){ const detail=source==='camp'?'camp stores':source==='pack'?'their pack':source==='berries'?'wild berries':source; issueStarveToast(v,`Villager recovered after eating ${detail}.`,true); } }
@@ -2008,16 +2020,28 @@ function villagerTick(v){
   if(v.nextStarveWarning===undefined) v.nextStarveWarning=0;
   if(v.sickTimer===undefined) v.sickTimer=0;
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
+  if(v.restTimer===undefined) v.restTimer=0;
   const style = policy?.style?.jobScoring || {};
-  v.hunger += HUNGER_RATE;
+  const resting=v.state==='resting';
+  const hungerRate=resting?HUNGER_RATE*REST_HUNGER_MULT:HUNGER_RATE;
+  v.hunger += hungerRate;
   const tileX=v.x|0, tileY=v.y|0;
   const warm=nearbyWarmth(tileX,tileY);
   let energyDelta=-ENERGY_DRAIN_BASE;
   const moodEnergyBoost=moodMotivation(v)*0.00045;
-  let happyDelta=warm?0.0008:-0.0004;
+  let happyDelta=warm?0.001:-0.0002;
   const { moodBonus } = agricultureBonusesAt(tileX, tileY);
   if(moodBonus){ happyDelta+=moodBonus; }
+  const wellFed=v.hunger<STARVE_THRESH.hungry*0.55;
+  const wellRested=v.energy>0.55;
+  if(wellFed&&wellRested){
+    happyDelta+=0.0008+Math.max(0,v.energy-0.55)*0.0006;
+  }
   energyDelta+=moodEnergyBoost;
+  if(resting){
+    energyDelta+=REST_ENERGY_RECOVERY;
+    happyDelta+=REST_MOOD_TICK;
+  }
   const prevStage=v.starveStage||0;
   let stage=0;
   if(v.hunger>STARVE_THRESH.hungry) stage=1;
@@ -2032,8 +2056,8 @@ function villagerTick(v){
     v.condition='normal';
   }
   if(stage>=1) energyDelta-=0.00025;
-  if(stage>=2){ energyDelta-=0.00045; happyDelta-=0.0006; }
-  if(stage>=3){ energyDelta-=0.0006; happyDelta-=0.001; }
+  if(stage>=2){ energyDelta-=0.00045; happyDelta-=0.00045; }
+  if(stage>=3){ energyDelta-=0.0006; happyDelta-=0.0009; }
   if(stage>prevStage){
     if(stage===1){ if(v.condition!=='sick') v.condition='hungry'; }
     else if(stage===2){ if(v.condition!=='sick') v.condition='starving'; issueStarveToast(v,'A villager is starving! Set up food or gather berries.'); }
@@ -2064,6 +2088,24 @@ function villagerTick(v){
   if(v.condition==='sick' && v.sickTimer>0){ return; }
   const urgentFood = stage>=2 || v.condition==='sick';
   const needsFood = stage>=1;
+  if(v.state==='resting'){
+    if(urgentFood){
+      v.state='idle';
+    } else {
+      const minRest=REST_BASE_TICKS+Math.round(Math.max(0,1-v.energy)*REST_EXTRA_PER_ENERGY*0.35);
+      if(v.restTimer<minRest) v.restTimer=minRest;
+      v.restTimer=Math.max(0,v.restTimer-1);
+      if(v.restTimer<=0 || v.energy>=0.995){
+        v.state='idle';
+        v.restTimer=0;
+        v.happy=clamp(v.happy+REST_FINISH_MOOD,0,1);
+        v.thought=moodThought(v,'Rested');
+      } else {
+        v.thought=moodThought(v,'Resting');
+        return;
+      }
+    }
+  }
   if(urgentFood){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
@@ -2494,7 +2536,10 @@ else if(v.state==='to_storage'){
   v.state='idle';
 }
 else if(v.state==='rest'){
-  v.energy += 0.4; if(v.energy>1)v.energy=1; v.thought=moodThought(v,'Rested'); v.state='idle';
+  const baseRest=REST_BASE_TICKS+Math.round(Math.max(0,1-v.energy)*REST_EXTRA_PER_ENERGY);
+  if(v.restTimer<baseRest) v.restTimer=baseRest;
+  v.state='resting';
+  v.thought=moodThought(v,'Resting');
 } }
 
 /* ==================== Pathfinding ==================== */
