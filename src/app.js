@@ -324,7 +324,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 const COARSE_SAVE_SIZE = 96;
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
@@ -1272,7 +1272,32 @@ function newWorld(seed=Date.now()|0){
   toast('Villagers will choose buildings and resource zones automatically.');
   centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
-function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; const farmingSkill=Math.min(1, Math.max(0, rnd(0.35,0.75)+(role==='farmer'?0.1:0))); const constructionSkill=Math.min(1, Math.max(0, rnd(0.35,0.7)+(role==='worker'?0.12:0))); return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, farmingSkill, constructionSkill, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
+function rollAdultRole(){ const r=R(); return r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; }
+function assignAdultTraits(v, role=rollAdultRole()){
+  const farmingSkill=Math.min(1, Math.max(0, rnd(0.35,0.75)+(role==='farmer'?0.1:0)));
+  const constructionSkill=Math.min(1, Math.max(0, rnd(0.35,0.7)+(role==='worker'?0.12:0)));
+  v.role=role;
+  v.speed=2+rnd(-0.2,0.2);
+  v.farmingSkill=farmingSkill;
+  v.constructionSkill=constructionSkill;
+}
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[] }; assignAdultTraits(v); return v; }
+function newChildVillager(x,y,parents){
+  const v=newVillager(x,y);
+  v.role='child';
+  v.speed=1.6+rnd(-0.1,0.1);
+  v.hunger=rnd(0.1,0.3);
+  v.energy=rnd(0.55,0.85);
+  v.happy=rnd(0.45,0.85);
+  v.lifeStage='child';
+  v.childhoodTimer=CHILDHOOD_TICKS;
+  v.pregnancyTimer=0;
+  v.pregnancyMateId=null;
+  v.farmingSkill=Math.max(0, v.farmingSkill-0.2);
+  v.constructionSkill=Math.max(0, v.constructionSkill-0.2);
+  v.parents=Array.isArray(parents)?parents.slice(0,2):[];
+  return v;
+}
 function addBuilding(kind,x,y,opts={}){
   const def=BUILDINGS[kind]||{};
   const built=opts.built?1:0;
@@ -2488,6 +2513,8 @@ const STARVE_RECOVERY_TICKS=240;
 const STARVE_TOAST_COOLDOWN=420;
 const HUNGER_RATE=0.00135;
 const ENERGY_DRAIN_BASE=0.0011;
+const PREGNANCY_TICKS=DAY_LEN*2;
+const CHILDHOOD_TICKS=DAY_LEN*5;
 const REST_BASE_TICKS=90;
 const REST_EXTRA_PER_ENERGY=110;
 const REST_ENERGY_RECOVERY=0.0024;
@@ -2504,6 +2531,25 @@ function villagerTick(v){
   if(v.sickTimer===undefined) v.sickTimer=0;
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
   if(v.restTimer===undefined) v.restTimer=0;
+  if(!Number.isFinite(v.ageTicks)) v.ageTicks=0;
+  if(!v.lifeStage) v.lifeStage='adult';
+  if(!Number.isFinite(v.pregnancyTimer)) v.pregnancyTimer=0;
+  if(!Number.isFinite(v.childhoodTimer)) v.childhoodTimer=v.lifeStage==='child'?CHILDHOOD_TICKS:0;
+  if(!Array.isArray(v.parents)) v.parents=[];
+  if(v.pregnancyMateId===undefined) v.pregnancyMateId=null;
+  v.ageTicks++;
+  if(v.lifeStage==='child'){
+    if(v.childhoodTimer>0) v.childhoodTimer--;
+    if(v.childhoodTimer<=0) promoteChildToAdult(v);
+  }
+  if(v.lifeStage==='adult'){
+    if(v.pregnancyTimer>0){
+      v.pregnancyTimer--;
+      if(v.pregnancyTimer<=0) completePregnancy(v);
+    } else {
+      tryStartPregnancy(v);
+    }
+  }
   const style = policy?.style?.jobScoring || {};
   const blackboard = ensureBlackboardSnapshot();
   const resting=v.state==='resting';
@@ -2608,6 +2654,9 @@ function villagerTick(v){
   if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
+  if(v.lifeStage==='child'){
+    v.targetJob=null;
+  }
   const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
     let dest={x:j.x,y:j.y};
     if(j.type==='build'){
@@ -2761,6 +2810,77 @@ function countNearbyVillagers(v, radius=3){
     }
   }
   return count;
+}
+function housingCapacity(){
+  const huts=countBuildingsByKind('hut');
+  return Math.max(6, huts.built*2 + 4);
+}
+function canSupportBirth(){
+  const availableFood=storageTotals.food||0;
+  const housingRoom=housingCapacity()-villagers.length;
+  const wellFed=availableFood>Math.max(3, villagers.length);
+  return housingRoom>0 && wellFed;
+}
+function findBirthMate(v){
+  let best=null;
+  let bestDist=Infinity;
+  for(const other of villagers){
+    if(other===v) continue;
+    if(other.lifeStage!=='adult') continue;
+    if(other.pregnancyTimer>0) continue;
+    if((other.starveStage||0)>=2) continue;
+    if(other.condition!=='normal' && other.condition!=='hungry') continue;
+    const dist=Math.abs((other.x|0)-(v.x|0))+Math.abs((other.y|0)-(v.y|0));
+    if(dist<bestDist){ best=other; bestDist=dist; }
+  }
+  return best;
+}
+function tryStartPregnancy(v){
+  if(v.lifeStage!=='adult') return;
+  if(v.pregnancyTimer>0) return;
+  if((v.starveStage||0)>=1) return;
+  if(v.condition==='sick') return;
+  if(v.energy<0.4 || v.happy<0.35) return;
+  if(!canSupportBirth()) return;
+  if(R()>0.0009) return; // keep rare
+  const mate=findBirthMate(v);
+  v.pregnancyTimer=PREGNANCY_TICKS;
+  v.pregnancyMateId=mate?mate.id:null;
+  v.thought=moodThought(v,'Expecting');
+}
+function spawnChildNearParents(parent, mate){
+  const centerX=Math.round((parent.x + (mate?mate.x:parent.x))/2);
+  const centerY=Math.round((parent.y + (mate?mate.y:parent.y))/2);
+  const offsets=[{dx:0,dy:0},{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1},{dx:1,dy:1},{dx:-1,dy:1},{dx:1,dy:-1},{dx:-1,dy:-1}];
+  const parents=[parent.id];
+  if(mate?.id) parents.push(mate.id);
+  for(const off of offsets){
+    const x=clamp(centerX+off.dx,0,GRID_W-1);
+    const y=clamp(centerY+off.dy,0,GRID_H-1);
+    const i=idx(x,y);
+    if(i<0) continue;
+    if(tileOccupiedByBuilding(x,y)) continue;
+    if(world.tiles[i]===TILES.WATER) continue;
+    villagers.push(newChildVillager(x,y,parents));
+    return true;
+  }
+  return false;
+}
+function completePregnancy(v){
+  const mate=v.pregnancyMateId?villagers.find(o=>o.id===v.pregnancyMateId):null;
+  if(!spawnChildNearParents(v, mate)){
+    v.pregnancyTimer=10;
+    return;
+  }
+  v.pregnancyTimer=0;
+  v.pregnancyMateId=null;
+  v.thought=moodThought(v,'Newborn');
+}
+function promoteChildToAdult(v){
+  v.lifeStage='adult';
+  v.childhoodTimer=0;
+  assignAdultTraits(v);
+  v.thought=moodThought(v,'Grew up');
 }
 function collectFoodHubs(v, radius=12){
   const hubs=[];
@@ -2982,6 +3102,7 @@ function maybeInterruptJob(v, { blackboard=null, margin=0 } = {}){
   return false;
 }
 function pickJobFor(v){
+  if(v.lifeStage==='child') return null;
   let best=null,bs=-Infinity;
   const blackboard = ensureBlackboardSnapshot();
   const minScore = typeof policy?.style?.jobScoring?.minPickScore === 'number'
@@ -3403,7 +3524,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -3453,7 +3574,9 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     }
     const farmingSkill = Number.isFinite(v.fs) ? clamp(v.fs, 0, 1) : (v.role==='farmer'?0.7:0.5);
     const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
-    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill });
+    const lifeStage = v.stage==='child' ? 'child' : 'adult';
+    const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
+    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[] });
   });
   Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
@@ -4207,6 +4330,12 @@ function drawVillager(v, useMultiply){
     });
     labelOffset+=boxH+2*cam.z;
   };
+
+  if(v.lifeStage==='child'){
+    queueLabel('Child', '#9ad1ff');
+  } else if(v.pregnancyTimer>0){
+    queueLabel('🤰 Expecting', '#f7b0d6');
+  }
 
   const cond=v.condition;
   if(cond && cond!=='normal'){
