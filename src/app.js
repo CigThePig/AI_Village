@@ -1785,6 +1785,9 @@ function findPrimaryAnchor(){
 function findPlacementNear(kind, anchorX, anchorY, maxRadius=18, context={}){
   const fp=getFootprint(kind);
   let best=null, bestScore=-Infinity;
+  const anchorTx=Math.round(anchorX);
+  const anchorTy=Math.round(anchorY);
+  let reachableFound=false;
 
   const nearbyZoneScore=(zone,x,y,radius=3)=>{
     if(!world?.zone) return 0;
@@ -1861,10 +1864,14 @@ function findPlacementNear(kind, anchorX, anchorY, maxRadius=18, context={}){
         }
 
         // prefer tiles that keep builds connected via real paths
-        if(score>bestScore-2){
-          const path=pathfind(Math.round(anchorX), Math.round(anchorY), Math.round(cx), Math.round(cy), 140);
-          const pathCost=path ? path.length : baseDist*2;
-          score -= pathCost*0.25;
+        if(score>bestScore-4){
+          const path=pathfind(anchorTx, anchorTy, Math.round(cx), Math.round(cy), Math.max(140, maxRadius*8));
+          if(!path) continue;
+          reachableFound=true;
+          const pathCost=path.length || baseDist*2;
+          score -= pathCost*0.35;
+        } else {
+          continue;
         }
 
         if(score>bestScore){
@@ -1874,16 +1881,22 @@ function findPlacementNear(kind, anchorX, anchorY, maxRadius=18, context={}){
       }
     }
   }
-  return best;
+  if(!reachableFound && maxRadius<Math.max(GRID_W, GRID_H)){
+    const nextRadius=Math.min(Math.max(GRID_W, GRID_H), maxRadius+8);
+    if(nextRadius>maxRadius){
+      return findPlacementNear(kind, anchorX, anchorY, nextRadius, { ...context, expanded:true });
+    }
+  }
+  return reachableFound ? best : null;
 }
 
 function ensureZoneCoverage(zone, targetTiles, anchor, radius=0){
   if(!anchor) anchor=findPrimaryAnchor();
   let current=countZoneTiles(zone);
   if(current>=targetTiles) return false;
-  const searchRadius=Math.max(6, Math.ceil(targetTiles*0.6));
-  const candidates=[];
-
+  const baseSearchRadius=Math.max(6, Math.ceil(targetTiles*0.6));
+  const anchorX=Math.round(anchor.x);
+  const anchorY=Math.round(anchor.y);
   const fertilityNeighborhood=(x,y,radius)=>{
     let fertile=0;
     for(let yy=y-radius; yy<=y+radius; yy++){
@@ -1946,30 +1959,61 @@ function ensureZoneCoverage(zone, targetTiles, anchor, radius=0){
     return 0;
   };
 
-  const minX=Math.max(0, Math.floor(anchor.x - searchRadius));
-  const maxX=Math.min(GRID_W-1, Math.floor(anchor.x + searchRadius));
-  const minY=Math.max(0, Math.floor(anchor.y - searchRadius));
-  const maxY=Math.min(GRID_H-1, Math.floor(anchor.y + searchRadius));
-  for(let y=minY; y<=maxY; y++){
-    for(let x=minX; x<=maxX; x++){
-      const i=y*GRID_W+x;
-      if(world.zone[i]===zone) continue;
-      if(!zoneCanEverWork(zone, i)) continue;
-      if(tileOccupiedByBuilding(x,y)) continue;
-      const dist=Math.abs(x-anchor.x)+Math.abs(y-anchor.y);
-      const score=localResourceScore(x,y)+cohesionScore(x,y)*1.2 - dist*0.35;
-      candidates.push({x,y,score});
+  const attemptPlacement=(searchRadius)=>{
+    const candidates=[];
+    const minX=Math.max(0, Math.floor(anchor.x - searchRadius));
+    const maxX=Math.min(GRID_W-1, Math.floor(anchor.x + searchRadius));
+    const minY=Math.max(0, Math.floor(anchor.y - searchRadius));
+    const maxY=Math.min(GRID_H-1, Math.floor(anchor.y + searchRadius));
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        const i=y*GRID_W+x;
+        if(world.zone[i]===zone) continue;
+        if(!zoneCanEverWork(zone, i)) continue;
+        if(tileOccupiedByBuilding(x,y)) continue;
+        const dist=Math.abs(x-anchor.x)+Math.abs(y-anchor.y);
+        const score=localResourceScore(x,y)+cohesionScore(x,y)*1.2 - dist*0.35;
+        candidates.push({x,y,score});
+      }
     }
-  }
 
-  candidates.sort((a,b)=>b.score-a.score);
+    candidates.sort((a,b)=>b.score-a.score);
+    let reachableSeen=false;
+    let changed=false;
+    const pathable=[];
+    const pathLimit=Math.max(120, searchRadius*3);
+    for(const c of candidates){
+      if(current>=targetTiles) break;
+      if(c.score<=-Infinity) continue;
+      const path=pathfind(anchorX, anchorY, c.x, c.y, pathLimit);
+      if(!path) continue;
+      reachableSeen=true;
+      const pathCost=path.length || Math.abs(c.x-anchorX)+Math.abs(c.y-anchorY);
+      const adjustedScore=c.score - pathCost*0.2;
+      if(adjustedScore<=-Infinity) continue;
+      pathable.push({ ...c, adjustedScore });
+    }
+
+    pathable.sort((a,b)=>b.adjustedScore-a.adjustedScore);
+    for(const c of pathable){
+      if(current>=targetTiles) break;
+      if(applyZoneBrush(c.x,c.y,zone,radius)){
+        changed=true;
+        current=countZoneTiles(zone);
+      }
+    }
+    return { changed, reachableSeen };
+  };
+
   let changed=false;
-  for(const c of candidates){
-    if(current>=targetTiles) break;
-    if(c.score<=-Infinity) continue;
-    if(applyZoneBrush(c.x,c.y,zone,radius)){
-      changed=true;
-      current=countZoneTiles(zone);
+  const firstPass=attemptPlacement(baseSearchRadius);
+  changed=changed||firstPass.changed;
+  const needMore=current<targetTiles;
+  if(needMore && firstPass.reachableSeen){
+    const expandedRadius=Math.min(Math.max(GRID_W, GRID_H), baseSearchRadius+8);
+    if(expandedRadius>baseSearchRadius){
+      const secondPass=attemptPlacement(expandedRadius);
+      changed=changed||secondPass.changed;
     }
   }
   return changed;
@@ -2010,10 +2054,31 @@ function planZones(bb){
 
 function planBuildings(bb){
   if(!world) return false;
-  void bb;
   const anchor=findPrimaryAnchor();
   const villagerCount=Math.max(1, villagers.length||0);
   let placed=false;
+
+  const TUNING={
+    famineFarmMultiplier:1.4,
+    winterPrepBonus:0.35,
+    foodGapWeight:0.2,
+    hutFatigueGate:0.35,
+    storageWoodBuffer:18,
+    wellWoodBuffer:10,
+    maxPlacements:3
+  };
+
+  const famine=!!bb?.famine;
+  const availableFood=bb?.availableFood ?? Infinity;
+  const availableWood=bb?.availableWood ?? availableToReserve('wood');
+  const availableStone=bb?.availableStone ?? availableToReserve('stone');
+  const season=bb?.season ?? 0;
+  const seasonProgress=bb?.seasonProgress ?? 0;
+  const approachingWinter=(season===2 && seasonProgress>0.55) || season===3;
+  const growthPush=!!bb?.growthPush;
+  const energy=bb?.energy || {};
+  const lowEnergy=!!energy.fatigue || (energy.avgEnergy ?? 1)<TUNING.hutFatigueGate;
+  const foodGap=Math.max(0, villagerCount*2 - availableFood);
 
   const hutCounts=countBuildingsByKind('hut');
   const farmTiles=countZoneTiles(ZONES.FARM);
@@ -2028,35 +2093,64 @@ function planBuildings(bb){
     storage: storageCounts.total
   };
 
-  const hutTarget=Math.max(1, Math.ceil(villagerCount/2));
-  const desiredFarmplots=farmTiles>0 ? Math.max(1, Math.floor(farmTiles/8)) : 0;
+  const hutTargetBase=Math.max(1, Math.ceil(villagerCount/2));
+  const hutTarget=lowEnergy ? Math.max(hutCounts.built, Math.ceil(hutTargetBase*0.85)) : hutTargetBase;
+
+  let desiredFarmplots=farmTiles>0 ? Math.max(1, Math.floor(farmTiles/8)) : 0;
+  const farmUrgency=1
+    + (famine ? TUNING.famineFarmMultiplier-1 : 0)
+    + (foodGap>0 ? Math.min(0.8, (foodGap/Math.max(1, villagerCount*2))*(1+TUNING.foodGapWeight)) : 0)
+    + (approachingWinter ? TUNING.winterPrepBonus : 0)
+    + (growthPush ? 0.25 : 0);
+  if(farmTiles>0){
+    desiredFarmplots=Math.max(desiredFarmplots, Math.round(Math.max(1, farmTiles/8) * farmUrgency));
+  } else if(famine){
+    desiredFarmplots=Math.max(desiredFarmplots, Math.round(farmUrgency));
+  }
+
+  let wellTarget=farmTiles>=8 ? 1 : 0;
+  if(approachingWinter && farmTiles>=6) wellTarget=1;
+  if(famine && !approachingWinter && farmTiles<16) wellTarget=0;
+
+  let storageTarget=famine ? 1 : 2;
+  const woodBufferOk=availableWood>TUNING.storageWoodBuffer;
+  if(!woodBufferOk) storageTarget=Math.min(storageTarget, 1);
 
   const buildQueue=[];
-  if(plannedTotals.hut < hutTarget){
-    buildQueue.push({ priority:1, kind:'hut', anchor:{ x:anchor.x+2, y:anchor.y+1 }, reason:'shelter plan' });
+  if(plannedTotals.hut < hutTarget && (!lowEnergy || hutCounts.total<hutTargetBase)){
+    const fatiguePenalty=lowEnergy ? 1 : 0;
+    buildQueue.push({ priority:1+fatiguePenalty, kind:'hut', anchor:{ x:anchor.x+2, y:anchor.y+1 }, reason:'shelter plan' });
   }
   if(desiredFarmplots>plannedTotals.farmplot){
     const farmAnchor=zoneCentroid(ZONES.FARM) || anchor;
-    buildQueue.push({ priority:2, kind:'farmplot', anchor:farmAnchor, reason:'support crops', radius:14 });
+    const farmPriority=famine ? 0.5 : (approachingWinter ? 1 : 2);
+    buildQueue.push({ priority:farmPriority, kind:'farmplot', anchor:farmAnchor, reason:'support crops', radius:14 });
   }
-  if(farmTiles>=12 && plannedTotals.well<1){
+  if(wellTarget>plannedTotals.well && (availableWood>TUNING.wellWoodBuffer || availableStone>0) && (!famine || approachingWinter)){
     const farmAnchor=zoneCentroid(ZONES.FARM) || anchor;
-    buildQueue.push({ priority:3, kind:'well', anchor:farmAnchor, reason:'hydrate farms', radius:16 });
+    const prio=approachingWinter ? 2.5 : 3;
+    buildQueue.push({ priority:prio, kind:'well', anchor:farmAnchor, reason:approachingWinter?'prepare for winter water':'hydrate farms', radius:16 });
   }
-  if(plannedTotals.storage<2){
-    buildQueue.push({ priority:4, kind:'storage', anchor:{ x:anchor.x-2, y:anchor.y }, reason:'extra storage', radius:18 });
+  if(plannedTotals.storage<storageTarget && (woodBufferOk || storageCounts.built===0) && (!famine || storageCounts.total===0)){
+    buildQueue.push({ priority:famine?6:4, kind:'storage', anchor:{ x:anchor.x-2, y:anchor.y }, reason:'extra storage', radius:18 });
   }
 
   buildQueue.sort((a,b)=>a.priority-b.priority);
 
-  const maxPlacements=Math.min(3, buildQueue.length);
+  const targetByKind={
+    hut: hutTarget,
+    farmplot: desiredFarmplots,
+    well: wellTarget,
+    storage: storageTarget
+  };
+  const maxPlacements=Math.min(TUNING.maxPlacements, buildQueue.length);
   let placedThisTick=0;
   for(const task of buildQueue){
     if(placedThisTick>=maxPlacements) break;
     const def=BUILDINGS[task.kind]||{};
     if((def.wood||0)>0 && availableToReserve('wood')<def.wood) continue;
     if((def.stone||0)>0 && availableToReserve('stone')<def.stone) continue;
-    if(plannedTotals[task.kind]>= (task.kind==='hut'?hutTarget: (task.kind==='farmplot'?desiredFarmplots: (task.kind==='well'?1:2)))) continue;
+    if(plannedTotals[task.kind]>= (targetByKind[task.kind] ?? 0)) continue;
 
     const pos=findPlacementNear(task.kind, task.anchor.x, task.anchor.y, task.radius||18, task.context||{});
     if(pos){
