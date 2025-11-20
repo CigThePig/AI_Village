@@ -4636,11 +4636,22 @@ function dropItem(x,y,type,qty){
   itemsOnGround.push({x,y,type,qty});
   markItemsDirty();
 }
-let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC;
+let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC; const MAX_CATCHUP_STEPS=Math.max(1, Number.isFinite(policy.routine.maxCatchupTicksPerFrame)?policy.routine.maxCatchupTicksPerFrame:12);
 function update(){
   const now=performance.now();
   if(paused){ last=now; render(); requestAnimationFrame(update); return; }
-  let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS;
+  let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt;
+  let steps=Math.floor(acc/TICK_MS);
+  if(steps>MAX_CATCHUP_STEPS){
+    const allowedAcc=MAX_CATCHUP_STEPS*TICK_MS;
+    const droppedMs=Math.max(0, acc-allowedAcc);
+    acc=allowedAcc;
+    steps=MAX_CATCHUP_STEPS;
+    if(PERF.log){
+      console.warn('AIV loop catch-up capped', { droppedMs, cappedSteps: MAX_CATCHUP_STEPS });
+    }
+  }
+  if(steps>0) acc-=steps*TICK_MS;
   const jobInterval=policy.routine.jobGenerationTickInterval||20;
   const seasonInterval=policy.routine.seasonTickInterval||10;
   const blackboardInterval=policy.routine.blackboardCadenceTicks||30;
