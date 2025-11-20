@@ -339,6 +339,22 @@ const WALKABLE = new Set([
   TILES.MEADOW,
   TILES.MARSH
 ]);
+const ANIMAL_TYPES = {
+  deer: {
+    label: 'Deer',
+    preferred: [TILES.MEADOW, TILES.FOREST],
+    fallback: [TILES.GRASS, TILES.FERTILE],
+    density: 0.00045,
+    minCount: 10
+  },
+  boar: {
+    label: 'Boar',
+    preferred: [TILES.FOREST, TILES.MARSH],
+    fallback: [TILES.GRASS, TILES.SAND],
+    density: 0.00035,
+    minCount: 8
+  }
+};
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
@@ -546,7 +562,7 @@ function uid() {
 }
 
 /* ==================== Tileset (pixel art generated in code) ==================== */
-const Tileset = { base:{}, waterOverlay:[], zoneGlyphs:{}, villagerSprites:{}, sprite:{ tree:null, berry:null, sprout:[] } };
+const Tileset = { base:{}, waterOverlay:[], zoneGlyphs:{}, villagerSprites:{}, sprite:{ tree:null, berry:null, sprout:[], animals:{} } };
 function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
 function px(g,x,y,c){ if(!g) return; g.fillStyle=c; g.fillRect(x,y,1,1); }
 function rect(g,x,y,w,h,c){ if(!g) return; g.fillStyle=c; g.fillRect(x,y,w,h); }
@@ -675,6 +691,10 @@ function buildTileset(){
       makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, g=>drawSproutOn(g,2)),
       makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, g=>drawSproutOn(g,3))
     ];
+    Tileset.sprite.animals = {
+      deer: makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, drawDeer),
+      boar: makeSprite(ENTITY_TILE_PX, ENTITY_TILE_PX, drawBoar)
+    };
   } catch(e){ console.warn('sprites', e); }
 }
 
@@ -690,6 +710,7 @@ const buildings = units.buildings;
 const villagers = units.villagers;
 const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
+const animals = units.animals;
 const jobNeedState = { food: false, wood: false, stone: false };
 const jobSuppression = new Map();
 const itemTileIndex = new Map();
@@ -1108,11 +1129,67 @@ const FOOTPRINT = {
   well:     { w:2, h:2 }
 };
 
+function desiredAnimalsForType(type){
+  const def = ANIMAL_TYPES[type];
+  if(!def) return 0;
+  const density = typeof def.density === 'number' ? def.density : 0;
+  const baseCount = Math.round(GRID_SIZE * density);
+  const minCount = def.minCount || 0;
+  return Math.max(minCount, baseCount);
+}
+
+function isAnimalTileAllowed(tile, def, allowFallback){
+  const preferred = Array.isArray(def?.preferred) ? def.preferred : [];
+  const fallback = Array.isArray(def?.fallback) ? def.fallback : preferred;
+  const allowedSet = allowFallback ? (fallback.length ? fallback : preferred) : preferred;
+  if(allowedSet.length === 0){
+    return WALKABLE.has(tile);
+  }
+  return allowedSet.includes(tile);
+}
+
+function spawnAnimalsForWorld(){
+  animals.length = 0;
+  const occupied = new Set();
+
+  const tileFree = (x,y)=>{
+    if(x<0||y<0||x>=GRID_W||y>=GRID_H) return false;
+    const idx = y*GRID_W + x;
+    if(occupied.has(idx)) return false;
+    if(tileOccupiedByBuilding(x,y)) return false;
+    const tile = world.tiles[idx];
+    if(tile === TILES.WATER) return false;
+    if(world.trees[idx]>0 || world.rocks[idx]>0) return false;
+    return WALKABLE.has(tile);
+  };
+
+  for(const [type, def] of Object.entries(ANIMAL_TYPES)){
+    const target = desiredAnimalsForType(type);
+    if(target <= 0) continue;
+    let placed = 0;
+    let attempts = 0;
+    const maxAttempts = Math.max(target * 180, target * 24);
+    while(placed < target && attempts < maxAttempts){
+      attempts++;
+      const x = irnd(0, GRID_W-1);
+      const y = irnd(0, GRID_H-1);
+      if(!tileFree(x,y)) continue;
+      const idx = y*GRID_W + x;
+      const tile = world.tiles[idx];
+      const allowFallback = attempts > target * 60;
+      if(!isAnimalTileAllowed(tile, def, allowFallback)) continue;
+      animals.push({ id: uid(), type, x, y, dir: R() < 0.5 ? 'left' : 'right' });
+      occupied.add(idx);
+      placed++;
+    }
+  }
+}
+
 function newWorld(seed=Date.now()|0){
   const normalizedSeed = seed >>> 0;
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
-  jobs.length=0; buildings.length=0; itemsOnGround.length=0; markItemsDirty();
+  jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
   storageTotals.food = 24;
   storageTotals.wood = 12;
   storageTotals.stone = 0;
@@ -1257,6 +1334,8 @@ function newWorld(seed=Date.now()|0){
     }
     villagers.push(newVillager(spawnX, spawnY));
   }
+
+  spawnAnimalsForWorld();
 
   // --- Debug namespace ---
   if (world.__debug == null) {
@@ -3580,7 +3659,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right'})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -3634,6 +3713,18 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
     villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[] });
   });
+  const animalScale=upscaleFactor>1?upscaleFactor:1;
+  animals.length=0;
+  (d.animals||[]).forEach(a=>{
+    if(!a || !ANIMAL_TYPES[a.type]) return;
+    let ax=typeof a.x==='number'?a.x:0;
+    let ay=typeof a.y==='number'?a.y:0;
+    if(animalScale>1){
+      ax=clamp(Math.round(ax*animalScale),0,GRID_W-1);
+      ay=clamp(Math.round(ay*animalScale),0,GRID_H-1);
+    }
+    animals.push({ id:a.id||uid(), type:a.type, x:ax, y:ay, dir:a.dir==='left'?'left':'right' });
+  });
   Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
 /* ==================== Rendering ==================== */
@@ -3665,6 +3756,44 @@ function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCan
 
 function drawTree(g){ g.fillStyle='#6b3f1f'; g.fillRect(14,20,4,6); g.fillStyle='#2c6b34'; g.fillRect(10,12,12,10); g.fillStyle='#2f7f3d'; g.fillRect(12,10,8,4); }
 function drawBerry(g){ g.fillStyle='#2f6d36'; g.fillRect(8,16,16,10); g.fillStyle='#a04a5a'; g.fillRect(12,18,2,2); g.fillRect(18,20,2,2); g.fillRect(16,22,2,2); }
+function drawDeer(g){
+  if(!g) return;
+  const cx=Math.floor(ENTITY_TILE_PX/2);
+  g.fillStyle='#8b5b32';
+  g.fillRect(cx-7,17,14,6);
+  g.fillStyle='#9c6a3c';
+  g.fillRect(cx-4,12,7,5);
+  g.fillStyle='#704729';
+  g.fillRect(cx-6,23,2,6);
+  g.fillRect(cx+3,23,2,6);
+  g.fillRect(cx-2,23,2,5);
+  g.fillRect(cx+1,23,2,5);
+  g.fillStyle='#c29b62';
+  g.fillRect(cx+2,11,3,2);
+  g.fillRect(cx+3,10,1,2);
+  g.fillRect(cx+1,9,1,3);
+  g.fillStyle='#d9c9a6';
+  g.fillRect(cx+4,14,1,1);
+}
+function drawBoar(g){
+  if(!g) return;
+  const cx=Math.floor(ENTITY_TILE_PX/2);
+  g.fillStyle='#5c4941';
+  g.fillRect(cx-8,18,16,6);
+  g.fillStyle='#6d5448';
+  g.fillRect(cx-6,14,10,5);
+  g.fillRect(cx+4,16,4,4);
+  g.fillStyle='#3f312b';
+  g.fillRect(cx-7,24,2,6);
+  g.fillRect(cx-2,24,2,5);
+  g.fillRect(cx+3,24,2,5);
+  g.fillRect(cx+7,22,2,6);
+  g.fillStyle='#d8c8b4';
+  g.fillRect(cx+6,18,2,2);
+  g.fillRect(cx+7,19,1,1);
+  g.fillStyle='#40342c';
+  g.fillRect(cx-4,12,2,2);
+}
 
 function entityDrawRect(tileX, tileY, cam){
   const baseX = tileToPxX(tileX, cam);
@@ -4175,6 +4304,8 @@ function render(){
 
     if(PERF.log) t1 = performance.now();
 
+    for(const creature of animals){ drawAnimal(creature, useMultiply); }
+
     // buildings
     for(const b of buildings){
       const gx = tileToPxX(b.x, cam);
@@ -4347,6 +4478,26 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+6*s,gy+28*s, Math.floor(20*p)*s, 2*s);
   }
   g.restore();
+}
+
+function drawAnimal(animal, useMultiply){
+  if(!animal) return;
+  const sprite = Tileset.sprite.animals && Tileset.sprite.animals[animal.type];
+  if(!sprite) return;
+  const rect = entityDrawRect(animal.x, animal.y, cam);
+  const light = useMultiply ? 1 : sampleLightAt(world, animal.x, animal.y);
+  drawShadow(animal.x, animal.y, 1, 1, { x:rect.x, y:rect.y, w:rect.size, h:rect.size });
+  ctx.save();
+  if(animal.dir === 'left'){
+    ctx.translate(rect.x + rect.size, rect.y);
+    ctx.scale(-1, 1);
+    ctx.drawImage(sprite, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, 0, 0, rect.size, rect.size);
+    applySpriteShadeLit(ctx, 0, 0, rect.size, rect.size, light);
+  } else {
+    ctx.drawImage(sprite, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+    applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
+  }
+  ctx.restore();
 }
 
 function drawVillager(v, useMultiply){
