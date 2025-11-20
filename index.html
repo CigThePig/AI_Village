@@ -17,53 +17,21 @@
   AI Village v3.1 (diag)
 </div>
 
-<div class="hud-top">
-  <div class="pill pill-stats" id="stats">
-    <div class="stat">🍞 <span id="food">0</span><small>food</small></div>
-    <div class="stat">🪵 <span id="wood">0</span><small>wood</small></div>
-    <div class="stat">🪨 <span id="stone">0</span><small>stone</small></div>
-    <div class="stat">👥 <span id="pop">0</span><small>pop</small></div>
+  <div class="hud-top">
+    <div class="pill pill-stats" id="stats">
+      <div class="stat">🍞 <span id="food">0</span><small>food</small></div>
+      <div class="stat">🪵 <span id="wood">0</span><small>wood</small></div>
+      <div class="stat">🪨 <span id="stone">0</span><small>stone</small></div>
+      <div class="stat">👥 <span id="pop">0</span><small>pop</small></div>
+    </div>
+    <div class="pill pill-controls">
+      <button class="btn" id="btnPause">⏸</button>
+      <button class="btn" id="btnSpeed">1×</button>
+      <button class="btn" id="btnPrior">Priorities</button>
+      <button class="btn" id="btnSave">💾</button>
+      <button class="btn" id="btnNew">🗺️ New</button>
+    </div>
   </div>
-  <div class="pill pill-controls">
-    <button class="btn" id="btnPause">⏸</button>
-    <button class="btn" id="btnSpeed">1×</button>
-    <button class="btn" id="btnSave">💾</button>
-    <button class="btn" id="btnNew">🗺️ New</button>
-  </div>
-</div>
-
-<div class="hud-bottom">
-  <div class="bar">
-    <button class="chip" id="chipInspect">Inspect / Pan</button>
-    <button class="chip" id="chipZones">Zones (paint)</button>
-    <button class="chip" id="chipBuild">Build</button>
-    <button class="chip" id="chipPrior">Priorities</button>
-  </div>
-</div>
-
-<div class="sheet" id="sheetZones">
-  <div class="sheet-handle" aria-hidden="true"></div>
-  <h3>Zones (pixel markers) <button class="sheet-close" aria-label="Close">✕</button></h3>
-  <div class="grid">
-    <div class="tile" data-zone="farm">🌾 Farm</div>
-    <div class="tile" data-zone="cut">🪓 Cut Trees</div>
-    <div class="tile" data-zone="mine">⛏️ Mine Stone</div>
-    <div class="tile" data-zone="erase">🧹 Clear</div>
-  </div>
-  <h3>Brush Size</h3>
-  <input type="range" min="1" max="6" value="2" class="slider" id="brushSize">
-</div>
-
-<div class="sheet" id="sheetBuild">
-  <div class="sheet-handle" aria-hidden="true"></div>
-  <h3>Build <button class="sheet-close" aria-label="Close">✕</button></h3>
-  <div class="grid">
-    <div class="tile" data-build="hut">🏚️ Hut (10 wood)</div>
-    <div class="tile" data-build="storage">📦 Storage (8 wood)</div>
-    <div class="tile" data-build="farmplot">🌱 Farm Plot (4 wood)<small>Boosts crop growth and yields within 3 tiles.</small></div>
-    <div class="tile" data-build="well">🕳️ Well (6 stone)<small>Hydrates farms in 4 tiles and keeps villagers upbeat.</small></div>
-  </div>
-</div>
 
 <div class="sheet" id="sheetPrior">
   <div class="sheet-handle" aria-hidden="true"></div>
@@ -86,7 +54,8 @@
 
 <div id="help">
   <div class="help-title">Pixel Edition v3 — Quickstart</div>
-  - Pinch to <b>zoom</b>, drag with one finger to <b>pan</b> (in Inspect/Build/Priorities).<br/>
+  - Pinch to <b>zoom</b>, drag with one finger to <b>pan</b>.<br/>
+  - Villagers now decide which buildings and zones to add; focus on priorities.<br/>
   - If you saw a blank screen previously, this build fixes camera scaling.<br/>
   <button class="btn" id="btnHelpClose">Got it</button>
 </div>

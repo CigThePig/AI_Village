@@ -781,6 +781,9 @@ Object.defineProperties(time, {
 
 let lastBlackboardTick = tick;
 let lastBlackboardLogTick = tick;
+const PLANNER_INTERVAL = { zones: 90, build: 120 };
+let lastZonePlanTick = tick - PLANNER_INTERVAL.zones;
+let lastBuildPlanTick = tick - PLANNER_INTERVAL.build;
 
 R = typeof rng.generator === 'function' ? rng.generator : Math.random;
 Object.defineProperty(rng, 'generator', {
@@ -1263,7 +1266,9 @@ function newWorld(seed=Date.now()|0){
 
   ensureDebugKitConfigured();
 
-  toast('New pixel map created.'); centerCamera(campfire.x,campfire.y); markStaticDirty();
+  toast('New pixel map created.');
+  toast('Villagers will choose buildings and resource zones automatically.');
+  centerCamera(campfire.x,campfire.y); markStaticDirty();
 }
 function newVillager(x,y){ const r=R(); let role=r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; const farmingSkill=Math.min(1, Math.max(0, rnd(0.35,0.75)+(role==='farmer'?0.1:0))); const constructionSkill=Math.min(1, Math.max(0, rnd(0.35,0.7)+(role==='worker'?0.12:0))); return { id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), speed:2+rnd(-0.2,0.2), inv:null, state:'idle', thought:'Wandering', role, farmingSkill, constructionSkill, _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0 }; }
 function addBuilding(kind,x,y,opts={}){
@@ -1537,8 +1542,7 @@ const Toast = (() => {
 // Legacy shim for old toast() calls
 window.toast = (msg, ms) => Toast.show(msg, ms);
 
-let ui={ mode:'inspect', zonePaint:ZONES.FARM, buildKind:null, brush:2 };
-let brushPreview=null;
+let ui={ mode:'inspect' };
 
 const ZONE_JOB_TYPES = {
   [ZONES.FARM]: 'sow',
@@ -1580,45 +1584,23 @@ function zoneHasWorkNow(z, i){
   return false;
 }
 
-el('chipInspect').addEventListener('click', ()=> openMode('inspect'));
-el('chipZones').addEventListener('click', ()=> openMode('zones'));
-el('chipBuild').addEventListener('click', ()=> openMode('build'));
-el('chipPrior').addEventListener('click', ()=> openMode('prior'));
 el('btnPause').addEventListener('click', ()=> { paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; });
 el('btnSpeed').addEventListener('click', ()=> { speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; });
+el('btnPrior').addEventListener('click', ()=> {
+  const sheet=document.getElementById('sheetPrior');
+  const open=sheet.getAttribute('data-open')==='true';
+  toggleSheet('sheetPrior', !open);
+});
 const btnSave=el('btnSave');
 if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
 btnSave.addEventListener('click', ()=>{ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); });
 el('btnNew').addEventListener('click', ()=> { newWorld(); });
 el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; Storage.set('aiv_help_px3','1'); });
 function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
-['sheetZones','sheetBuild','sheetPrior'].forEach(id=>{ const s=document.getElementById(id); s.addEventListener('click', (e)=>{ if(e.target.closest('.sheet-close')) toggleSheet(id,false); }); });
-
-function openMode(m){
-  if(ui.mode===m){
-    ui.mode='inspect';
-    document.querySelectorAll('.chip').forEach(n=>n.removeAttribute('data-active'));
-    toggleSheet('sheetZones', false);
-    toggleSheet('sheetBuild', false);
-    toggleSheet('sheetPrior', false);
-    brushPreview=null;
-    return;
-  }
-  ui.mode=m;
-  document.querySelectorAll('.chip').forEach(n=>n.removeAttribute('data-active'));
-  const chip=document.getElementById('chip'+m.charAt(0).toUpperCase()+m.slice(1));
-  chip.setAttribute('data-active','true');
-  toggleSheet('sheetZones', m==='zones');
-  toggleSheet('sheetBuild', m==='build');
-  toggleSheet('sheetPrior', m==='prior');
-  if(m!=='zones') brushPreview=null;
-  if(m==='zones') Toast.show('Painting: '+(ui.zonePaint===ZONES.FARM?'Farm':ui.zonePaint===ZONES.CUT?'Cut Trees':'Mine'));
-}
+['sheetPrior'].forEach(id=>{ const s=document.getElementById(id); s.addEventListener('click', (e)=>{ if(e.target.closest('.sheet-close')) toggleSheet(id,false); }); });
 
 document.addEventListener('click', (e)=>{
-  if(e.target.closest('.sheet') || e.target.closest('.bar')) return;
-  toggleSheet('sheetZones', false);
-  toggleSheet('sheetBuild', false);
+  if(e.target.closest('.sheet') || e.target.closest('.pill-controls')) return;
   toggleSheet('sheetPrior', false);
 });
 
@@ -1666,8 +1648,6 @@ canvas.addEventListener('pointerdown', (e)=>{
     primaryPointer = null;
   } else if(!primaryPointer){
     primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
-    if(ui.mode==='build'){ const w=screenToWorld(e.clientX,e.clientY); placeBlueprint(ui.buildKind||'hut', toTile(w.x), toTile(w.y)); }
-    if(ui.mode==='zones'){ const w=screenToWorld(e.clientX,e.clientY); paintZoneAt(w.x, w.y); }
   }
   e.preventDefault();
 },{passive:false});
@@ -1677,11 +1657,6 @@ canvas.addEventListener('pointermove', (e)=>{
   const p = activePointers.get(e.pointerId);
   p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
   const {sx:scaleX, sy:scaleY} = pointerScale();
-  if (ui.mode==='zones' && primaryPointer){
-    const w = screenToWorld(e.clientX, e.clientY);
-    setDbg(`paint ${toTile(w.x)},${toTile(w.y)}`);
-  }
-
   if(pinch && activePointers.size===2){
     const pts = Array.from(activePointers.values());
     const dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
@@ -1697,28 +1672,13 @@ canvas.addEventListener('pointermove', (e)=>{
     pinch.midx = midx; pinch.midy = midy;
     clampCam();
   } else if(primaryPointer && e.pointerId===primaryPointer.id){
-    if(ui.mode!=='zones'){
-      const dx=(e.clientX-primaryPointer.sx)*scaleX;
-      const dy=(e.clientY-primaryPointer.sy)*scaleY;
-      const dtX = pxToTileX(dx, cam) - cam.x;
-      const dtY = pxToTileY(dy, cam) - cam.y;
-      cam.x = primaryPointer.camx - dtX;
-      cam.y = primaryPointer.camy - dtY;
-      clampCam();
-    } else {
-      const w=screenToWorld(e.clientX,e.clientY);
-      paintZoneAt(w.x, w.y);
-    }
-  }
-
-  if(ui.mode==='zones'){
-    const ptr = primaryPointer ? activePointers.get(primaryPointer.id) : activePointers.values().next().value;
-    if(ptr){
-      const w=screenToWorld(ptr.x, ptr.y);
-      brushPreview={x:toTile(w.x), y:toTile(w.y), r:Math.floor(ui.brush)};
-    }
-  } else {
-    brushPreview=null;
+    const dx=(e.clientX-primaryPointer.sx)*scaleX;
+    const dy=(e.clientY-primaryPointer.sy)*scaleY;
+    const dtX = pxToTileX(dx, cam) - cam.x;
+    const dtY = pxToTileY(dy, cam) - cam.y;
+    cam.x = primaryPointer.camx - dtX;
+    cam.y = primaryPointer.camy - dtY;
+    clampCam();
   }
 },{passive:false});
 
@@ -1726,10 +1686,6 @@ function endPointer(e){
   activePointers.delete(e.pointerId);
   if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
   if(activePointers.size<2) pinch=null;
-  if(activePointers.size===0){
-    if(ui.mode==='zones') generateJobs(); // regen once per stroke
-    brushPreview=null;
-  }
 }
 
 canvas.addEventListener('pointerup', endPointer, {passive:false});
@@ -1749,39 +1705,205 @@ window.addEventListener('keydown', (e)=>{
   }
 });
 
-/* ==================== Zones/Build/Helpers ==================== */
-document.getElementById('sheetZones').addEventListener('click', (e)=>{
-  const t = e.target.closest('.tile'); if (!t) return;
-  const z = t.getAttribute('data-zone');
-  ui.zonePaint = z==='farm' ? ZONES.FARM
-               : z==='cut'  ? ZONES.CUT
-               : z==='mine' ? ZONES.MINE
-               : ZONES.NONE;
-  toggleSheet('sheetZones', false);           // ← close sheet so canvas gets taps
-  Toast.show('Zone: ' + (z==='erase' ? 'Clear' : z.toUpperCase()));
-});
-document.getElementById('brushSize').addEventListener('input', (e)=> ui.brush=parseInt(e.target.value||'2'));
-document.querySelectorAll('#sheetBuild .tile').forEach(tile=>{
-  const kind=tile.getAttribute('data-build');
-  const def=BUILDINGS[kind];
-  if(def && def.tooltip){ tile.setAttribute('title', def.tooltip); }
-});
-document.getElementById('sheetBuild').addEventListener('click', (e)=>{
-  const t = e.target.closest('.tile'); if (!t) return;
-  const kind=t.getAttribute('data-build');
-  ui.buildKind = kind;
-  toggleSheet('sheetBuild', false);           // ← close sheet so canvas gets taps
-  const def=BUILDINGS[kind];
-  const label=def?.label||kind;
-  const detail=def?.tooltip?` — ${def.tooltip}`:'';
-  Toast.show(`Tap map to place: ${label}${detail}`);
-});
+/* ==================== Automation Helpers ==================== */
 document.getElementById('prioFood').addEventListener('input', e=> policy.sliders.food=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioBuild').addEventListener('input', e=> policy.sliders.build=(parseInt(e.target.value,10)||0)/100 );
 document.getElementById('prioExplore').addEventListener('input', e=> policy.sliders.explore=(parseInt(e.target.value,10)||0)/100 );
 
 function availableToReserve(resource){
   return (storageTotals[resource]||0) - (storageReserved[resource]||0);
+}
+
+function countZoneTiles(zone){
+  if(!world || !world.zone) return 0;
+  let total=0;
+  for(let i=0;i<world.zone.length;i++){
+    if(world.zone[i]===zone) total++;
+  }
+  return total;
+}
+
+function countNaturalResourceTiles(kind){
+  if(!world) return 0;
+  const source = kind==='wood' ? world.trees : world.rocks;
+  if(!source) return 0;
+  let total=0;
+  for(let i=0;i<source.length;i++){
+    if(source[i]>0 && world.tiles[i]!==TILES.WATER) total++;
+  }
+  return total;
+}
+
+function countBuildingsByKind(kind){
+  let built=0, planned=0;
+  for(const b of buildings){
+    if(!b || b.kind!==kind) continue;
+    if(b.built>=1) built++; else planned++;
+  }
+  return { built, planned, total: built+planned };
+}
+
+function outstandingResource(resource){
+  let need=0;
+  for(const b of buildings){
+    if(!b || b.built>=1) continue;
+    const status=buildingSupplyStatus(b);
+    const required = resource==='wood' ? status.woodNeed : status.stoneNeed;
+    const reserved = resource==='wood' ? status.reservedWood : status.reservedStone;
+    need += Math.max(0, required - reserved);
+  }
+  return need;
+}
+
+function resourcePressure(resource, buffer=0){
+  const available=availableToReserve(resource);
+  const outstanding = outstandingResource(resource);
+  return Math.max(0, outstanding + buffer - available);
+}
+
+function zoneCentroid(zone){
+  if(!world || !world.zone) return null;
+  let sumX=0,sumY=0,count=0;
+  for(let i=0;i<world.zone.length;i++){
+    if(world.zone[i]!==zone) continue;
+    const x=i%GRID_W;
+    const y=(i/GRID_W)|0;
+    sumX+=x; sumY+=y; count++;
+  }
+  if(count===0) return null;
+  return { x:sumX/count, y:sumY/count };
+}
+
+function findPrimaryAnchor(){
+  const camp=buildings.find(b=>b.kind==='campfire');
+  if(camp) return buildingCenter(camp);
+  const storage=findNearestBuilding?.(GRID_W/2, GRID_H/2, 'storage');
+  if(storage) return buildingCenter(storage);
+  return { x:GRID_W*0.5, y:GRID_H*0.5 };
+}
+
+function findPlacementNear(kind, anchorX, anchorY, maxRadius=18){
+  const fp=getFootprint(kind);
+  let best=null, bestScore=Infinity;
+  for(let r=0; r<=maxRadius; r++){
+    const minX=Math.max(0, Math.floor(anchorX - r));
+    const maxX=Math.min(GRID_W - fp.w, Math.floor(anchorX + r));
+    const minY=Math.max(0, Math.floor(anchorY - r));
+    const maxY=Math.min(GRID_H - fp.h, Math.floor(anchorY + r));
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(validateFootprintPlacement(kind, x, y)!==null) continue;
+        const cx=x+(fp.w-1)/2;
+        const cy=y+(fp.h-1)/2;
+        const score=Math.abs(cx-anchorX)+Math.abs(cy-anchorY);
+        if(score<bestScore){
+          bestScore=score;
+          best={x,y};
+        }
+      }
+    }
+    if(best) break;
+  }
+  return best;
+}
+
+function ensureZoneCoverage(zone, targetTiles, anchor, radius=0){
+  if(!anchor) anchor=findPrimaryAnchor();
+  let current=countZoneTiles(zone);
+  if(current>=targetTiles) return false;
+  const maxRadius=Math.max(6, Math.ceil(targetTiles*0.6));
+  let changed=false;
+  for(let r=0; r<=maxRadius && current<targetTiles; r++){
+    const minX=Math.max(0, Math.floor(anchor.x - r));
+    const maxX=Math.min(GRID_W-1, Math.floor(anchor.x + r));
+    const minY=Math.max(0, Math.floor(anchor.y - r));
+    const maxY=Math.min(GRID_H-1, Math.floor(anchor.y + r));
+    for(let y=minY; y<=maxY && current<targetTiles; y++){
+      for(let x=minX; x<=maxX && current<targetTiles; x++){
+        const i=y*GRID_W+x;
+        if(world.zone[i]===zone) continue;
+        if(!zoneCanEverWork(zone, i)) continue;
+        if(tileOccupiedByBuilding(x,y)) continue;
+        if(applyZoneBrush(x,y,zone,radius)){
+          changed=true;
+          current=countZoneTiles(zone);
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+function planZones(bb){
+  if(!world) return false;
+  const anchor=findPrimaryAnchor();
+  const villagerCount=Math.max(1, villagers.length||0);
+  const farmTarget=Math.max(6, villagerCount*3);
+  const farmTiles=countZoneTiles(ZONES.FARM);
+  const woodPressure=resourcePressure('wood', 6);
+  const stonePressure=resourcePressure('stone', 3);
+  let changed=false;
+
+  if(bb?.famine || bb?.availableFood < villagerCount*2 || farmTiles<farmTarget){
+    changed = ensureZoneCoverage(ZONES.FARM, farmTarget, anchor, 1) || changed;
+  }
+
+  const naturalTrees=countNaturalResourceTiles('wood');
+  const cutTarget=woodPressure>0 ? Math.min(naturalTrees, Math.max(8, Math.ceil(woodPressure*2))) : 0;
+  if(cutTarget>0 && countZoneTiles(ZONES.CUT)<cutTarget){
+    changed = ensureZoneCoverage(ZONES.CUT, cutTarget, anchor, 0) || changed;
+  }
+
+  const naturalRocks=countNaturalResourceTiles('stone');
+  const mineTarget=stonePressure>0 ? Math.min(naturalRocks, Math.max(4, Math.ceil(stonePressure*1.5))) : 0;
+  if(mineTarget>0 && countZoneTiles(ZONES.MINE)<mineTarget){
+    const rockAnchor=zoneCentroid(ZONES.MINE) || anchor;
+    changed = ensureZoneCoverage(ZONES.MINE, mineTarget, rockAnchor, 0) || changed;
+  }
+
+  if(changed){
+    generateJobs();
+  }
+  return changed;
+}
+
+function planBuildings(bb){
+  if(!world) return false;
+  void bb;
+  const anchor=findPrimaryAnchor();
+  const villagerCount=Math.max(1, villagers.length||0);
+  let placed=false;
+
+  const hutCounts=countBuildingsByKind('hut');
+  const hutTarget=Math.max(1, Math.ceil(villagerCount/2));
+  if(!placed && hutCounts.total < hutTarget){
+    const pos=findPlacementNear('hut', anchor.x+2, anchor.y+1, 18);
+    if(pos){ placeBlueprint('hut', pos.x, pos.y, { reason:'shelter plan' }); placed=true; }
+  }
+
+  const farmTiles=countZoneTiles(ZONES.FARM);
+  const farmplotCounts=countBuildingsByKind('farmplot');
+  const desiredFarmplots=farmTiles>0 ? Math.max(1, Math.floor(farmTiles/8)) : 0;
+  if(!placed && desiredFarmplots>farmplotCounts.total){
+    const farmAnchor=zoneCentroid(ZONES.FARM) || anchor;
+    const pos=findPlacementNear('farmplot', farmAnchor.x, farmAnchor.y, 14);
+    if(pos){ placeBlueprint('farmplot', pos.x, pos.y, { reason:'support crops' }); placed=true; }
+  }
+
+  const wellCounts=countBuildingsByKind('well');
+  if(!placed && farmTiles>=12 && wellCounts.total<1){
+    const farmAnchor=zoneCentroid(ZONES.FARM) || anchor;
+    const pos=findPlacementNear('well', farmAnchor.x, farmAnchor.y, 16);
+    if(pos){ placeBlueprint('well', pos.x, pos.y, { reason:'hydrate farms' }); placed=true; }
+  }
+
+  const storageCounts=countBuildingsByKind('storage');
+  if(!placed && storageCounts.total<2 && availableToReserve(ITEM.WOOD)>14){
+    const pos=findPlacementNear('storage', anchor.x-2, anchor.y, 18);
+    if(pos){ placeBlueprint('storage', pos.x, pos.y, { reason:'extra storage' }); placed=true; }
+  }
+
+  return placed;
 }
 
 function scheduleHaul(b, resource, amount){
@@ -1856,10 +1978,10 @@ function centerCamera(x,y){
   cam.y = y - H / (TILE * cam.z) * 0.5;
   clampCam();
 }
-function paintZoneAt(cx, cy){
+function applyZoneBrush(cx, cy, z, radius=0){
   const x0 = toTile(cx), y0 = toTile(cy);
-  if (x0 < 0 || y0 < 0 || x0 >= GRID_W || y0 >= GRID_H) return;
-  const r = Math.floor(ui.brush), z = ui.zonePaint|0;
+  if (x0 < 0 || y0 < 0 || x0 >= GRID_W || y0 >= GRID_H) return false;
+  const r = Math.max(0, Math.floor(radius));
   const touchedRows = new Set();
   for (let y = y0 - r; y <= y0 + r; y++){
     for (let x = x0 - r; x <= x0 + r; x++){
@@ -1882,9 +2004,9 @@ function paintZoneAt(cx, cy){
     }
   }
   touchedRows.forEach(updateZoneRow);
-  brushPreview = {x:x0, y:y0, r};
+  return touchedRows.size>0;
 }
-function placeBlueprint(kind,x,y){
+function placeBlueprint(kind,x,y, opts={}){
   const tx=toTile(x), ty=toTile(y);
   if(tx<0||ty<0||tx>=GRID_W||ty>=GRID_H) return;
   const result=validateFootprintPlacement(kind, tx, ty);
@@ -1903,7 +2025,13 @@ function placeBlueprint(kind,x,y){
     }
   }
   touchedRows.forEach(updateZoneRow);
-  const b=addBuilding(kind,tx,ty,{built:0}); requestBuildHauls(b); markStaticDirty(); Toast.show('Blueprint placed.');
+  const b=addBuilding(kind,tx,ty,{built:0}); requestBuildHauls(b); markStaticDirty();
+  const def=BUILDINGS[kind];
+  const label=def?.label||kind;
+  if(opts.silent!==true){
+    const reason=opts.reason?` (${opts.reason})`:'';
+    Toast.show(`Villagers planned a ${label}${reason}.`);
+  }
 }
 
 /* ==================== Jobs & AI (trimmed to essentials) ==================== */
@@ -3249,24 +3377,6 @@ function render(){
     // villagers
     for(const v of villagers){ drawVillager(v, useMultiply); }
 
-    if(ui.mode==='zones' && brushPreview){
-      const {x,y,r}=brushPreview;
-      ctx.strokeStyle='rgba(124,196,255,0.9)';
-      const strokeWidth=Math.max(1, Math.round(cam.z));
-      ctx.lineWidth=strokeWidth;
-      for(let yy=y-r; yy<=y+r; yy++){
-        for(let xx=x-r; xx<=x+r; xx++){
-          if(xx<0||yy<0||xx>=GRID_W||yy>=GRID_H) continue;
-          const sx = tileToPxX(xx, cam);
-          const sy = tileToPxY(yy, cam);
-          const tileSize=TILE*cam.z;
-          const inset=Math.min(Math.max(1, Math.round(cam.z*0.5)), Math.floor(tileSize*0.5));
-          const rectSize=Math.max(0, Math.round(tileSize - inset*2));
-          ctx.strokeRect(sx+inset, sy+inset, rectSize, rectSize);
-        }
-      }
-    }
-
     if (typeof LIGHTING !== 'undefined' && LIGHTING.useMultiplyComposite === true && LIGHTING.mode != 'off') {
       try {
         if (useMultiply && shadingMode !== 'off' && world.lightmapCanvas){
@@ -3504,7 +3614,53 @@ function dropItem(x,y,type,qty){
   markItemsDirty();
 }
 let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC;
-function update(){ const now=performance.now(); if(paused){ last=now; render(); requestAnimationFrame(update); return; } let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS; const jobInterval=policy.routine.jobGenerationTickInterval||20; const seasonInterval=policy.routine.seasonTickInterval||10; const blackboardInterval=policy.routine.blackboardCadenceTicks||30; const logConfig=policy.routine.blackboardLogging||null; const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60); for(let s=0;s<steps;s++){ tick++; dayTime=(dayTime+1)%DAY_LEN; if(jobInterval>0 && tick%jobInterval===0) generateJobs(); if(seasonInterval>0 && tick%seasonInterval===0) seasonTick(); if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){ gameState.bb=computeBlackboard(gameState, policy); lastBlackboardTick=tick; if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){ console.debug('[blackboard]', gameState.bb); lastBlackboardLogTick=tick; } } rebuildItemTileIndex(); for(const v of villagers){ if(!v.inv){ if(itemTileIndexDirty) rebuildItemTileIndex(); const key=((v.y|0)*GRID_W)+(v.x|0); const itemIndex=itemTileIndex.get(key); if(itemIndex!==undefined){ const it=itemsOnGround[itemIndex]; if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); } } } } for(const v of villagers){ villagerTick(v); } } render(); requestAnimationFrame(update); }
+function update(){
+  const now=performance.now();
+  if(paused){ last=now; render(); requestAnimationFrame(update); return; }
+  let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt; const steps=Math.floor(acc/TICK_MS); if(steps>0) acc-=steps*TICK_MS;
+  const jobInterval=policy.routine.jobGenerationTickInterval||20;
+  const seasonInterval=policy.routine.seasonTickInterval||10;
+  const blackboardInterval=policy.routine.blackboardCadenceTicks||30;
+  const logConfig=policy.routine.blackboardLogging||null;
+  const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60);
+  for(let s=0;s<steps;s++){
+    tick++;
+    dayTime=(dayTime+1)%DAY_LEN;
+    if(jobInterval>0 && tick%jobInterval===0) generateJobs();
+    if(seasonInterval>0 && tick%seasonInterval===0) seasonTick();
+    if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){
+      gameState.bb=computeBlackboard(gameState, policy);
+      lastBlackboardTick=tick;
+      if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){
+        console.debug('[blackboard]', gameState.bb);
+        lastBlackboardLogTick=tick;
+      }
+    }
+    if((tick-lastZonePlanTick)>=PLANNER_INTERVAL.zones){
+      planZones(gameState.bb);
+      lastZonePlanTick=tick;
+    }
+    if((tick-lastBuildPlanTick)>=PLANNER_INTERVAL.build){
+      planBuildings(gameState.bb);
+      lastBuildPlanTick=tick;
+    }
+    rebuildItemTileIndex();
+    for(const v of villagers){
+      if(!v.inv){
+        if(itemTileIndexDirty) rebuildItemTileIndex();
+        const key=((v.y|0)*GRID_W)+(v.x|0);
+        const itemIndex=itemTileIndex.get(key);
+        if(itemIndex!==undefined){
+          const it=itemsOnGround[itemIndex];
+          if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); }
+        }
+      }
+    }
+    for(const v of villagers){ villagerTick(v); }
+  }
+  render();
+  requestAnimationFrame(update);
+}
 
 /* ==================== Boot ==================== */
 function boot(){
