@@ -381,10 +381,44 @@ const PF = {
 let waterRowMask = new Uint8Array(GRID_H);
 let zoneRowMask = new Uint8Array(GRID_H);
 let currentAmbient = 1;
+const lightmapCacheState = {
+  ambient: null,
+  mode: null,
+  scale: null,
+  emitterSignature: null
+};
+const zoneOverlayCache = {
+  canvas: null,
+  ctx: null,
+  dirty: true,
+  lastScale: null,
+  lastActiveSignature: null
+};
+const waterOverlayCache = {
+  canvas: null,
+  ctx: null,
+  frameIndex: -1,
+  camX: null,
+  camY: null,
+  camZ: null,
+  width: 0,
+  height: 0
+};
 
 function ensureRowMasksSize(){
   if(waterRowMask.length !== GRID_H) waterRowMask = new Uint8Array(GRID_H);
   if(zoneRowMask.length !== GRID_H) zoneRowMask = new Uint8Array(GRID_H);
+}
+
+function markZoneOverlayDirty(){
+  zoneOverlayCache.dirty = true;
+}
+
+function resetLightmapCache(){
+  lightmapCacheState.ambient = null;
+  lightmapCacheState.mode = null;
+  lightmapCacheState.scale = null;
+  lightmapCacheState.emitterSignature = null;
 }
 
 function refreshWaterRowMaskFromTiles(){
@@ -413,6 +447,7 @@ function refreshZoneRowMask(){
       }
     }
   }
+  markZoneOverlayDirty();
 }
 
 function updateZoneRow(y){
@@ -426,6 +461,7 @@ function updateZoneRow(y){
       break;
     }
   }
+  if (zoneRowMask[y] !== hasZone) markZoneOverlayDirty();
   zoneRowMask[y] = hasZone;
 }
 
@@ -1055,6 +1091,7 @@ function applyShadingMode(mode) {
   const nextMode = normalizeShadingMode(mode);
   SHADING_DEFAULTS.mode = nextMode;
   LIGHTING.mode = nextMode;
+  resetLightmapCache();
   if (!world || !world.aux || !world.aux.height) return;
   world.hillshade = computeShadeForMode(nextMode, world.aux.height);
   if (nextMode === 'off') {
@@ -1233,11 +1270,13 @@ function newWorld(seed=Date.now()|0){
   buildHillshadeQ(nextWorld);
   world = nextWorld;
   gameState.world = nextWorld;
+  resetLightmapCache();
   waterRowMask = new Uint8Array(GRID_H);
   zoneRowMask = new Uint8Array(GRID_H);
   world.zone.fill(0);
   world.growth.fill(0);
   refreshWaterRowMaskFromTiles();
+  markZoneOverlayDirty();
   function idc(x,y){ return y*GRID_W+x; }
   const startFootprintClear=(kind, tx, ty)=>{
     if(validateFootprintPlacement(kind, tx, ty)!==null) return false;
@@ -2377,6 +2416,7 @@ function applyZoneBrush(cx, cy, z, radius=0){
     }
   }
   touchedRows.forEach(updateZoneRow);
+  if (touchedRows.size > 0) markZoneOverlayDirty();
   return touchedRows.size>0;
 }
 function placeBlueprint(kind,x,y, opts={}){
@@ -2398,6 +2438,7 @@ function placeBlueprint(kind,x,y, opts={}){
     }
   }
   touchedRows.forEach(updateZoneRow);
+  if (touchedRows.size > 0) markZoneOverlayDirty();
   const b=addBuilding(kind,tx,ty,{built:0}); requestBuildHauls(b); markStaticDirty();
   const def=BUILDINGS[kind];
   const label=def?.label||kind;
@@ -3710,6 +3751,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
   if(typeof d.tSeason==='number') world.tSeason=d.tSeason;
   refreshWaterRowMaskFromTiles();
   refreshZoneRowMask();
+  markZoneOverlayDirty();
   buildings.length=0;
   const buildingScale=upscaleFactor>1?upscaleFactor:1;
   (d.buildings||[]).forEach(src=>{
@@ -3923,6 +3965,168 @@ function visibleTileBounds(){
   return {x0, y0, x1, y1};
 }
 
+function emittersSignature(list){
+  if (!Array.isArray(list) || list.length === 0) return 'none';
+  const round = (v, places=3) => {
+    const factor = Math.pow(10, places);
+    return Math.round((Number.isFinite(v) ? v : 0) * factor) / factor;
+  };
+  return list.map(e => {
+    if (!e) return 'x';
+    return [round(e.x,2), round(e.y,2), round(e.radius,2), round(e.intensity,3), round(e.falloff,2)].join(':');
+  }).join('|');
+}
+
+function ensureLightmapBuffers(targetWorld){
+  if (!targetWorld) return false;
+  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
+  const expectedW = Math.max(1, Math.floor(((targetWorld.width||GRID_W)) * scale));
+  const expectedH = Math.max(1, Math.floor(((targetWorld.height||GRID_H)) * scale));
+  const missingQ = !targetWorld.lightmapQ || (!targetWorld.hillshadeQ && LIGHTING.mode === 'hillshade');
+  if (!targetWorld.lightmapCanvas || targetWorld.lightmapCanvas.width !== expectedW || targetWorld.lightmapCanvas.height !== expectedH || missingQ){
+    buildHillshadeQ(targetWorld);
+  }
+  return Boolean(targetWorld.lightmapCanvas && targetWorld.lightmapQ);
+}
+
+function maybeBuildLightmap(targetWorld, ambient){
+  if (!ensureLightmapBuffers(targetWorld)) return false;
+  const mode = normalizeShadingMode(LIGHTING.mode);
+  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
+  const ambientKey = Math.round(Math.max(0, Math.min(1, ambient || 0)) * 1000) / 1000;
+  const emitterSignature = emittersSignature(targetWorld.emitters);
+  const needsBuild = lightmapCacheState.ambient !== ambientKey
+    || lightmapCacheState.mode !== mode
+    || lightmapCacheState.scale !== scale
+    || lightmapCacheState.emitterSignature !== emitterSignature;
+  if (!needsBuild) return false;
+  buildLightmap(targetWorld, ambient);
+  lightmapCacheState.ambient = ambientKey;
+  lightmapCacheState.mode = mode;
+  lightmapCacheState.scale = scale;
+  lightmapCacheState.emitterSignature = emitterSignature;
+  return true;
+}
+
+function ensureZoneOverlayCanvas(){
+  const width = GRID_W * TILE;
+  const height = GRID_H * TILE;
+  let canvas = zoneOverlayCache.canvas;
+  if (!canvas || canvas.width !== width || canvas.height !== height){
+    canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(width, height) : makeCanvas(width, height);
+    zoneOverlayCache.canvas = canvas;
+    zoneOverlayCache.ctx = context2d(canvas);
+    zoneOverlayCache.dirty = true;
+  }
+  return zoneOverlayCache.canvas && zoneOverlayCache.ctx;
+}
+
+function activeZoneSignature(activeZoneJobs){
+  const parts = [];
+  for (const key of ['sow','chop','mine']){
+    const sorted = Array.from(activeZoneJobs[key] || []).sort((a,b) => a-b);
+    parts.push(`${key}:${sorted.join(',')}`);
+  }
+  return parts.join('|');
+}
+
+function rebuildZoneOverlay(activeZoneJobs){
+  if (!ensureZoneOverlayCanvas()) return;
+  const g = zoneOverlayCache.ctx;
+  const canvas = zoneOverlayCache.canvas;
+  g.clearRect(0, 0, canvas.width, canvas.height);
+  const tileSize = TILE;
+  const active = {
+    sow: activeZoneJobs.sow || new Set(),
+    chop: activeZoneJobs.chop || new Set(),
+    mine: activeZoneJobs.mine || new Set()
+  };
+  for(let y=0; y<GRID_H; y++){
+    if(!zoneRowMask[y]) continue;
+    const rowStart=y*GRID_W;
+    for(let x=0; x<GRID_W; x++){
+      const i=rowStart+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
+      if(!zoneHasWorkNow(z, i)) continue;
+      const jobType=zoneJobType(z);
+      if(jobType){ const activeSet=active[jobType]; if(activeSet && activeSet.has(i)) continue; }
+      const wash = z===ZONES.FARM ? 'rgba(120,220,120,0.25)'
+                 : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
+                 :                   'rgba(160,200,255,0.22)';
+      g.fillStyle=wash;
+      const px = x * tileSize;
+      const py = y * tileSize;
+      g.fillRect(px, py, tileSize, tileSize);
+      const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
+      g.globalAlpha=0.6;
+      for(let yy=4; yy<TILE; yy+=10){ for(let xx=4; xx<TILE; xx+=10){
+        g.drawImage(glyph, 0,0,8,8, px+xx, py+yy, 8, 8);
+      } }
+      g.globalAlpha=1;
+    }
+  }
+}
+
+function drawZoneOverlay(activeZoneJobs, camState, baseDx, baseDy){
+  const signature = activeZoneSignature(activeZoneJobs);
+  if (zoneOverlayCache.lastActiveSignature !== signature){
+    zoneOverlayCache.lastActiveSignature = signature;
+    zoneOverlayCache.dirty = true;
+  }
+  if (zoneOverlayCache.lastScale !== camState.z){
+    zoneOverlayCache.lastScale = camState.z;
+    zoneOverlayCache.dirty = true;
+  }
+  if (zoneOverlayCache.dirty){
+    rebuildZoneOverlay(activeZoneJobs);
+    zoneOverlayCache.dirty = false;
+  }
+  const canvas = zoneOverlayCache.canvas;
+  if (!canvas) return;
+  const destW = canvas.width * camState.z;
+  const destH = canvas.height * camState.z;
+  ctx.drawImage(canvas, 0,0, canvas.width, canvas.height, baseDx, baseDy, destW, destH);
+}
+
+function ensureWaterOverlayCanvas(){
+  const sizeChanged = !waterOverlayCache.canvas || waterOverlayCache.width !== W || waterOverlayCache.height !== H;
+  if (!sizeChanged && waterOverlayCache.canvas) return true;
+  const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : makeCanvas(W, H);
+  waterOverlayCache.canvas = canvas;
+  waterOverlayCache.ctx = context2d(canvas, { alpha:true });
+  waterOverlayCache.width = W;
+  waterOverlayCache.height = H;
+  waterOverlayCache.frameIndex = -1;
+  return Boolean(waterOverlayCache.canvas && waterOverlayCache.ctx);
+}
+
+function drawWaterOverlay(frames, frameIndex, vis){
+  if (!frames.length || !ensureWaterOverlayCanvas()) return;
+  const needsRedraw = waterOverlayCache.frameIndex !== frameIndex
+    || waterOverlayCache.camX !== cam.x
+    || waterOverlayCache.camY !== cam.y
+    || waterOverlayCache.camZ !== cam.z
+    || waterOverlayCache.width !== W
+    || waterOverlayCache.height !== H;
+  if (needsRedraw){
+    const g = waterOverlayCache.ctx;
+    g.clearRect(0, 0, waterOverlayCache.width, waterOverlayCache.height);
+    for(let y=vis.y0; y<=vis.y1; y++){
+      if(!waterRowMask[y]) continue;
+      const rowStart=y*GRID_W;
+      for(let x=vis.x0; x<=vis.x1; x++){ const i=rowStart+x; if(world.tiles[i]===TILES.WATER){
+        const px = tileToPxX(x, cam);
+        const py = tileToPxY(y, cam);
+        g.drawImage(frames[frameIndex], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
+      } }
+    }
+    waterOverlayCache.frameIndex = frameIndex;
+    waterOverlayCache.camX = cam.x;
+    waterOverlayCache.camY = cam.y;
+    waterOverlayCache.camZ = cam.z;
+  }
+  ctx.drawImage(waterOverlayCache.canvas, 0, 0);
+}
+
 function buildHillshadeQ(targetWorld){
   if (!targetWorld) return;
   const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
@@ -3973,6 +4177,7 @@ function buildHillshadeQ(targetWorld){
   } else {
     targetWorld.lightmapImageData = null;
   }
+  resetLightmapCache();
 }
 
 function buildLightmap(targetWorld, ambient){
@@ -4226,15 +4431,7 @@ function render(){
   const frames = Tileset.waterOverlay || [];
   if(frames.length){
     const frame = Math.floor((tick/10)%frames.length);
-    for(let y=y0;y<=y1;y++){
-      if(!waterRowMask[y]) continue;
-      const rowStart=y*GRID_W;
-      for(let x=x0;x<=x1;x++){ const i=rowStart+x; if(world.tiles[i]===TILES.WATER){
-        const px = tileToPxX(x, cam);
-        const py = tileToPxY(y, cam);
-        ctx.drawImage(frames[frame], 0,0,TILE,TILE, px, py, TILE*cam.z, TILE*cam.z);
-      } }
-    }
+    drawWaterOverlay(frames, frame, vis);
   }
 
   const activeZoneJobs={ sow:new Set(), chop:new Set(), mine:new Set() };
@@ -4245,30 +4442,7 @@ function render(){
     }
   }
 
-  // zones glyphs and wash
-  for(let y=y0;y<=y1;y++){
-    if(!zoneRowMask[y]) continue;
-    const rowStart=y*GRID_W;
-    for(let x=x0;x<=x1;x++){
-      const i=rowStart+x; const z=world.zone[i]; if(z===ZONES.NONE) continue;
-      if(!zoneHasWorkNow(z, i)) continue;
-      const jobType=zoneJobType(z);
-      if(jobType){ const activeSet=activeZoneJobs[jobType]; if(activeSet && activeSet.has(i)) continue; }
-      const wash = z===ZONES.FARM ? 'rgba(120,220,120,0.25)'
-                 : z===ZONES.CUT  ? 'rgba(255,190,110,0.22)'
-                 :                   'rgba(160,200,255,0.22)';
-      ctx.fillStyle=wash;
-      const px = tileToPxX(x, cam);
-      const py = tileToPxY(y, cam);
-      ctx.fillRect(px, py, TILE*cam.z, TILE*cam.z);
-      const glyph = z===ZONES.FARM ? Tileset.zoneGlyphs.farm : z===ZONES.CUT ? Tileset.zoneGlyphs.cut : Tileset.zoneGlyphs.mine;
-      ctx.globalAlpha=0.6;
-      for(let yy=4; yy<TILE; yy+=10){ for(let xx=4; xx<TILE; xx+=10){
-        ctx.drawImage(glyph, 0,0,8,8, px+xx*cam.z, py+yy*cam.z, 8*cam.z, 8*cam.z);
-      } }
-      ctx.globalAlpha=1;
-    }
-  }
+  drawZoneOverlay(activeZoneJobs, cam, baseDx, baseDy);
 
   __ck('albedo:end', true, null);
 
@@ -4282,14 +4456,10 @@ function render(){
 
   try {
     if (typeof LIGHTING !== 'undefined' && LIGHTING.mode != 'off') {
-      const expectedW = Math.max(1, Math.floor(((world.width||GRID_W)) * LIGHTING.lightmapScale));
-      const expectedH = Math.max(1, Math.floor(((world.height||GRID_H)) * LIGHTING.lightmapScale));
-      if (!world.lightmapCanvas || world.lightmapCanvas.width !== expectedW || world.lightmapCanvas.height !== expectedH || !world.lightmapQ){
-        buildHillshadeQ(world);
-      }
-      buildLightmap(world, ambient);
+      const updated = maybeBuildLightmap(world, ambient);
       const size = (world.lightmapCanvas != null) ? { w: world.lightmapCanvas.width, h: world.lightmapCanvas.height } : null;
-      __ck('lightmap:build', true, { size });
+      const ready = !!(world.lightmapCanvas && world.lightmapQ);
+      __ck('lightmap:build', ready, { size, updated });
     } else {
       __ck('lightmap:build', false, { reason: 'lighting off' });
     }
