@@ -2495,6 +2495,7 @@ function villagerTick(v){
   if(urgentFood){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
+    if(seekEmergencyFood(v, { pathLimit: 240, radius: 16 })) return;
   } else if(needsFood){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
@@ -2551,12 +2552,7 @@ function villagerTick(v){
       return;
     }
   }
-  if(stage>=2){ v.thought=moodThought(v,'Starving'); return; }
-  const wanderRange=stage===1?3:4;
-  v.thought=moodThought(v,stage===1?'Hungry':'Wandering');
-  const nx=clamp((v.x|0)+irnd(-wanderRange,wanderRange),0,GRID_W-1);
-  const ny=clamp((v.y|0)+irnd(-wanderRange,wanderRange),0,GRID_H-1);
-  if(tick>=v._nextPathTick){ const p=pathfind(v.x|0,v.y|0,nx,ny,60); if(p){ v.path=p; v._nextPathTick=tick+12; } }
+  if(handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
 }
 function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && distanceToFootprint(x,y,b)<=2); }
 function consumeFood(v){
@@ -2576,6 +2572,212 @@ function consumeFood(v){
     return true;
   }
   return false;
+}
+function nearestFoodTarget(v,{radius=12,pathLimit=200}={}){
+  const sx=v.x|0, sy=v.y|0;
+  let best=null;
+  const consider=(target)=>{
+    if(!target) return;
+    const { x, y, kind, targetI } = target;
+    const p=pathfind(sx,sy,x,y,pathLimit);
+    if(!p) return;
+    const score=p.length;
+    if(!best || score<best.score){
+      best={ path:p, score, kind, x, y, targetI };
+    }
+  };
+  if(storageTotals.food>0){
+    const storage=findNearestBuilding(sx,sy,'storage');
+    if(storage){
+      const entry=findEntryTileNear(storage, sx, sy) || {x:Math.round(buildingCenter(storage).x), y:Math.round(buildingCenter(storage).y)};
+      consider({x:entry.x,y:entry.y,kind:'storage'});
+    }
+  }
+  for(const it of itemsOnGround){
+    if(!it || it.type!==ITEM.FOOD) continue;
+    consider({x:it.x,y:it.y,kind:'ground'});
+  }
+  const clampX=(val)=>clamp(val,0,GRID_W-1);
+  const clampY=(val)=>clamp(val,0,GRID_H-1);
+  const x0=clampX(sx-radius), x1=clampX(sx+radius);
+  const y0=clampY(sy-radius), y1=clampY(sy+radius);
+  for(let y=y0;y<=y1;y++){
+    for(let x=x0;x<=x1;x++){
+      const i=idx(x,y);
+      if(i<0) continue;
+      if(world.berries[i]>0){
+        consider({x,y,kind:'berry',targetI:i});
+      }
+    }
+  }
+  return best;
+}
+function seekEmergencyFood(v,{radius=14,pathLimit=200}={}){
+  if(tick<v._nextPathTick) return false;
+  const target=nearestFoodTarget(v,{radius,pathLimit});
+  if(!target) return false;
+  v.path=target.path;
+  const cooldown=Math.max(8, Math.min(22, target.path.length+6));
+  v._nextPathTick=tick+cooldown;
+  if(target.kind==='berry'){
+    v.state='forage';
+    v.targetI=target.targetI;
+    v.thought=moodThought(v,'Foraging');
+  } else {
+    v.state='seek_food';
+    v.targetFood=target.kind;
+    v.targetFoodPos={x:target.x,y:target.y};
+    v.thought=moodThought(v,'Seeking food');
+  }
+  return true;
+}
+function getRallyPoint(){
+  const camp=buildings.find(b=>b.kind==='campfire' && b.built>=1);
+  if(camp){
+    const entry=findEntryTileNear(camp, camp.x, camp.y) || {x:Math.round(buildingCenter(camp).x), y:Math.round(buildingCenter(camp).y)};
+    return entry;
+  }
+  const storage=buildings.find(b=>b.kind==='storage' && b.built>=1);
+  if(storage){
+    const entry=findEntryTileNear(storage, storage.x, storage.y) || {x:Math.round(buildingCenter(storage).x), y:Math.round(buildingCenter(storage).y)};
+    return entry;
+  }
+  return null;
+}
+function countNearbyVillagers(v, radius=3){
+  const sx=v.x, sy=v.y;
+  let count=0;
+  for(const other of villagers){
+    if(other===v) continue;
+    if(Math.abs(other.x-sx)<=radius && Math.abs(other.y-sy)<=radius){
+      count++;
+    }
+  }
+  return count;
+}
+function collectFoodHubs(v, radius=12){
+  const hubs=[];
+  const sx=v.x|0, sy=v.y|0;
+  const radiusX=Math.max(1,radius);
+  const clampX=(val)=>clamp(val,0,GRID_W-1);
+  const clampY=(val)=>clamp(val,0,GRID_H-1);
+  if(storageTotals.food>0){
+    for(const b of buildings){
+      if(b.kind!=='storage' || b.built<1) continue;
+      const c=buildingCenter(b);
+      hubs.push({x:Math.round(c.x), y:Math.round(c.y), weight:2.5});
+    }
+  }
+  for(const b of buildings){
+    if(b.kind==='campfire' && b.built>=1){
+      const c=buildingCenter(b);
+      hubs.push({x:Math.round(c.x), y:Math.round(c.y), weight:1.5});
+    }
+  }
+  for(const it of itemsOnGround){
+    if(!it || it.type!==ITEM.FOOD) continue;
+    if(Math.abs(it.x-sx)<=radiusX && Math.abs(it.y-sy)<=radiusX){
+      hubs.push({x:it.x, y:it.y, weight:3});
+    }
+  }
+  const x0=clampX(sx-radiusX), x1=clampX(sx+radiusX);
+  const y0=clampY(sy-radiusX), y1=clampY(sy+radiusX);
+  for(let y=y0;y<=y1;y++){
+    for(let x=x0;x<=x1;x++){
+      const i=idx(x,y);
+      if(i<0) continue;
+      if(world.berries[i]>0){
+        hubs.push({x,y,weight:2});
+      }
+    }
+  }
+  return hubs;
+}
+function pickWeightedRandom(candidates){
+  if(!candidates || candidates.length===0) return null;
+  const total=candidates.reduce((sum,c)=>sum+(c.weight||1),0);
+  let r=R()*total;
+  for(const c of candidates){
+    r-=c.weight||1;
+    if(r<=0) return c;
+  }
+  return candidates[candidates.length-1];
+}
+function selectReachableWanderTarget(v,candidates,pathLimit,cooldown){
+  if(!candidates || candidates.length===0) return null;
+  if(!v._wanderFailures) v._wanderFailures=new Map();
+  for (const [key, until] of Array.from(v._wanderFailures.entries())) {
+    if (until <= tick) v._wanderFailures.delete(key);
+  }
+  const attempts=Math.min(8, candidates.length*2);
+  for(let n=0;n<attempts;n++){
+    const cand=pickWeightedRandom(candidates);
+    if(!cand) break;
+    const cx=clamp(cand.x|0,0,GRID_W-1);
+    const cy=clamp(cand.y|0,0,GRID_H-1);
+    const key=idx(cx,cy);
+    if(key<0) continue;
+    const failedUntil=v._wanderFailures.get(key);
+    if(failedUntil && failedUntil>tick) continue;
+    if(!passable(cx,cy)){
+      v._wanderFailures.set(key, tick+180);
+      continue;
+    }
+    const p=pathfind(v.x|0,v.y|0,cx,cy,pathLimit);
+    if(p){
+      return { path:p, cooldown };
+    }
+    v._wanderFailures.set(key, tick+240);
+  }
+  return null;
+}
+function handleIdleRoam(v,{stage, needsFood, urgentFood}){
+  const baseRange=stage===1?3:4;
+  const crowd=countNearbyVillagers(v, 3);
+  const crowdCooldown=Math.max(10, 12 + Math.max(0, crowd-2)*4 + irnd(0,4));
+  const adjustedRange=crowd>3 ? Math.max(1, baseRange-1) : baseRange;
+  if(urgentFood && seekEmergencyFood(v, { radius: 14, pathLimit: 220 })) return true;
+  const rally=(!needsFood && !urgentFood && !v.inv) ? getRallyPoint() : null;
+  const ready=tick>=v._nextPathTick;
+  if(rally && ready){
+    const rallyPath=pathfind(v.x|0,v.y|0,rally.x,rally.y,160);
+    if(rallyPath){
+      v.path=rallyPath;
+      v.thought=moodThought(v,'Regrouping');
+      v._nextPathTick=tick+crowdCooldown;
+      return true;
+    }
+  }
+  const hungry=needsFood || urgentFood;
+  const hubs=hungry?collectFoodHubs(v, 12):[];
+  const candidates=[];
+  if(hubs.length>0){
+    for(const hub of hubs){
+      candidates.push({
+        x:clamp(hub.x+irnd(-2,2),0,GRID_W-1),
+        y:clamp(hub.y+irnd(-2,2),0,GRID_H-1),
+        weight:hub.weight||1
+      });
+    }
+  }
+  const cx=v.x|0, cy=v.y|0;
+  for(let i=0;i<4;i++){
+    candidates.push({
+      x:clamp(cx+irnd(-adjustedRange,adjustedRange),0,GRID_W-1),
+      y:clamp(cy+irnd(-adjustedRange,adjustedRange),0,GRID_H-1),
+      weight:1
+    });
+  }
+  const pathLimit=hungry?120:80;
+  const wander=ready?selectReachableWanderTarget(v,candidates,pathLimit,crowdCooldown+irnd(0,4)):null;
+  v.thought=moodThought(v, urgentFood?'Starving':(stage===1?'Hungry':'Wandering'));
+  if(wander){
+    v.path=wander.path;
+    v._nextPathTick=tick+wander.cooldown;
+  } else if(tick>=v._nextPathTick){
+    v._nextPathTick=tick+crowdCooldown;
+  }
+  return true;
 }
 function foragingJob(v){
   if(tick<v._nextPathTick) return false;
@@ -2725,6 +2927,25 @@ else if(v.state==='forage'){
       v.inv={type:ITEM.FOOD,qty:1};
       v.thought=moodThought(v,'Got berries');
     }
+  }
+  v.state='idle';
+}
+else if(v.state==='seek_food'){
+  if(!v.inv){
+    const itemKey=(cy*GRID_W)+cx;
+    const itemIndex=itemTileIndex.get(itemKey);
+    const it=itemIndex!==undefined?itemsOnGround[itemIndex]:null;
+    if(it && it.type===ITEM.FOOD){
+      v.inv={type:ITEM.FOOD,qty:it.qty};
+      removeItemAtIndex(itemIndex);
+    }
+  }
+  if(consumeFood(v)){
+    v.thought=moodThought(v,'Eating');
+  } else if(v.inv && v.inv.type===ITEM.FOOD){
+    v.thought=moodThought(v,'Holding food');
+  } else {
+    v.thought=moodThought(v,'No food found');
   }
   v.state='idle';
 }
