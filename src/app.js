@@ -3269,9 +3269,6 @@ function villagerTick(v){
   const reprioritizeMargin = Number.isFinite(style.reprioritizeMargin) ? style.reprioritizeMargin : 0.06;
   if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
-  if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
-    if(tryCampfireSocial(v)) return;
-  }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
   if(v.state==='idle' && !urgentFood && !v.targetJob){
     if(tryStorageIdle(v)) return;
@@ -3332,6 +3329,9 @@ function villagerTick(v){
       suppressJob(j, retryTicks);
     }
     v._nextPathTick=tick+12;
+  }
+  if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
+    if(tryCampfireSocial(v)) return;
   }
   if(handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
 }
