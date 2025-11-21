@@ -64,7 +64,8 @@
     #dbgTray.collapsed { max-height: none; }
     #dbgTray.collapsed #dbgBody { display: none; }
     #dbgTray.collapsed #dbgRowB,
-    #dbgTray.collapsed #dbgRowC { display: none; }
+    #dbgTray.collapsed #dbgRowC,
+    #dbgTray.collapsed #dbgVillagerSection { display: none; }
     #dbgTray.collapsed .dbg-aux { display: none; }
     #dbgHead {
       background: #141c2c;
@@ -98,6 +99,55 @@
       white-space: pre-wrap;
       word-break: break-word;
       -webkit-overflow-scrolling: touch;
+    }
+    #dbgVillagerSection {
+      background: #0c111d;
+      border-bottom: 1px solid #1f2a3d;
+      max-height: 30vh;
+      overflow: auto;
+      padding: 10px;
+    }
+    #dbgVillagerSection .dbg-villagers-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+    }
+    #dbgVillagerList {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .dbg-villager-row {
+      border: 1px solid #1f2a3d;
+      border-radius: 10px;
+      padding: 6px 8px;
+      background: #12192a;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .dbg-villager-row .dbg-villager-meta {
+      font-size: 12px;
+      opacity: 0.8;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+    }
+    .dbg-villager-row .dbg-villager-state {
+      font-size: 13px;
+      margin: 4px 0;
+    }
+    .dbg-villager-row .dbg-villager-bars {
+      display: flex;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .dbg-villagers-empty {
+      font-size: 13px;
+      opacity: 0.75;
+      padding: 4px 2px;
     }
     #dbgBody::-webkit-scrollbar {
       width: 8px;
@@ -471,6 +521,12 @@
   const rowB = el('div', { id: 'dbgRowB' });
   const rowC = el('div', { id: 'dbgRowC' });
   const body = el('div', { id: 'dbgBody' });
+  const villagerSection = el('div', { id: 'dbgVillagerSection' });
+  const villagerHead = el('div', { className: 'dbg-villagers-head' });
+  const villagerTitle = el('span', { text: 'Villagers' });
+  const villagerUpdated = el('span', { className: 'dbg-villager-updated', text: 'Waiting…' });
+  const villagerList = el('div', { id: 'dbgVillagerList' });
+  const villagerEmpty = el('div', { className: 'dbg-villagers-empty', text: 'No villager data yet.' });
   const pill = el('div', { id: 'dbgPill', text: 'Debug' });
 
   const viewportLabel = el('span', { className: 'dbg-viewport' });
@@ -582,7 +638,9 @@
   rowC.append(diagBtn, safeBtn);
 
   head.append(rowA, rowB, rowC);
-  tray.append(head, body);
+  villagerHead.append(villagerTitle, villagerUpdated);
+  villagerSection.append(villagerHead, villagerList, villagerEmpty);
+  tray.append(head, villagerSection, body);
   doc.body.appendChild(tray);
   doc.body.appendChild(pill);
 
@@ -722,6 +780,89 @@
     requestAnimationFrame(renderLogs);
   }
 
+  function formatPercent(value) {
+    if (!Number.isFinite(value)) return '--';
+    return Math.round(clamp(value, 0, 1) * 100) + '%';
+  }
+
+  function renderVillagerDetails() {
+    if (!villagerSection.isConnected) return;
+    if (typeof stateProvider !== 'function') {
+      villagerUpdated.textContent = 'Awaiting game state…';
+      villagerList.textContent = '';
+      villagerEmpty.style.display = '';
+      villagerEmpty.textContent = 'Provide getState in DebugKit.configure() to see villagers.';
+      return;
+    }
+
+    let details = [];
+    let timeLabel = 'Live';
+    try {
+      const state = stateProvider();
+      if (state && Array.isArray(state.villagerDetails)) {
+        details = state.villagerDetails;
+      }
+      if (state && Number.isFinite(state.timeOfDay)) {
+        timeLabel = 't=' + state.timeOfDay.toFixed(2);
+      }
+    } catch (err) {
+      villagerUpdated.textContent = 'Villagers: error';
+      villagerList.textContent = '';
+      villagerEmpty.style.display = '';
+      villagerEmpty.textContent = 'Villager diagnostics unavailable.';
+      return;
+    }
+
+    villagerUpdated.textContent = details.length ? 'Updated ' + new Date().toLocaleTimeString() + ' (' + timeLabel + ')' : timeLabel;
+    villagerList.textContent = '';
+    if (!details.length) {
+      villagerEmpty.style.display = '';
+      villagerEmpty.textContent = 'No villagers reported yet.';
+      return;
+    }
+
+    villagerEmpty.style.display = 'none';
+    for (const entry of details) {
+      const row = el('div', { className: 'dbg-villager-row' });
+      const titleText = `#${entry?.number ?? '?'} — ${entry?.role || 'villager'} (${entry?.lifeStage || 'adult'})`;
+      row.append(el('div', { className: 'dbg-villager-state', text: titleText }));
+
+      const meta = el('div', { className: 'dbg-villager-meta' });
+      meta.append(
+        el('span', { text: entry?.state ? `Doing: ${entry.state}` : 'Doing: idle' }),
+        el('span', { text: entry?.condition ? `Condition: ${entry.condition}` : 'Condition: normal' }),
+        el('span', { text: entry?.thought ? `Thought: ${entry.thought}` : 'Thought: --' })
+      );
+      if (entry?.targetJob) {
+        const job = entry.targetJob;
+        const coords = (job.x != null && job.y != null) ? ` @ (${Math.round(job.x)},${Math.round(job.y)})` : '';
+        meta.append(el('span', { text: `Job: ${job.type || 'task'}${coords}` }));
+      }
+      if (entry?.carrying) {
+        meta.append(el('span', { text: `Carrying: ${entry.carrying.qty ?? 1} ${entry.carrying.type || ''}` }));
+      }
+      if (entry?.activeBuildingId) {
+        meta.append(el('span', { text: `Building: ${entry.activeBuildingId}` }));
+      }
+      const pos = entry?.position;
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        meta.append(el('span', { text: `Pos: (${Math.round(pos.x)},${Math.round(pos.y)})` }));
+      }
+      row.append(meta);
+
+      const bars = el('div', { className: 'dbg-villager-bars' });
+      bars.append(
+        el('span', { text: 'Hunger ' + formatPercent(entry?.hunger) }),
+        el('span', { text: 'Energy ' + formatPercent(entry?.energy) }),
+        el('span', { text: 'Hydration ' + formatPercent(entry?.hydration) }),
+        el('span', { text: 'Mood ' + formatPercent(entry?.happy) })
+      );
+      row.append(bars);
+
+      villagerList.append(row);
+    }
+  }
+
   function renderLogs() {
     renderScheduled = false;
     const term = searchTerm.trim().toLowerCase();
@@ -791,6 +932,9 @@
     const nearBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 8;
     autoscroll = nearBottom;
   });
+
+  renderVillagerDetails();
+  setInterval(renderVillagerDetails, 1000);
 
   collapseBtn.addEventListener('click', () => {
     setCollapsedState(!trayCollapsed);
