@@ -383,7 +383,7 @@ const ANIMAL_BEHAVIORS = {
     idleBob: 1.2
   }
 };
-const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
+const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone', BOW:'bow' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
 const LIGHT_VECTOR = { x:-0.75, y:-0.65 };
@@ -1556,9 +1556,11 @@ function newWorld(seed=Date.now()|0){
   storageTotals.food = 24;
   storageTotals.wood = 12;
   storageTotals.stone = 0;
+  storageTotals.bow = 0;
   storageReserved.food = 0;
   storageReserved.wood = 0;
   storageReserved.stone = 0;
+  storageReserved.bow = 0;
   time.tick = 0;
   time.dayTime = 0;
   tick = time.tick;
@@ -4289,6 +4291,7 @@ else if(v.state==='to_storage'){
       if(v.inv.type===ITEM.WOOD) storageTotals.wood+=v.inv.qty;
       if(v.inv.type===ITEM.STONE) storageTotals.stone+=v.inv.qty;
       if(v.inv.type===ITEM.FOOD) storageTotals.food+=v.inv.qty;
+      if(v.inv.type===ITEM.BOW) storageTotals.bow+=v.inv.qty;
       v.inv=null;
       v.thought=moodThought(v,'Stored');
     }
@@ -4459,14 +4462,16 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     ensureBuildingData(b);
     buildings.push(b);
   });
-  const loadedTotals = Object.assign({food:0,wood:0,stone:0}, d.storageTotals||{});
+  const loadedTotals = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageTotals||{});
   storageTotals.food = loadedTotals.food||0;
   storageTotals.wood = loadedTotals.wood||0;
   storageTotals.stone = loadedTotals.stone||0;
-  const loadedReserved = Object.assign({food:0,wood:0,stone:0}, d.storageReserved||{});
+  storageTotals.bow = loadedTotals.bow||0;
+  const loadedReserved = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageReserved||{});
   storageReserved.food = loadedReserved.food||0;
   storageReserved.wood = loadedReserved.wood||0;
   storageReserved.stone = loadedReserved.stone||0;
+  storageReserved.bow = loadedReserved.bow||0;
   villagers.length=0;
   (d.villagers||[]).forEach(v=>{
     if(!v) return;
@@ -5233,7 +5238,13 @@ function render(){
       const spriteRect = { x:centerX-half, y:centerY-half, w:size, h:size };
       drawShadow(it.x, it.y, 1, 1, spriteRect);
       ctx.save();
-      const baseColor = it.type===ITEM.WOOD ? '#b48a52' : it.type===ITEM.STONE ? '#aeb7c3' : '#b6d97a';
+      const baseColor = it.type===ITEM.WOOD
+        ? '#b48a52'
+        : it.type===ITEM.STONE
+          ? '#aeb7c3'
+          : it.type===ITEM.BOW
+            ? '#d4c08a'
+            : '#b6d97a';
       ctx.fillStyle = shadeFillColorLit(baseColor, light);
       ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
       ctx.restore();
@@ -5475,7 +5486,13 @@ function drawVillager(v, useMultiply){
   ctx.drawImage(f, 0,0,16,16, gx, gy, spriteSize, spriteSize);
   applySpriteShadeLit(ctx, gx, gy, spriteSize, spriteSize, light);
   if(v.inv){
-    const packColor=v.inv.type===ITEM.WOOD?'#b48a52':v.inv.type===ITEM.STONE?'#aeb7c3':'#b6d97a';
+    const packColor=v.inv.type===ITEM.WOOD
+      ? '#b48a52'
+      : v.inv.type===ITEM.STONE
+        ? '#aeb7c3'
+        : v.inv.type===ITEM.BOW
+          ? '#d4c08a'
+          : '#b6d97a';
     ctx.fillStyle=shadeFillColorLit(packColor, light);
     ctx.fillRect(gx+spriteSize-4*s, gy+2*s, 3*s, 3*s);
   }
