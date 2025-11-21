@@ -384,6 +384,9 @@ const ANIMAL_BEHAVIORS = {
   }
 };
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone', BOW:'bow' };
+const CRAFTING_RECIPES = {
+  bow: Object.freeze({ wood: 2, stone: 1 })
+};
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
 const LIGHT_VECTOR = { x:-0.75, y:-0.65 };
@@ -776,7 +779,7 @@ const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
 const animals = units.animals;
 const pendingBirths = [];
-const jobNeedState = { food: false, wood: false, stone: false, sow: false, harvest: false };
+const jobNeedState = { food: false, wood: false, stone: false, sow: false, harvest: false, bow: false };
 const jobSuppression = new Map();
 const itemTileIndex = new Map();
 let itemTileIndexDirty = true;
@@ -2253,6 +2256,47 @@ function availableToReserve(resource){
   return (storageTotals[resource]||0) - (storageReserved[resource]||0);
 }
 
+function canReserveMaterials(cost={}){
+  for(const [key, qty] of Object.entries(cost)){
+    if(qty>0 && availableToReserve(key)<qty) return false;
+  }
+  return true;
+}
+
+function reserveMaterials(cost={}){
+  if(!canReserveMaterials(cost)) return false;
+  for(const [key, qty] of Object.entries(cost)){
+    if(qty>0){
+      storageReserved[key]=(storageReserved[key]||0)+qty;
+    }
+  }
+  return true;
+}
+
+function releaseReservedMaterials(cost={}){
+  for(const [key, qty] of Object.entries(cost)){
+    if(qty>0){
+      storageReserved[key]=Math.max(0,(storageReserved[key]||0)-qty);
+    }
+  }
+}
+
+function spendCraftMaterials(cost={}){
+  for(const [key, qty] of Object.entries(cost)){
+    if(qty>0 && (storageTotals[key]||0)<qty){
+      releaseReservedMaterials(cost);
+      return false;
+    }
+  }
+  for(const [key, qty] of Object.entries(cost)){
+    if(qty>0){
+      storageTotals[key]=Math.max(0,(storageTotals[key]||0)-qty);
+      releaseReservedMaterials({ [key]: qty });
+    }
+  }
+  return true;
+}
+
 function countZoneTiles(zone){
   if(!world || !world.zone) return 0;
   let total=0;
@@ -2989,6 +3033,26 @@ function hasAnyFarmTiles(){
   return false;
 }
 
+function countVillagerInventory(itemType){
+  let total=0;
+  for(const v of villagers){
+    if(v?.inv && v.inv.type===itemType){
+      total+=v.inv.qty||1;
+    }
+  }
+  return total;
+}
+
+function findHunterLodge(){
+  let best=null;
+  for(const b of buildings){
+    if(!b || b.kind!=='hunterLodge' || b.built<1) continue;
+    if(!best){ best=b; continue; }
+    if(b.progress<(best.progress||0)) best=b;
+  }
+  return best;
+}
+
 function hasRipeCrops(threshold=160){
   if(!world || !world.growth || !world.tiles) return false;
   for(let i=0;i<world.growth.length;i++){
@@ -3014,6 +3078,9 @@ function shouldGenerateJobType(type, bb, cfg){
   }
   if(type==='mine'){
     return evaluateResourceNeed('stone', bb.availableStone || 0, villagersCount, cfg, 'minStonePerVillager');
+  }
+  if(type==='craft_bow'){
+    return evaluateResourceNeed('bow', bb.availableBow || 0, villagersCount, cfg, 'minBowsPerVillager', 'bow');
   }
   return true;
 }
@@ -3067,6 +3134,7 @@ function generateJobs(){
   const allowSow = shouldGenerateJobType('sow', bb, creationCfg);
   const allowChop = shouldGenerateJobType('chop', bb, creationCfg);
   const allowMine = shouldGenerateJobType('mine', bb, creationCfg);
+  const allowCraftBow = shouldGenerateJobType('craft_bow', bb, creationCfg);
   const villagerCount = Math.max(1, bb?.villagers || villagers.length || 0);
   const famineSeverity = computeFamineSeverity(bb);
   const foodOnHand = bb?.availableFood ?? storageTotals.food ?? 0;
@@ -3126,6 +3194,32 @@ function generateJobs(){
       }
     }
   }
+
+  if(allowCraftBow){
+    const desiredBows = Math.max(1, Math.ceil(villagerCount * 0.25));
+    const bowOnVillagers = countVillagerInventory(ITEM.BOW);
+    const availableBows = (bb?.availableBow ?? availableToReserve('bow')) + bowOnVillagers;
+    const activeCraftJobs = jobs.filter(j=>j && j.type==='craft_bow' && !j.cancelled).length;
+    const shortage = Math.max(0, desiredBows - availableBows - activeCraftJobs);
+    const recipe = CRAFTING_RECIPES.bow;
+    if(shortage>0 && recipe){
+      const lodge = findHunterLodge();
+      if(lodge && reserveMaterials(recipe)){
+        const craftJob = addJob({
+          type:'craft_bow',
+          x:lodge.x,
+          y:lodge.y,
+          bid:lodge.id,
+          prio:0.62 + (policy.sliders.explore||0)*0.2,
+          materials:recipe
+        });
+        if(!craftJob){
+          releaseReservedMaterials(recipe);
+        }
+      }
+    }
+  }
+
   for(const b of buildings){
     ensureBuildingData(b);
     if(b.built>=1){
@@ -3445,6 +3539,16 @@ function villagerTick(v){
             const center=buildingCenter(b);
             dest={x:Math.round(center.x), y:Math.round(center.y)};
           }
+        }
+      }
+    } else if(j.type==='craft_bow'){
+      const lodge=buildings.find(bb=>bb.id===j.bid && bb.kind==='hunterLodge');
+      if(lodge){
+        const entry=findEntryTileNear(lodge, v.x|0, v.y|0);
+        if(entry){ dest=entry; }
+        else {
+          const center=buildingCenter(lodge);
+          dest={x:Math.round(center.x), y:Math.round(center.y)};
         }
       }
     }
@@ -4279,6 +4383,38 @@ else if(v.state==='haul_deliver'){
       if(b){ ensureBuildingData(b); b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
     }
   }
+  v.state='idle';
+  finishJob(v, true);
+}
+else if(v.state==='craft_bow'){
+  const job=v.targetJob;
+  const recipe=job?.materials || CRAFTING_RECIPES.bow;
+  const lodge=job?buildings.find(bb=>bb.id===job.bid && bb.kind==='hunterLodge'):null;
+  if(!job || !lodge || lodge.built<1){
+    releaseReservedMaterials(recipe||{});
+    v.thought=moodThought(v,'No lodge');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  if(!spendCraftMaterials(recipe||{})){
+    v.thought=moodThought(v,'Missing supplies');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  const storage=findNearestBuilding(cx,cy,'storage');
+  if(storage){
+    storageTotals.bow=(storageTotals.bow||0)+1;
+    v.thought=moodThought(v,'Crafted bow');
+  } else if(!v.inv){
+    v.inv={ type:ITEM.BOW, qty:1 };
+    v.thought=moodThought(v,'Crafted bow');
+  } else {
+    dropItem(cx,cy,ITEM.BOW,1);
+    v.thought=moodThought(v,'Dropped bow');
+  }
+  applySkillGain(v, 'constructionSkill', 0.012, 0.9, 1);
   v.state='idle';
   finishJob(v, true);
 }
