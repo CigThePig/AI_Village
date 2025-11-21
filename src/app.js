@@ -3270,13 +3270,10 @@ function villagerTick(v){
   if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
-  if(v.state==='idle' && !urgentFood && !v.targetJob){
-    if(tryStorageIdle(v)) return;
-  }
-  if(v.lifeStage==='child'){
-    v.targetJob=null;
-  }
-  const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
+    if(v.lifeStage==='child'){
+      v.targetJob=null;
+    }
+    const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
     let dest={x:j.x,y:j.y};
     if(j.type==='build'){
       const b=buildings.find(bb=>bb.id===j.bid);
@@ -3325,14 +3322,17 @@ function villagerTick(v){
     const retryTicks = Number.isFinite(getJobCreationConfig()?.unreachableRetryTicks)
       ? getJobCreationConfig().unreachableRetryTicks
       : 0;
-    if(retryTicks>0){
-      suppressJob(j, retryTicks);
+      if(retryTicks>0){
+        suppressJob(j, retryTicks);
+      }
+      v._nextPathTick=tick+12;
     }
-    v._nextPathTick=tick+12;
-  }
-  if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
-    if(tryCampfireSocial(v)) return;
-  }
+    if(!j && v.state==='idle' && !urgentFood && !v.targetJob && jobs.length===0){
+      if(tryStorageIdle(v)) return;
+    }
+    if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
+      if(tryCampfireSocial(v)) return;
+    }
   if(handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
 }
 function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && distanceToFootprint(x,y,b)<=2); }
