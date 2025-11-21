@@ -48,6 +48,8 @@
       left: 8px;
       bottom: calc(8px + env(safe-area-inset-bottom, 0));
       max-width: min(720px, 95vw);
+      width: min(720px, calc(100vw - 12px));
+      max-height: calc(100vh - 16px - env(safe-area-inset-bottom, 0));
       background: #0f1522;
       color: #e8eefc;
       border: 1px solid #2a3550;
@@ -60,6 +62,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
+      box-sizing: border-box;
     }
     #dbgTray.collapsed { max-height: none; }
     #dbgTray.collapsed #dbgBody { display: none; }
@@ -76,12 +79,17 @@
       padding: 8px;
       touch-action: none;
       user-select: none;
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
     #dbgRowA, #dbgRowB, #dbgRowC {
       display: flex;
       flex-wrap: wrap;
       gap: 4px;
       align-items: center;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
     #dbgRowA .dbg-title {
       font-weight: 700;
@@ -91,8 +99,15 @@
     #dbgRowA .dbg-spacer {
       flex: 1;
     }
+    #dbgContent {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 240px;
+    }
     #dbgBody {
-      max-height: 40vh;
+      flex: 1 1 220px;
       overflow: auto;
       padding: 10px;
       background: #0f1522;
@@ -103,7 +118,7 @@
     #dbgVillagerSection {
       background: #0c111d;
       border-bottom: 1px solid #1f2a3d;
-      max-height: 30vh;
+      flex: 0 1 180px;
       overflow: auto;
       padding: 10px;
     }
@@ -278,17 +293,36 @@
       opacity: 0.75;
       margin-left: auto;
     }
-    @media (max-width: 480px) {
+    @media (max-width: 640px) {
       #dbgTray {
         left: 4px;
         right: 4px;
-        max-width: calc(100vw - 8px);
+        max-width: none;
+        width: calc(100vw - 8px);
+        max-height: calc(100vh - 12px - env(safe-area-inset-bottom, 0));
+      }
+      #dbgHead {
+        gap: 6px;
+        padding: 10px 10px 8px;
+      }
+      #dbgRowA, #dbgRowB, #dbgRowC {
+        flex-wrap: nowrap;
+        gap: 6px;
+        padding-bottom: 2px;
+      }
+      #dbgRowA::-webkit-scrollbar,
+      #dbgRowB::-webkit-scrollbar,
+      #dbgRowC::-webkit-scrollbar {
+        display: none;
+      }
+      #dbgContent {
+        min-height: 200px;
+      }
+      #dbgVillagerSection {
+        flex-basis: 150px;
       }
       #dbgTray label {
         flex: 1 1 120px;
-      }
-      #dbgRowA, #dbgRowB, #dbgRowC {
-        gap: 4px;
       }
     }
   `;
@@ -517,6 +551,7 @@
   }
   const tray = el('div', { id: 'dbgTray' });
   const head = el('div', { id: 'dbgHead' });
+  const content = el('div', { id: 'dbgContent' });
   const rowA = el('div', { id: 'dbgRowA' });
   const rowB = el('div', { id: 'dbgRowB' });
   const rowC = el('div', { id: 'dbgRowC' });
@@ -640,7 +675,8 @@
   head.append(rowA, rowB, rowC);
   villagerHead.append(villagerTitle, villagerUpdated);
   villagerSection.append(villagerHead, villagerList, villagerEmpty);
-  tray.append(head, villagerSection, body);
+  content.append(villagerSection, body);
+  tray.append(head, content);
   doc.body.appendChild(tray);
   doc.body.appendChild(pill);
 
