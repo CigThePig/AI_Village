@@ -748,7 +748,7 @@ const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
 const animals = units.animals;
 const pendingBirths = [];
-const jobNeedState = { food: false, wood: false, stone: false };
+const jobNeedState = { food: false, wood: false, stone: false, sow: false, harvest: false };
 const jobSuppression = new Map();
 const itemTileIndex = new Map();
 let itemTileIndexDirty = true;
@@ -2506,17 +2506,36 @@ function violatesSpacing(x,y,type,cfg){
   return false;
 }
 
-function evaluateResourceNeed(kind, available, villagerCount, cfg, thresholdKey){
+function evaluateResourceNeed(kind, available, villagerCount, cfg, thresholdKey, stateKey=kind){
   const threshold = Number.isFinite(cfg?.[thresholdKey]) ? cfg[thresholdKey] : 0;
   const hysteresis = Number.isFinite(cfg?.hysteresis) ? cfg.hysteresis : 0;
   const ratio = villagerCount>0 ? available/Math.max(1,villagerCount) : available;
-  const prevNeed = jobNeedState[kind]===true;
+  const prevNeed = jobNeedState[stateKey]===true;
   let need = ratio < threshold;
   if(!need && prevNeed && ratio < (threshold + hysteresis)){
     need = true;
   }
-  jobNeedState[kind] = need;
+  jobNeedState[stateKey] = need;
   return need;
+}
+
+function hasAnyFarmTiles(){
+  if(!world) return false;
+  if(world.zone && countZoneTiles(ZONES.FARM) > 0) return true;
+  if(world.tiles){
+    for(let i=0;i<world.tiles.length;i++){
+      if(world.tiles[i]===TILES.FARMLAND) return true;
+    }
+  }
+  return false;
+}
+
+function hasRipeCrops(threshold=160){
+  if(!world || !world.growth || !world.tiles) return false;
+  for(let i=0;i<world.growth.length;i++){
+    if(world.tiles[i]===TILES.FARMLAND && world.growth[i]>=threshold) return true;
+  }
+  return false;
 }
 
 function shouldGenerateJobType(type, bb, cfg){
@@ -2524,11 +2543,12 @@ function shouldGenerateJobType(type, bb, cfg){
   const villagersCount = Math.max(1, bb.villagers || 0);
   if(type==='forage'){
     if(bb.famine) return true;
-    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager');
+    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager', 'food');
   }
   if(type==='sow' || type==='harvest'){
     if(bb.famine) return true;
-    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager');
+    if(hasAnyFarmTiles()) return true;
+    return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager', type);
   }
   if(type==='chop'){
     return evaluateResourceNeed('wood', bb.availableWood || 0, villagersCount, cfg, 'minWoodPerVillager');
@@ -2590,8 +2610,9 @@ function generateJobs(){
   const allowMine = shouldGenerateJobType('mine', bb, creationCfg);
   const villagerCount = Math.max(1, bb?.villagers || villagers.length || 0);
   const famineSeverity = computeFamineSeverity(bb);
-  const allowForage = shouldGenerateJobType('forage', bb, creationCfg)
-    && (bb?.famine || (bb?.availableFood ?? storageTotals.food ?? 0) < villagerCount * 1.5);
+  const foodOnHand = bb?.availableFood ?? storageTotals.food ?? 0;
+  const forageNeed = bb?.famine || !hasRipeCrops() || foodOnHand < villagerCount * 2;
+  const allowForage = shouldGenerateJobType('forage', bb, creationCfg) && forageNeed;
   for(let y=0;y<GRID_H;y++){
     for(let x=0;x<GRID_W;x++){
       const i=y*GRID_W+x;
@@ -3712,7 +3733,6 @@ function seasonTick(){
   const hasFarmBoosters=buildings.some(b=>b.built>=1 && (b.kind==='farmplot'||b.kind==='well'));
   const creationCfg = getJobCreationConfig();
   const bb = ensureBlackboardSnapshot();
-  const allowHarvest = shouldGenerateJobType('harvest', bb, creationCfg);
   for(let i=0;i<world.growth.length;i++){
     if(world.tiles[i]!==TILES.FARMLAND) continue;
     const prev=world.growth[i];
@@ -3731,7 +3751,7 @@ function seasonTick(){
     const next=Math.min(240, prev+delta);
     world.growth[i]=next;
     if(prev<160 && next>=160){
-      if(allowHarvest && !violatesSpacing(x,y,'harvest',creationCfg)){
+      if(!violatesSpacing(x,y,'harvest',creationCfg)){
         addJob({type:'harvest',x,y, prio:0.65+(policy.sliders.food||0)*0.6});
       }
     }
