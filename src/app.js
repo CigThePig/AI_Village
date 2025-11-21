@@ -2045,6 +2045,31 @@ window.toast = (msg, ms) => Toast.show(msg, ms);
 
 let ui={ mode:'inspect' };
 
+function openMode(mode){
+  const nextMode = (typeof mode === 'string' && mode.trim()) ? mode : 'inspect';
+  ui.mode = nextMode;
+
+  if (typeof document !== 'undefined') {
+    const root = document.body || document.documentElement;
+    if (root) {
+      root.setAttribute('data-mode', nextMode);
+    }
+
+    const modeButtons = document.querySelectorAll('[data-mode]');
+    modeButtons.forEach((btn) => {
+      const active = btn.dataset.mode === nextMode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  if (typeof canvas !== 'undefined' && canvas && canvas.style) {
+    canvas.style.cursor = nextMode === 'inspect' ? 'default' : 'crosshair';
+  }
+
+  return ui.mode;
+}
+
 const ZONE_JOB_TYPES = {
   [ZONES.FARM]: 'sow',
   [ZONES.CUT]: 'chop',
@@ -2097,6 +2122,9 @@ if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable
 btnSave.addEventListener('click', ()=>{ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); });
 el('btnNew').addEventListener('click', ()=> { newWorld(); });
 el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; Storage.set('aiv_help_px3','1'); });
+document.querySelectorAll('[data-mode]').forEach((btn)=>{
+  btn.addEventListener('click', ()=> openMode(btn.dataset.mode || 'inspect'));
+});
 function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
 ['sheetPrior'].forEach(id=>{ const s=document.getElementById(id); s.addEventListener('click', (e)=>{ if(e.target.closest('.sheet-close')) toggleSheet(id,false); }); });
 
