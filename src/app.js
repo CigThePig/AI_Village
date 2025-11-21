@@ -1603,20 +1603,7 @@ function newWorld(seed=Date.now()|0){
   refreshWaterRowMaskFromTiles();
   markZoneOverlayDirty();
   function idc(x,y){ return y*GRID_W+x; }
-  const startFootprintClear=(kind, tx, ty)=>{
-    if(validateFootprintPlacement(kind, tx, ty)!==null) return false;
-    const fp=getFootprint(kind);
-    for(let yy=0; yy<fp.h; yy++){
-      const row=(ty+yy)*GRID_W;
-      for(let xx=0; xx<fp.w; xx++){
-        const idx=row+(tx+xx);
-        const tile=world.tiles[idx];
-        if(tile===TILES.WATER || tile===TILES.ROCK) return false;
-        if(world.trees[idx]>0 || world.rocks[idx]>0) return false;
-      }
-    }
-    return true;
-  };
+  const startFootprintClear=(kind, tx, ty)=>validateFootprintPlacement(kind, tx, ty)===null;
 
   const findNearestStartSpot=(kind, startX, startY)=>{
     const fp=getFootprint(kind);
@@ -1801,7 +1788,9 @@ function buildingAt(x, y){
   return null;
 }
 
-function validateFootprintPlacement(kind, tx, ty, ignoreId=null){
+function validateFootprintPlacement(kind, tx, ty, opts={}){
+  const normalizedOpts = (opts && typeof opts === 'object') ? opts : { ignoreId: opts };
+  const { ignoreId=null, allowObstacles=false } = normalizedOpts;
   const fp = getFootprint(kind);
   if(tx<0 || ty<0 || tx+fp.w>GRID_W || ty+fp.h>GRID_H) return 'bounds';
   for(let yy=0; yy<fp.h; yy++){
@@ -1809,7 +1798,13 @@ function validateFootprintPlacement(kind, tx, ty, ignoreId=null){
       const gx = tx + xx;
       const gy = ty + yy;
       const i = gy*GRID_W + gx;
-      if(world.tiles[i]===TILES.WATER) return 'water';
+      const tile=world.tiles[i];
+      if(tile===TILES.WATER) return 'water';
+      if(tile===TILES.ROCK) return 'rock';
+      if(!allowObstacles){
+        if(world.trees?.[i]>0) return 'blocked';
+        if(world.rocks?.[i]>0) return 'blocked';
+      }
     }
   }
   for(let yy=0; yy<fp.h; yy++){
@@ -2885,6 +2880,8 @@ function placeBlueprint(kind,x,y, opts={}){
   const result=validateFootprintPlacement(kind, tx, ty);
   if(result==='bounds') return;
   if(result==='water'){ Toast.show('Cannot build on water.'); return; }
+  if(result==='rock'){ Toast.show('Too rocky to build here.'); return; }
+  if(result==='blocked'){ Toast.show('Clear trees and rocks first.'); return; }
   if(result==='occupied'){ Toast.show('Tile occupied.'); return; }
   const fp=getFootprint(kind);
   const touchedRows = new Set();
@@ -4177,6 +4174,7 @@ else if(v.state==='build'){
         spent.stone=def.stone||0;
         b.progress=cost;
         cancelHaulJobsForBuilding(b);
+        markStaticDirty();
         v.thought=moodThought(v,'Built');
         remove=true;
       } else {
