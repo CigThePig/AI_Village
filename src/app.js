@@ -355,6 +355,34 @@ const ANIMAL_TYPES = {
     minCount: 8
   }
 };
+const ANIMAL_BEHAVIORS = {
+  deer: {
+    roamRadius: 4,
+    idleTicks: [28, 90],
+    roamTicks: [60, 140],
+    speed: 0.14,
+    fleeSpeed: 0.21,
+    grazeChance: 0.12,
+    grazeRadius: 1,
+    fearRadius: 4,
+    fleeDistance: 4.5,
+    observeMood: 0.006,
+    idleBob: 1.6
+  },
+  boar: {
+    roamRadius: 3,
+    idleTicks: [22, 70],
+    roamTicks: [45, 120],
+    speed: 0.12,
+    fleeSpeed: 0.18,
+    grazeChance: 0.16,
+    grazeRadius: 1,
+    fearRadius: 3,
+    fleeDistance: 3.5,
+    observeMood: 0.004,
+    idleBob: 1.2
+  }
+};
 const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone' };
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
@@ -1221,6 +1249,251 @@ function spawnAnimalsForWorld(){
       occupied.add(idx);
       placed++;
     }
+  }
+}
+
+const DEFAULT_ANIMAL_BEHAVIOR = {
+  roamRadius: 2,
+  idleTicks: [20, 60],
+  roamTicks: [40, 90],
+  speed: 0.12,
+  fleeSpeed: 0.16,
+  grazeChance: 0.1,
+  grazeRadius: 1,
+  fearRadius: 3,
+  fleeDistance: 3,
+  observeMood: 0.003,
+  idleBob: 1
+};
+
+function behaviorForAnimal(a){
+  return ANIMAL_BEHAVIORS[a.type] || DEFAULT_ANIMAL_BEHAVIOR;
+}
+
+function ensureAnimalDefaults(a){
+  if(!a.state) a.state='idle';
+  if(!Number.isFinite(a.nextActionTick)) a.nextActionTick=tick+irnd(12,48);
+  if(!Number.isFinite(a.idlePhase)) a.idlePhase=irnd(0,900);
+  if(!Number.isFinite(a.nextVillageTick)) a.nextVillageTick=0;
+  if(!Number.isFinite(a.nextGrazeTick)) a.nextGrazeTick=0;
+  if(!Number.isFinite(a.fleeTicks)) a.fleeTicks=0;
+}
+
+function animalTileBlocked(x,y, occupancy, id){
+  const tx=x|0, ty=y|0;
+  if(tx<0||ty<0||tx>=GRID_W||ty>=GRID_H) return true;
+  const i=ty*GRID_W+tx;
+  if(world.tiles[i]===TILES.WATER) return true;
+  if(world.trees[i]>0 || world.rocks[i]>0) return true;
+  if(tileOccupiedByBuilding(tx,ty)) return true;
+  if(occupancy){
+    const key=ty*GRID_W+tx;
+    const other=occupancy.get(key);
+    if(other && other!==id) return true;
+  }
+  return false;
+}
+
+function queueAnimalLabel(text,color,x,y){
+  if(!text) return;
+  const fontSize=Math.max(6,6*cam.z);
+  const boxH=fontSize+4*cam.z;
+  villagerLabels.push({
+    text,
+    color,
+    cx:tileToPxX(x, cam),
+    cy:tileToPxY(y, cam)-6*cam.z,
+    fontSize,
+    boxH,
+    camZ:cam.z
+  });
+}
+
+function nearestVillagerWithin(x,y,radius){
+  let best=null, bd=radius+0.001;
+  for(const v of villagers){
+    const d=Math.hypot((v.x|0)-x,(v.y|0)-y);
+    if(d<=bd){ bd=d; best=v; }
+  }
+  return best;
+}
+
+function pickRoamTarget(a, behavior, occupancy){
+  const tries=14;
+  for(let t=0;t<tries;t++){
+    const dx=irnd(-behavior.roamRadius, behavior.roamRadius);
+    const dy=irnd(-behavior.roamRadius, behavior.roamRadius);
+    const tx=clamp((a.x|0)+dx,0,GRID_W-1);
+    const ty=clamp((a.y|0)+dy,0,GRID_H-1);
+    const i=ty*GRID_W+tx;
+    const def=ANIMAL_TYPES[a.type];
+    if(!isAnimalTileAllowed(world.tiles[i], def, true)) continue;
+    if(animalTileBlocked(tx,ty,occupancy,a.id)) continue;
+    return {x:tx+0.02*R(), y:ty+0.02*R()};
+  }
+  return null;
+}
+
+function attemptGraze(animal, behavior){
+  if(animal.nextGrazeTick>tick) return false;
+  if(R()>behavior.grazeChance) return false;
+  const radius=Math.max(1, behavior.grazeRadius||1);
+  const ax=animal.x|0, ay=animal.y|0;
+  let target=null;
+  for(let y=ay-radius; y<=ay+radius; y++){
+    for(let x=ax-radius; x<=ax+radius; x++){
+      const i=idx(x,y);
+      if(i<0) continue;
+      if(world.berries[i]>0){ target={x,y,i}; break; }
+    }
+    if(target) break;
+  }
+  if(!target) return false;
+  world.berries[target.i]=Math.max(0, world.berries[target.i]-1);
+  animal.nextGrazeTick=tick+Math.round(60+R()*120);
+  queueAnimalLabel('Grazing', '#cde6b7', target.x+0.1, target.y-0.15);
+  return true;
+}
+
+function chooseFleeTarget(animal, from, behavior, occupancy){
+  const fx=from?.x ?? animal.x;
+  const fy=from?.y ?? animal.y;
+  const dirX=animal.x - fx;
+  const dirY=animal.y - fy;
+  const mag=Math.hypot(dirX, dirY) || 1;
+  const dist=Math.max(behavior.fleeDistance||3,1.5);
+  const targetX=clamp(Math.round(animal.x + (dirX/mag)*dist),0,GRID_W-1);
+  const targetY=clamp(Math.round(animal.y + (dirY/mag)*dist),0,GRID_H-1);
+  if(!animalTileBlocked(targetX,targetY,occupancy,animal.id)){
+    return { x: targetX+0.12*R(), y: targetY+0.12*R() };
+  }
+  return pickRoamTarget(animal, behavior, occupancy);
+}
+
+function interactWithVillage(animal, behavior, occupancy){
+  if(animal.nextVillageTick>tick) return;
+  const radius=Math.max(2, behavior.fearRadius||3);
+  const villager=nearestVillagerWithin(animal.x, animal.y, radius);
+  if(!villager) return;
+  const hungry=(villager.starveStage||0)>=1 || villager.condition==='hungry' || villager.condition==='starving';
+  if(hungry && R()<0.08){
+    dropItem(animal.x|0, animal.y|0, ITEM.FOOD, 1);
+    villager.hunger=Math.max(0, villager.hunger-0.12);
+    villager.thought=moodThought(villager,'Hunted game');
+    queueAnimalLabel('Hunted', '#ffd27f', animal.x+0.15, animal.y-0.1);
+    animal.state='flee';
+    animal.target=chooseFleeTarget(animal, villager, behavior, occupancy);
+    animal.fleeTicks=Math.round(behavior.roamTicks ? behavior.roamTicks[0] : 40);
+    animal.nextVillageTick=tick+280;
+    return;
+  }
+  if(R()<0.16){
+    villager.happy=clamp(villager.happy+(behavior.observeMood||0.003),0,1);
+    villager.thought=moodThought(villager,'Watching wildlife');
+    queueAnimalLabel('👀', '#d8e7ff', animal.x+0.05, animal.y-0.2);
+    animal.nextVillageTick=tick+Math.round(90+R()*120);
+  }
+}
+
+function stepAnimal(animal, behavior, occupancy){
+  const oldKey=(animal.y|0)*GRID_W+(animal.x|0);
+  let speed=behavior.speed||0.12;
+  if(animal.state==='flee') speed=behavior.fleeSpeed||speed*1.3;
+  const target=animal.target;
+  if(!target){ return; }
+  const dx=target.x-animal.x;
+  const dy=target.y-animal.y;
+  const dist=Math.hypot(dx,dy);
+  if(dist<0.001){ animal.state='idle'; animal.target=null; return; }
+  const step=Math.min(dist, speed);
+  const nx=animal.x + (dx/dist)*step;
+  const ny=animal.y + (dy/dist)*step;
+  const blocked=animalTileBlocked(nx,ny,occupancy,animal.id);
+  if(blocked){
+    animal.state='idle';
+    animal.target=null;
+    animal.nextActionTick=tick+irnd(10,40);
+    return;
+  }
+  const newKey=(ny|0)*GRID_W+(nx|0);
+  if(newKey!==oldKey){
+    const occupant=occupancy.get(newKey);
+    if(occupant && occupant!==animal.id){
+      animal.state='idle';
+      animal.target=null;
+      animal.nextActionTick=tick+irnd(8,24);
+      return;
+    }
+    occupancy.delete(oldKey);
+    occupancy.set(newKey, animal.id);
+  }
+  animal.x=nx;
+  animal.y=ny;
+  if(dx<0) animal.dir='left';
+  else if(dx>0) animal.dir='right';
+  if(dist<=step+0.01){
+    animal.state='idle';
+    animal.target=null;
+    animal.nextActionTick=tick+irnd(behavior.idleTicks[0], behavior.idleTicks[1]);
+  }
+}
+
+function animalTick(animal, occupancy){
+  ensureAnimalDefaults(animal);
+  const behavior=behaviorForAnimal(animal);
+  animal.bobOffset=Math.sin((tick+animal.idlePhase)*0.16)*(behavior.idleBob||1);
+  const blocked=animalTileBlocked(animal.x,animal.y,occupancy,animal.id);
+  if(blocked){
+    const target=pickRoamTarget(animal, behavior, occupancy);
+    if(target){
+      animal.x=target.x;
+      animal.y=target.y;
+      const k=(animal.y|0)*GRID_W+(animal.x|0);
+      occupancy.set(k, animal.id);
+    }
+  }
+
+  if(animal.state==='idle' && attemptGraze(animal, behavior)){
+    animal.nextActionTick=Math.max(animal.nextActionTick||tick, tick+behavior.idleTicks[0]);
+  }
+  interactWithVillage(animal, behavior, occupancy);
+
+  if(animal.state==='idle' && tick>=animal.nextActionTick){
+    const target=pickRoamTarget(animal, behavior, occupancy);
+    if(target){
+      animal.state='roam';
+      animal.target=target;
+      animal.nextActionTick=tick+irnd(behavior.roamTicks[0], behavior.roamTicks[1]);
+    } else {
+      animal.nextActionTick=tick+irnd(behavior.idleTicks[0], behavior.idleTicks[1]);
+    }
+  }
+  if(animal.state==='flee'){
+    animal.fleeTicks=Math.max(0,(animal.fleeTicks|0)-1);
+    if(!animal.target){
+      animal.target=pickRoamTarget(animal, behavior, occupancy);
+    }
+    if(animal.fleeTicks<=0 && animal.target){
+      animal.state='roam';
+    }
+  }
+  if(animal.state==='roam' || animal.state==='flee'){
+    if(!animal.target){ animal.state='idle'; return; }
+    stepAnimal(animal, behavior, occupancy);
+  } else if(animal.state==='idle' && R()<0.015){
+    animal.dir=animal.dir==='left'?'right':'left';
+  }
+}
+
+function updateAnimals(){
+  if(animals.length===0) return;
+  const occupancy=new Map();
+  for(const a of animals){
+    const key=(a.y|0)*GRID_W+(a.x|0);
+    if(!occupancy.has(key)) occupancy.set(key, a.id);
+  }
+  for(const a of animals){
+    animalTick(a, occupancy);
   }
 }
 
@@ -4004,7 +4277,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right'})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -4069,7 +4342,13 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
       ax=clamp(Math.round(ax*animalScale),0,GRID_W-1);
       ay=clamp(Math.round(ay*animalScale),0,GRID_H-1);
     }
-    animals.push({ id:a.id||uid(), type:a.type, x:ax, y:ay, dir:a.dir==='left'?'left':'right' });
+    const state=typeof a.state==='string'?a.state:'idle';
+    const nextActionTick=Number.isFinite(a.na)?a.na:tick+irnd(12,60);
+    const idlePhase=Number.isFinite(a.phase)?a.phase:irnd(0,900);
+    const nextVillageTick=Number.isFinite(a.nv)?a.nv:0;
+    const nextGrazeTick=Number.isFinite(a.ng)?a.ng:0;
+    const fleeTicks=Number.isFinite(a.flee)?a.flee:0;
+    animals.push({ id:a.id||uid(), type:a.type, x:ax, y:ay, dir:a.dir==='left'?'left':'right', state, nextActionTick, idlePhase, nextVillageTick, nextGrazeTick, fleeTicks });
   });
   Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
 
@@ -5013,17 +5292,18 @@ function drawAnimal(animal, useMultiply){
   const sprite = Tileset.sprite.animals && Tileset.sprite.animals[animal.type];
   if(!sprite) return;
   const rect = entityDrawRect(animal.x, animal.y, cam);
+  const bobPx = Math.round((animal.bobOffset||0) * cam.z);
   const light = useMultiply ? 1 : sampleLightAt(world, animal.x, animal.y);
   drawShadow(animal.x, animal.y, 1, 1, { x:rect.x, y:rect.y, w:rect.size, h:rect.size });
   ctx.save();
   if(animal.dir === 'left'){
-    ctx.translate(rect.x + rect.size, rect.y);
+    ctx.translate(rect.x + rect.size, rect.y - bobPx);
     ctx.scale(-1, 1);
     ctx.drawImage(sprite, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, 0, 0, rect.size, rect.size);
     applySpriteShadeLit(ctx, 0, 0, rect.size, rect.size, light);
   } else {
-    ctx.drawImage(sprite, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-    applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
+    ctx.drawImage(sprite, 0,0,ENTITY_TILE_PX,ENTITY_TILE_PX, rect.x, rect.y - bobPx, rect.size, rect.size);
+    applySpriteShadeLit(ctx, rect.x, rect.y - bobPx, rect.size, rect.size, light);
   }
   ctx.restore();
 }
@@ -5168,6 +5448,7 @@ function update(){
       lastBuildPlanTick=tick;
     }
     rebuildItemTileIndex();
+    updateAnimals();
     for(const v of villagers){
       if(!v.inv){
         if(itemTileIndexDirty) rebuildItemTileIndex();
