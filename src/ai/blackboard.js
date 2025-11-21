@@ -131,6 +131,7 @@ export function computeBlackboard(state, policy) {
   const { hungry, starving } = countVillagerNeeds(villagers, hungerThresholds);
   const availableWood = availableResource(totals, reserved, 'wood');
   const availableStone = availableResource(totals, reserved, 'stone');
+  const availableBow = availableResource(totals, reserved, 'bow');
 
   const famine = starving > 0 || availableFood <= Math.max(0, villagers.length - hungry);
   const { buildPush, growthPush } = inspectJobs(jobs);
@@ -144,6 +145,7 @@ export function computeBlackboard(state, policy) {
     availableFood,
     availableWood,
     availableStone,
+    availableBow,
     hungryVillagers: hungry,
     starvingVillagers: starving,
     famine,
