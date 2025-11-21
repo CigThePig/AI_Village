@@ -2331,6 +2331,18 @@ function findPlacementNear(kind, anchorX, anchorY, maxRadius=18, context={}){
   const anchorTy=Math.round(anchorY);
   let reachableFound=false;
 
+  const wildlifeDensity=(x,y,radius=6)=>{
+    if(!Array.isArray(animals) || animals.length===0) return 0;
+    let score=0;
+    for(const a of animals){
+      if(!a || a.state==='dead') continue;
+      const dist=Math.abs(a.x-x)+Math.abs(a.y-y);
+      if(dist>radius) continue;
+      score += Math.max(0, radius - dist + 1);
+    }
+    return score;
+  };
+
   const nearbyZoneScore=(zone,x,y,radius=3)=>{
     if(!world?.zone) return 0;
     let count=0;
@@ -2403,6 +2415,11 @@ function findPlacementNear(kind, anchorX, anchorY, maxRadius=18, context={}){
           score+=nearbyZoneScore(ZONES.MINE,cx,cy,4)*1.1;
           score+=resourceDensity('wood',cx,cy,2)*0.05;
           score+=resourceDensity('stone',cx,cy,2)*0.06;
+        }
+        if(kind==='hunterLodge'){
+          score+=wildlifeDensity(cx,cy,6)*0.45;
+          score+=resourceDensity('wood',cx,cy,2)*0.08;
+          score+=nearbyZoneScore(ZONES.FARM,cx,cy,4)*-0.2;
         }
 
         // prefer tiles that keep builds connected via real paths
@@ -2635,12 +2652,14 @@ function planBuildings(bb){
   const farmplotCounts=countBuildingsByKind('farmplot');
   const wellCounts=countBuildingsByKind('well');
   const storageCounts=countBuildingsByKind('storage');
+  const hunterCounts=countBuildingsByKind('hunterLodge');
 
   const plannedTotals={
     hut: hutCounts.total,
     farmplot: farmplotCounts.total,
     well: wellCounts.total,
-    storage: storageCounts.total
+    storage: storageCounts.total,
+    hunterLodge: hunterCounts.total
   };
 
   const hutTargetBase=Math.max(1, Math.ceil(villagerCount/2));
@@ -2661,6 +2680,31 @@ function planBuildings(bb){
   let wellTarget=farmTiles>=8 ? 1 : 0;
   if(approachingWinter && farmTiles>=6) wellTarget=1;
   if(famine && !approachingWinter && farmTiles<16) wellTarget=0;
+
+  const wildlifeInfo = (()=>{
+    if(!Array.isArray(animals) || animals.length===0) return { hotspot:null, nearby:0 };
+    let best=null;
+    const searchRadius=26;
+    const clusterRadius=6;
+    for(const a of animals){
+      if(!a || a.state==='dead') continue;
+      const dist=Math.abs(a.x-anchor.x)+Math.abs(a.y-anchor.y);
+      if(dist>searchRadius) continue;
+      let cluster=0;
+      for(const b of animals){
+        if(!b || b.state==='dead') continue;
+        const d=Math.abs(b.x-a.x)+Math.abs(b.y-a.y);
+        if(d<=clusterRadius) cluster++;
+      }
+      if(!best || cluster>best.count){
+        best={ x:a.x, y:a.y, count:cluster };
+      }
+    }
+    return { hotspot: best, nearby: best?.count||0 };
+  })();
+
+  const lowFoodPressure = availableFood < villagerCount*1.5;
+  const hunterTarget = wildlifeInfo.nearby>=3 && (famine || lowFoodPressure) ? 1 : 0;
 
   let storageTarget=famine ? 1 : 2;
   const woodBufferOk=availableWood>TUNING.storageWoodBuffer;
@@ -2684,6 +2728,17 @@ function planBuildings(bb){
   if(plannedTotals.storage<storageTarget && (woodBufferOk || storageCounts.built===0) && (!famine || storageCounts.total===0)){
     buildQueue.push({ priority:famine?6:4, kind:'storage', anchor:{ x:anchor.x-2, y:anchor.y }, reason:'extra storage', radius:18 });
   }
+  if(hunterTarget>plannedTotals.hunterLodge){
+    const hotspot=wildlifeInfo.hotspot || anchor;
+    buildQueue.push({
+      priority: famine ? 0.4 : 1.8,
+      kind:'hunterLodge',
+      anchor: { x: hotspot.x, y: hotspot.y },
+      reason: famine ? 'hunt to survive' : 'secure wild food',
+      radius: 18,
+      context: { wildlife:true }
+    });
+  }
 
   buildQueue.sort((a,b)=>a.priority-b.priority);
 
@@ -2691,21 +2746,30 @@ function planBuildings(bb){
     hut: hutTarget,
     farmplot: desiredFarmplots,
     well: wellTarget,
-    storage: storageTarget
+    storage: storageTarget,
+    hunterLodge: hunterTarget
   };
   const maxPlacements=Math.min(TUNING.maxPlacements, buildQueue.length);
   let placedThisTick=0;
+  let reservedWoodForPlans=0;
+  let reservedStoneForPlans=0;
   for(const task of buildQueue){
     if(placedThisTick>=maxPlacements) break;
     const def=BUILDINGS[task.kind]||{};
-    if((def.wood||0)>0 && availableToReserve('wood')<def.wood) continue;
-    if((def.stone||0)>0 && availableToReserve('stone')<def.stone) continue;
+    const woodNeed=def.wood||0;
+    const stoneNeed=def.stone||0;
+    const woodBudget=availableToReserve('wood')-reservedWoodForPlans;
+    const stoneBudget=availableToReserve('stone')-reservedStoneForPlans;
+    if(woodNeed>0 && woodBudget<woodNeed) continue;
+    if(stoneNeed>0 && stoneBudget<stoneNeed) continue;
     if(plannedTotals[task.kind]>= (targetByKind[task.kind] ?? 0)) continue;
 
     const pos=findPlacementNear(task.kind, task.anchor.x, task.anchor.y, task.radius||18, task.context||{});
     if(pos){
       placeBlueprint(task.kind, pos.x, pos.y, { reason:task.reason });
       plannedTotals[task.kind]++;
+      reservedWoodForPlans+=woodNeed;
+      reservedStoneForPlans+=stoneNeed;
       placed=true;
       placedThisTick++;
     }
