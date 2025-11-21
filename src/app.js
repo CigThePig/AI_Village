@@ -324,7 +324,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 const COARSE_SAVE_SIZE = 96;
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
@@ -1130,7 +1130,7 @@ if (typeof globalThis !== 'undefined') {
   globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
 }
 const BUILDINGS = {
-  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Warms and cheers villagers within 4 tiles.' },
+  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
   hut:      { label: 'Hut',      cost:10, wood:10, stone: 0, effects:{ radius:3, moodBonus:0.0008 }, tooltip:'Shelter that gently lifts moods nearby.' },
   farmplot: {
@@ -1153,9 +1153,10 @@ const BUILDINGS = {
     effects: {
       hydrationRadius: 4,
       hydrationGrowthBonus: 0.45,
-      moodBonus: 0.0007
+      moodBonus: 0.0007,
+      hydrationBuff: 0.25
     },
-    tooltip: 'Hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
+    tooltip: 'Villagers drink here to stay hydrated; hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
   }
 };
 
@@ -1400,7 +1401,7 @@ function assignAdultTraits(v, role=rollAdultRole()){
   v.farmingSkill=farmingSkill;
   v.constructionSkill=constructionSkill;
 }
-function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0 }; assignAdultTraits(v); return v; }
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null }; assignAdultTraits(v); return v; }
 function newChildVillager(x,y,parents){
   const v=newVillager(x,y);
   v.role='child';
@@ -1569,6 +1570,49 @@ function ensureBuildingData(b){
   if(typeof b.pending.wood!=='number') b.pending.wood=0;
   if(typeof b.pending.stone!=='number') b.pending.stone=0;
   if(typeof b.progress!=='number') b.progress=(b.spent.wood||0)+(b.spent.stone||0);
+  if(!b.activity){ b.activity={occupants:0,lastUse:0,lastHydrate:0,lastSocial:0,lastRest:0}; }
+  if(typeof b.activity.occupants!=='number') b.activity.occupants=0;
+  if(typeof b.activity.lastUse!=='number') b.activity.lastUse=0;
+  if(typeof b.activity.lastHydrate!=='number') b.activity.lastHydrate=0;
+  if(typeof b.activity.lastSocial!=='number') b.activity.lastSocial=0;
+  if(typeof b.activity.lastRest!=='number') b.activity.lastRest=0;
+}
+
+function getBuildingById(id){
+  if(!id) return null;
+  return buildings.find(bb=>bb.id===id) || null;
+}
+
+function noteBuildingActivity(b, type='use'){
+  if(!b) return;
+  ensureBuildingData(b);
+  b.activity.lastUse=tick;
+  if(type==='hydrate') b.activity.lastHydrate=tick;
+  else if(type==='social') b.activity.lastSocial=tick;
+  else if(type==='rest') b.activity.lastRest=tick;
+}
+
+function setActiveBuilding(v, b){
+  if(v.activeBuildingId && v.activeBuildingId===b?.id) return;
+  clearActiveBuilding(v);
+  if(b){
+    ensureBuildingData(b);
+    b.activity.occupants=Math.max(0,(b.activity.occupants||0)+1);
+    noteBuildingActivity(b);
+    v.activeBuildingId=b.id;
+  }
+}
+
+function clearActiveBuilding(v){
+  if(!v.activeBuildingId) return;
+  const prev=getBuildingById(v.activeBuildingId);
+  if(prev){ ensureBuildingData(prev); prev.activity.occupants=Math.max(0,(prev.activity.occupants||0)-1); }
+  v.activeBuildingId=null;
+}
+
+function endBuildingStay(v){
+  clearActiveBuilding(v);
+  v.targetBuilding=null;
 }
 
 function buildingResourceNeed(b, resource){
@@ -2716,6 +2760,20 @@ const REST_ENERGY_RECOVERY=0.0024;
 const REST_MOOD_TICK=0.0009;
 const REST_FINISH_MOOD=0.05;
 const REST_HUNGER_MULT=0.42;
+const HYDRATION_DECAY=0.00018;
+const HYDRATION_VISIT_THRESHOLD=0.46;
+const HYDRATION_LOW=0.28;
+const HYDRATION_BUFF_TICKS=320;
+const HYDRATION_HUNGER_MULT=0.9;
+const HYDRATION_FATIGUE_BONUS=0.8;
+const HYDRATION_DEHYDRATED_PENALTY=1.12;
+const HYDRATION_MOOD_TICK=0.00035;
+const SOCIAL_BASE_TICKS=88;
+const SOCIAL_COOLDOWN_TICKS=DAY_LEN*0.2;
+const SOCIAL_MOOD_TICK=0.0013;
+const SOCIAL_ENERGY_TICK=0.00055;
+const STORAGE_IDLE_BASE=70;
+const STORAGE_IDLE_COOLDOWN=DAY_LEN*0.12;
 function issueStarveToast(v,text,force=false){ const ready=(v.nextStarveWarning||0)<=tick; if(force||ready){ Toast.show(text); v.nextStarveWarning=tick+STARVE_TOAST_COOLDOWN; } }
 function enterSickState(v){ if(v.condition==='sick') return; v.condition='sick'; v.sickTimer=STARVE_COLLAPSE_TICKS; v.starveStage=Math.max(3,v.starveStage||0); finishJob(v); if(v.path) v.path.length=0; v.state='sick'; v.thought=moodThought(v,'Collapsed'); issueStarveToast(v,'A villager collapsed from hunger! They need food now.',true); }
 function handleVillagerFed(v,source='food'){ const wasCritical=(v.condition==='sick')||((v.starveStage||0)>=2); v.sickTimer=0; v.starveStage=0; if(wasCritical){ v.condition='recovering'; v.recoveryTimer=STARVE_RECOVERY_TICKS; } else { v.condition='normal'; v.recoveryTimer=Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS/3)); } v.nextStarveWarning=tick+Math.floor(STARVE_TOAST_COOLDOWN*0.6); if(v.state==='sick') v.state='idle'; v.thought=moodThought(v,wasCritical?'Recovering':'Content'); v.happy=clamp(v.happy+0.05,0,1); if(wasCritical){ const detail=source==='camp'?'camp stores':source==='pack'?'their pack':source==='berries'?'wild berries':source; issueStarveToast(v,`Villager recovered after eating ${detail}.`,true); } }
@@ -2726,6 +2784,15 @@ function villagerTick(v){
   if(v.sickTimer===undefined) v.sickTimer=0;
   if(v.recoveryTimer===undefined) v.recoveryTimer=0;
   if(v.restTimer===undefined) v.restTimer=0;
+  if(!Number.isFinite(v.hydration)) v.hydration=0.7;
+  if(!Number.isFinite(v.hydrationBuffTicks)) v.hydrationBuffTicks=0;
+  if(!Number.isFinite(v.nextHydrateTick)) v.nextHydrateTick=0;
+  if(!Number.isFinite(v.hydrationTimer)) v.hydrationTimer=0;
+  if(!Number.isFinite(v.socialTimer)) v.socialTimer=0;
+  if(!Number.isFinite(v.nextSocialTick)) v.nextSocialTick=0;
+  if(!Number.isFinite(v.storageIdleTimer)) v.storageIdleTimer=0;
+  if(!Number.isFinite(v.nextStorageIdleTick)) v.nextStorageIdleTick=0;
+  if(v.activeBuildingId===undefined) v.activeBuildingId=null;
   if(!Number.isFinite(v.ageTicks)) v.ageTicks=0;
   if(!v.lifeStage) v.lifeStage='adult';
   if(!Number.isFinite(v.pregnancyTimer)) v.pregnancyTimer=0;
@@ -2749,7 +2816,12 @@ function villagerTick(v){
   const style = policy?.style?.jobScoring || {};
   const blackboard = ensureBlackboardSnapshot();
   const resting=v.state==='resting';
-  const hungerRate=resting?HUNGER_RATE*REST_HUNGER_MULT:HUNGER_RATE;
+  const hydrationDecay=HYDRATION_DECAY*(resting?0.55:1);
+  v.hydration=clamp(v.hydration-hydrationDecay,0,1);
+  if(v.hydrationBuffTicks>0) v.hydrationBuffTicks--;
+  const hydratedBuff=(v.hydrationBuffTicks||0)>0;
+  const dehydrated=v.hydration<HYDRATION_LOW;
+  const hungerRate=(resting?HUNGER_RATE*REST_HUNGER_MULT:HUNGER_RATE)*(hydratedBuff?HYDRATION_HUNGER_MULT:(dehydrated?HYDRATION_DEHYDRATED_PENALTY:1));
   v.hunger += hungerRate;
   const tileX=v.x|0, tileY=v.y|0;
   const warm=nearbyWarmth(tileX,tileY);
@@ -2764,6 +2836,13 @@ function villagerTick(v){
     happyDelta+=0.0008+Math.max(0,v.energy-0.55)*0.0006;
   }
   energyDelta+=moodEnergyBoost;
+  if(hydratedBuff){
+    energyDelta*=HYDRATION_FATIGUE_BONUS;
+    happyDelta+=HYDRATION_MOOD_TICK*0.5;
+  } else if(dehydrated){
+    energyDelta*=HYDRATION_DEHYDRATED_PENALTY;
+    happyDelta-=HYDRATION_MOOD_TICK;
+  }
   if(resting){
     energyDelta+=REST_ENERGY_RECOVERY;
     happyDelta+=REST_MOOD_TICK;
@@ -2816,18 +2895,83 @@ function villagerTick(v){
   const needsFood = stage>=1;
   if(v.state==='resting'){
     if(urgentFood){
+      endBuildingStay(v);
       v.state='idle';
     } else {
       const minRest=REST_BASE_TICKS+Math.round(Math.max(0,1-v.energy)*REST_EXTRA_PER_ENERGY*0.35);
       if(v.restTimer<minRest) v.restTimer=minRest;
       v.restTimer=Math.max(0,v.restTimer-1);
       if(v.restTimer<=0 || v.energy>=0.995){
+        endBuildingStay(v);
         v.state='idle';
         v.restTimer=0;
         v.happy=clamp(v.happy+REST_FINISH_MOOD,0,1);
         v.thought=moodThought(v,'Rested');
       } else {
+        const active=getBuildingById(v.activeBuildingId);
+        if(active) noteBuildingActivity(active,'rest');
         v.thought=moodThought(v,'Resting');
+        return;
+      }
+    }
+  }
+  if(v.state==='hydrating'){
+    if(urgentFood){ endBuildingStay(v); v.state='idle'; }
+    else {
+      const active=getBuildingById(v.activeBuildingId);
+      v.hydration=1;
+      v.hydrationBuffTicks=Math.max(v.hydrationBuffTicks, HYDRATION_BUFF_TICKS);
+      v.hydrationTimer=Math.max(v.hydrationTimer||0, Math.round(HYDRATION_BUFF_TICKS*0.2));
+      v.hydrationTimer=Math.max(0, v.hydrationTimer-1);
+      if(active) noteBuildingActivity(active,'hydrate');
+      v.happy=clamp(v.happy+HYDRATION_MOOD_TICK,0,1);
+      v.thought=moodThought(v,'Drinking');
+      if(v.hydrationTimer<=0){
+        endBuildingStay(v);
+        v.state='idle';
+        v.hydrationTimer=0;
+        v.nextHydrateTick=tick+Math.floor(DAY_LEN*0.16);
+        v.thought=moodThought(v,'Hydrated');
+      } else {
+        return;
+      }
+    }
+  }
+  if(v.state==='socializing'){
+    if(urgentFood){ endBuildingStay(v); v.state='idle'; }
+    else {
+      v.socialTimer=Math.max(v.socialTimer||0, SOCIAL_BASE_TICKS);
+      v.socialTimer=Math.max(0, v.socialTimer-1);
+      v.happy=clamp(v.happy+SOCIAL_MOOD_TICK,0,1);
+      v.energy=clamp(v.energy+SOCIAL_ENERGY_TICK,0,1);
+      const active=getBuildingById(v.activeBuildingId);
+      if(active) noteBuildingActivity(active,'social');
+      v.thought=moodThought(v,'Sharing stories');
+      if(v.socialTimer<=0){
+        endBuildingStay(v);
+        v.state='idle';
+        v.nextSocialTick=tick+SOCIAL_COOLDOWN_TICKS;
+        v.thought=moodThought(v,'Refreshed');
+      } else {
+        return;
+      }
+    }
+  }
+  if(v.state==='storage_linger'){
+    if(urgentFood){ endBuildingStay(v); v.state='idle'; }
+    else {
+      v.storageIdleTimer=Math.max(v.storageIdleTimer||0, STORAGE_IDLE_BASE);
+      v.storageIdleTimer=Math.max(0, v.storageIdleTimer-1);
+      v.happy=clamp(v.happy+0.00045,0,1);
+      const active=getBuildingById(v.activeBuildingId);
+      if(active) noteBuildingActivity(active,'use');
+      v.thought=moodThought(v,'Tidying storage');
+      if(v.storageIdleTimer<=0){
+        endBuildingStay(v);
+        v.state='idle';
+        v.nextStorageIdleTick=tick+STORAGE_IDLE_COOLDOWN;
+        v.thought=moodThought(v,'Organized');
+      } else {
         return;
       }
     }
@@ -2846,10 +2990,19 @@ function villagerTick(v){
   const fatigueFlag = !!blackboard?.energy?.fatigue;
   const shouldRest = v.energy < restThreshold || (fatigueFlag && v.energy < restThreshold + restFatigueBoost) || v.energy < (fatigueThreshold * 0.8);
   if(shouldRest){ if(goRest(v)) return; }
+  if(v.state==='idle' && !urgentFood){
+    if(tryHydrateAtWell(v)) return;
+  }
   const reprioritizeMargin = Number.isFinite(style.reprioritizeMargin) ? style.reprioritizeMargin : 0.06;
   if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
+  if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
+    if(tryCampfireSocial(v)) return;
+  }
   if(v.inv){ const s=findNearestBuilding(v.x|0,v.y|0,'storage'); if(s && tick>=v._nextPathTick){ const entry=findEntryTileNear(s, v.x|0, v.y|0) || {x:Math.round(buildingCenter(s).x), y:Math.round(buildingCenter(s).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='to_storage'; v.thought=moodThought(v,'Storing'); v._nextPathTick=tick+12; return; } } }
+  if(v.state==='idle' && !urgentFood && !v.targetJob){
+    if(tryStorageIdle(v)) return;
+  }
   if(v.lifeStage==='child'){
     v.targetJob=null;
   }
@@ -3272,6 +3425,69 @@ function foragingJob(v){
   return false;
 }
 function goRest(v){ if(tick<v._nextPathTick) return false; const hut=findNearestBuilding(v.x|0,v.y|0,'hut')||buildings.find(b=>b.kind==='campfire'&&b.built>=1); if(hut){ const entry=findEntryTileNear(hut, v.x|0, v.y|0) || {x:Math.round(buildingCenter(hut).x), y:Math.round(buildingCenter(hut).y)}; const p=pathfind(v.x|0,v.y|0,entry.x,entry.y); if(p){ v.path=p; v.state='rest'; v.targetBuilding=hut; v.thought=moodThought(v,'Resting'); v._nextPathTick=tick+12; return true; } } return false; }
+function tryHydrateAtWell(v){
+  if(tick<v._nextPathTick) return false;
+  if(v.nextHydrateTick>tick) return false;
+  if(v.hydration>HYDRATION_VISIT_THRESHOLD) return false;
+  const well=findNearestBuilding(v.x|0,v.y|0,'well');
+  if(!well) return false;
+  const entry=findEntryTileNear(well, v.x|0, v.y|0) || {x:Math.round(buildingCenter(well).x), y:Math.round(buildingCenter(well).y)};
+  const p=pathfind(v.x|0,v.y|0,entry.x,entry.y);
+  if(p){
+    v.path=p;
+    v.state='hydrate';
+    v.targetBuilding=well;
+    v.thought=moodThought(v,'Fetching water');
+    v._nextPathTick=tick+12;
+    v.nextHydrateTick=tick+Math.floor(DAY_LEN*0.12);
+    return true;
+  }
+  v.nextHydrateTick=Math.max(v.nextHydrateTick||0, tick+60);
+  return false;
+}
+function tryCampfireSocial(v){
+  if(tick<v._nextPathTick) return false;
+  if(v.nextSocialTick>tick) return false;
+  if((v.starveStage||0)>=1) return false;
+  const ambientNow=ambientAt(dayTime);
+  if(ambientNow>0.62) return false;
+  const camp=findNearestBuilding(v.x|0,v.y|0,'campfire');
+  if(!camp) return false;
+  const entry=findEntryTileNear(camp, v.x|0, v.y|0) || {x:Math.round(buildingCenter(camp).x), y:Math.round(buildingCenter(camp).y)};
+  const p=pathfind(v.x|0,v.y|0,entry.x,entry.y);
+  if(p){
+    v.path=p;
+    v.state='socialize';
+    v.targetBuilding=camp;
+    v.thought=moodThought(v,'Gathering by fire');
+    v._nextPathTick=tick+12;
+    v.nextSocialTick=tick+Math.floor(SOCIAL_COOLDOWN_TICKS*0.25);
+    return true;
+  }
+  v.nextSocialTick=Math.max(v.nextSocialTick||0, tick+90);
+  return false;
+}
+function tryStorageIdle(v){
+  if(tick<v._nextPathTick) return false;
+  if(v.nextStorageIdleTick>tick) return false;
+  if(v.inv) return false;
+  if(v.targetJob) return false;
+  const storage=findNearestBuilding(v.x|0,v.y|0,'storage');
+  if(!storage) return false;
+  const entry=findEntryTileNear(storage, v.x|0, v.y|0) || {x:Math.round(buildingCenter(storage).x), y:Math.round(buildingCenter(storage).y)};
+  const p=pathfind(v.x|0,v.y|0,entry.x,entry.y);
+  if(p){
+    v.path=p;
+    v.state='storage_idle';
+    v.targetBuilding=storage;
+    v.thought=moodThought(v,'Checking storage');
+    v._nextPathTick=tick+12;
+    v.nextStorageIdleTick=tick+Math.floor(STORAGE_IDLE_COOLDOWN*0.4);
+    return true;
+  }
+  v.nextStorageIdleTick=Math.max(v.nextStorageIdleTick||0, tick+80);
+  return false;
+}
 function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
 function scoreExistingJobForVillager(j, v, blackboard){
   if(!j) return -Infinity;
@@ -3667,9 +3883,38 @@ else if(v.state==='to_storage'){
 }
 else if(v.state==='rest'){
   const baseRest=REST_BASE_TICKS+Math.round(Math.max(0,1-v.energy)*REST_EXTRA_PER_ENERGY);
+  const b=v.targetBuilding||getBuildingById(v.activeBuildingId)||buildingAt(cx,cy);
+  if(b) setActiveBuilding(v,b);
+  if(b) noteBuildingActivity(b,'rest');
   if(v.restTimer<baseRest) v.restTimer=baseRest;
   v.state='resting';
   v.thought=moodThought(v,'Resting');
+}
+else if(v.state==='hydrate'){
+  const b=v.targetBuilding||getBuildingById(v.activeBuildingId)||buildingAt(cx,cy);
+  if(b) setActiveBuilding(v,b);
+  if(b) noteBuildingActivity(b,'hydrate');
+  v.hydrationTimer=Math.max(v.hydrationTimer||0, Math.round(HYDRATION_BUFF_TICKS*0.25));
+  v.hydration=1;
+  v.hydrationBuffTicks=Math.max(v.hydrationBuffTicks, HYDRATION_BUFF_TICKS);
+  v.state='hydrating';
+  v.thought=moodThought(v,'Drinking');
+}
+else if(v.state==='socialize'){
+  const b=v.targetBuilding||getBuildingById(v.activeBuildingId)||buildingAt(cx,cy);
+  if(b) setActiveBuilding(v,b);
+  if(b) noteBuildingActivity(b,'social');
+  v.socialTimer=Math.max(v.socialTimer||0, SOCIAL_BASE_TICKS);
+  v.state='socializing';
+  v.thought=moodThought(v,'Gathering');
+}
+else if(v.state==='storage_idle'){
+  const b=v.targetBuilding||getBuildingById(v.activeBuildingId)||buildingAt(cx,cy);
+  if(b) setActiveBuilding(v,b);
+  if(b) noteBuildingActivity(b,'use');
+  v.storageIdleTimer=Math.max(v.storageIdleTimer||0, STORAGE_IDLE_BASE);
+  v.state='storage_linger';
+  v.thought=moodThought(v,'Tidying storage');
 } }
 
 /* ==================== Pathfinding ==================== */
@@ -3759,7 +4004,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right'})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right'})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -3812,7 +4057,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
     const lifeStage = v.stage==='child' ? 'child' : 'adult';
     const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
-    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[] });
+    villagers.push({ id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null });
   });
   const animalScale=upscaleFactor>1?upscaleFactor:1;
   animals.length=0;
@@ -4653,6 +4898,18 @@ function drawBuildingAt(gx,gy,b){
   const g=ctx, s=cam.z;
   const fp=getFootprint(b.kind);
   const center=buildingCenter(b);
+  const def=BUILDINGS[b.kind]||{};
+  const activity=b.activity||{};
+  const useAgo=Math.max(0, tick-(activity.lastUse||0));
+  const hydrateAgo=Math.max(0, tick-(activity.lastHydrate||0));
+  const socialAgo=Math.max(0, tick-(activity.lastSocial||0));
+  const restAgo=Math.max(0, tick-(activity.lastRest||0));
+  const recentUse=Math.max(0, 1 - useAgo/360);
+  const hydratePulse=Math.max(0, 1 - hydrateAgo/260);
+  const socialPulse=Math.max(0, 1 - socialAgo/260);
+  const restPulse=Math.max(0, 1 - restAgo/260);
+  const occupantPulse=Math.min(1, (activity.occupants||0)*0.4);
+  const activityPulse=Math.max(recentUse, hydratePulse, socialPulse, restPulse, occupantPulse);
   const useMultiply = LIGHTING.useMultiplyComposite && LIGHTING.mode !== 'off';
   const sampledLight = useMultiply ? 1 : sampleLightAt(world, center.x, center.y);
   const shade = b.kind==='farmplot' ? 1 : sampledLight;
@@ -4668,8 +4925,15 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+10*s,gy+18*s,12*s,6*s);
     const f=(tick%6);
     const flameColor=['#ffde7a','#ffc05a','#ff9b4a'][f%3];
+    const flameH=6*s*(1+activityPulse*0.8);
     g.fillStyle=shadeFillColorLit(flameColor, campfireShade);
-    g.fillRect(gx+14*s,gy+12*s,4*s,6*s);
+    g.fillRect(gx+14*s,gy+12*s,4*s,flameH);
+    g.globalAlpha=0.35+activityPulse*0.25;
+    g.fillStyle=shadeFillColorLit('rgba(142,142,142,0.75)', campfireShade);
+    g.beginPath();
+    g.arc(gx+16*s, gy+(10-f)*s, 3*s+activityPulse*3*s, 0, Math.PI*2);
+    g.fill();
+    g.globalAlpha=1;
   } else if(b.kind==='storage'){
     g.fillStyle=shadeFillColorLit('#6a5338', shade);
     g.fillRect(gx+6*s,gy+10*s,20*s,14*s);
@@ -4677,6 +4941,12 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+6*s,gy+20*s,20*s,2*s);
     g.fillStyle=shadeFillColorLit('#3b2b1a', shade);
     g.fillRect(gx+6*s,gy+10*s,20*s,1*s);
+    const storedLevel=Math.min(1, (storageTotals.food*0.5 + storageTotals.wood*0.35 + storageTotals.stone*0.35)/40);
+    if(storedLevel>0.02){
+      const fillH=Math.max(2*s, Math.floor(12*storedLevel)*s);
+      g.fillStyle=shadeFillColorLit('rgba(152,118,76,0.9)', shade);
+      g.fillRect(gx+8*s, gy+10*s+(12*s-fillH), 16*s, fillH);
+    }
   } else if(b.kind==='hut'){
     g.fillStyle=shadeFillColorLit('#7d5a3a', shade);
     g.fillRect(gx+8*s,gy+16*s,16*s,12*s);
@@ -4684,6 +4954,12 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+6*s,gy+12*s,20*s,6*s);
     g.fillStyle=shadeFillColorLit('#31251a', shade);
     g.fillRect(gx+14*s,gy+20*s,4*s,8*s);
+    if(activityPulse>0.05){
+      const glowAlpha=Math.min(0.55, 0.25+activityPulse*0.5);
+      g.fillStyle=shadeFillColorLit(`rgba(255,215,128,${glowAlpha})`, shade);
+      g.fillRect(gx+10*s,gy+18*s,4*s,4*s);
+      g.fillRect(gx+16*s,gy+18*s,4*s,4*s);
+    }
   } else if(b.kind==='farmplot'){
     g.fillStyle=shadeFillColorLit('#4a3624', shade);
     g.fillRect(gx+4*s,gy+8*s,24*s,16*s);
@@ -4698,6 +4974,14 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+12*s,gy+18*s,8*s,6*s);
     g.fillStyle=shadeFillColorLit('#927a54', shade);
     g.fillRect(gx+8*s,gy+12*s,16*s,2*s);
+    if(hydratePulse>0.05){
+      g.strokeStyle=shadeFillColorLit('rgba(134,201,255,0.9)', shade);
+      g.lineWidth=Math.max(1,Math.round(s));
+      const ripple=3*s+(Math.sin(tick*0.2)+1)*s*0.8;
+      g.beginPath();
+      g.arc(gx+16*s, gy+17*s, ripple*(1+hydratePulse*0.6), 0, Math.PI*2);
+      g.stroke();
+    }
   }
   if(b.built<1){
     g.strokeStyle='rgba(255,255,255,0.6)';
@@ -4707,6 +4991,21 @@ function drawBuildingAt(gx,gy,b){
     g.fillRect(gx+6*s,gy+28*s, Math.floor(20*p)*s, 2*s);
   }
   g.restore();
+  const overlayRadius=def.effects?.radius ?? def.effects?.hydrationRadius ?? 0;
+  if(overlayRadius>0 && activityPulse>0.05){
+    const cx=tileToPxX(center.x, cam);
+    const cy=tileToPxY(center.y, cam);
+    const radiusPx=(overlayRadius+0.5)*TILE*cam.z;
+    ctx.save();
+    ctx.globalAlpha=Math.min(0.45, 0.2+activityPulse*0.4);
+    const overlayColor=b.kind==='well'?'rgba(134,201,255,0.95)':'rgba(255,232,168,0.95)';
+    ctx.strokeStyle=shadeFillColorLit(overlayColor, shade);
+    ctx.lineWidth=Math.max(1,Math.round(1.6*cam.z));
+    ctx.beginPath();
+    ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawAnimal(animal, useMultiply){
