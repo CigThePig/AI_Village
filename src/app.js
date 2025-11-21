@@ -4193,6 +4193,12 @@ else if(v.state==='storage_idle'){
 /* ==================== Pathfinding ==================== */
 function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
 function pathfind(sx,sy,tx,ty,limit=400){
+  // Normalize coordinates to integer tile indices so the path reconstruction loop
+  // always terminates, even if callers accidentally pass fractional values.
+  sx = Math.round(clamp(sx, 0, GRID_W - 1));
+  sy = Math.round(clamp(sy, 0, GRID_H - 1));
+  tx = Math.round(clamp(tx, 0, GRID_W - 1));
+  ty = Math.round(clamp(ty, 0, GRID_H - 1));
   const tStart = PERF.log ? performance.now() : 0;
   if(sx===tx&&sy===ty){
     if(PERF.log && (tick % 60) === 0) console.log(`pathfind 0.00ms`);
@@ -4230,6 +4236,11 @@ function pathfind(sx,sy,tx,ty,limit=400){
   while(!(cx===sx&&cy===sy)){
     path.push({x:cx+0.0001,y:cy+0.0001});
     const pi=came[ci];
+    // If we somehow lost the predecessor chain, bail out to avoid infinite loops
+    // and signal that the path is unusable.
+    if(pi===-1 || !Number.isFinite(pi)){
+      return null;
+    }
     cy=(pi/Wm)|0; cx=pi%Wm; ci=cy*Wm+cx;
   }
   path.reverse();
