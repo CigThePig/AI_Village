@@ -64,7 +64,20 @@
       flex-direction: column;
       box-sizing: border-box;
     }
-    #dbgTray.collapsed { max-height: none; }
+    #dbgTray.collapsed {
+      max-height: none;
+      width: auto;
+      min-width: 240px;
+      max-width: min(420px, 90vw);
+    }
+    #dbgTray.collapsed #dbgHead {
+      padding: 8px 10px;
+      gap: 8px;
+    }
+    #dbgTray.collapsed #dbgContent {
+      display: none;
+      min-height: 0;
+    }
     #dbgTray.collapsed #dbgBody { display: none; }
     #dbgTray.collapsed #dbgRowB,
     #dbgTray.collapsed #dbgRowC,
@@ -75,8 +88,8 @@
       border-bottom: 1px solid #2a3550;
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      padding: 8px;
+      gap: 8px;
+      padding: 10px;
       touch-action: none;
       user-select: none;
       position: sticky;
@@ -86,10 +99,11 @@
     #dbgRowA, #dbgRowB, #dbgRowC {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
+      gap: 8px;
       align-items: center;
       overflow-x: auto;
       scrollbar-width: thin;
+      row-gap: 10px;
     }
     #dbgRowA .dbg-title {
       font-weight: 700;
@@ -200,7 +214,7 @@
       border: 1px solid #2a3550;
       background: #10192b;
       color: #e8eefc;
-      padding: 6px 10px;
+      padding: 7px 12px;
       font-size: 14px;
     }
     #dbgTray button,
@@ -285,8 +299,8 @@
       flex: 1 1 auto;
     }
     #dbgHead button.small {
-      padding: 4px 10px;
-      min-width: 56px;
+      padding: 5px 12px;
+      min-width: 64px;
     }
     #dbgTray .dbg-viewport {
       font-size: 12px;
@@ -302,12 +316,12 @@
         max-height: calc(100vh - 12px - env(safe-area-inset-bottom, 0));
       }
       #dbgHead {
-        gap: 6px;
+        gap: 8px;
         padding: 10px 10px 8px;
       }
       #dbgRowA, #dbgRowB, #dbgRowC {
-        flex-wrap: nowrap;
-        gap: 6px;
+        flex-wrap: wrap;
+        gap: 8px;
         padding-bottom: 2px;
       }
       #dbgRowA::-webkit-scrollbar,
