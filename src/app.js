@@ -1198,6 +1198,18 @@ const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
   hut:      { label: 'Hut',      cost:10, wood:10, stone: 0, effects:{ radius:3, moodBonus:0.0008 }, tooltip:'Shelter that gently lifts moods nearby.' },
+  hunterLodge: {
+    label: 'Hunter Lodge',
+    cost: 12,
+    wood: 10,
+    stone: 2,
+    effects: {
+      huntingRadius: 6,
+      gameYieldBonus: 0.25,
+      hideYieldBonus: 0.2
+    },
+    tooltip: 'Organizes hunts; improves meat and hide yields from wildlife within 6 tiles.'
+  },
   farmplot: {
     label: 'Farm Plot',
     cost: 4,
@@ -1229,6 +1241,7 @@ const FOOTPRINT = {
   campfire: { w:2, h:2 },
   storage:  { w:2, h:2 },
   hut:      { w:2, h:2 },
+  hunterLodge: { w:2, h:2 },
   farmplot: { w:2, h:2 },
   well:     { w:2, h:2 }
 };
