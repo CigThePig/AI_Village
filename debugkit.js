@@ -41,6 +41,8 @@
   const doc = document;
   const win = window;
 
+  const sectionState = Object.create(null);
+
   const style = doc.createElement('style');
   style.textContent = `
     #dbgTray {
@@ -151,6 +153,11 @@
       letter-spacing: 0.02em;
       margin-bottom: 6px;
     }
+    #dbgVillagerSection .dbg-villagers-title {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
     #dbgVillagerList {
       display: flex;
       flex-direction: column;
@@ -247,6 +254,41 @@
     }
     #dbgTray label input {
       margin: 0;
+    }
+    #dbgTray .dbg-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid #1f2a3d;
+      border-radius: 12px;
+      background: #0f1522;
+      flex: 1 1 240px;
+      min-width: 200px;
+    }
+    #dbgTray .dbg-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    #dbgTray .dbg-section-title {
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    #dbgTray .dbg-section-toggle {
+      min-height: 30px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+    #dbgTray .dbg-section-body {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    #dbgTray .dbg-section[data-collapsed="true"] .dbg-section-body {
+      display: none;
     }
     #dbgTray .dbg-shade-control {
       flex: 0 1 auto;
@@ -570,6 +612,37 @@
     pendingLogs = [];
     scheduleRender();
   }
+  function createSection(id, title, defaultCollapsed) {
+    const toggle = el('button', {
+      className: 'dbg-section-toggle',
+      'aria-expanded': defaultCollapsed ? 'false' : 'true',
+      'aria-label': `${defaultCollapsed ? 'Expand' : 'Collapse'} ${title} section`
+    }, defaultCollapsed ? 'Expand' : 'Collapse');
+    const headTitle = el('span', { className: 'dbg-section-title', text: title });
+    const head = el('div', { className: 'dbg-section-head' }, [headTitle, toggle]);
+    const body = el('div', { className: 'dbg-section-body' });
+    const section = el('div', {
+      id,
+      className: 'dbg-section',
+      'data-collapsed': defaultCollapsed ? 'true' : 'false'
+    });
+
+    function setCollapsed(collapsed) {
+      const value = !!collapsed;
+      sectionState[id] = value;
+      section.setAttribute('data-collapsed', value ? 'true' : 'false');
+      toggle.textContent = value ? 'Expand' : 'Collapse';
+      toggle.setAttribute('aria-expanded', value ? 'false' : 'true');
+      toggle.setAttribute('aria-label', `${value ? 'Expand' : 'Collapse'} ${title} section`);
+    }
+
+    setCollapsed(defaultCollapsed);
+    toggle.addEventListener('click', () => setCollapsed(!sectionState[id]));
+
+    section.append(head, body);
+    return { section, head, body, toggle, setCollapsed };
+  }
+
   const tray = el('div', { id: 'dbgTray' });
   const head = el('div', { id: 'dbgHead' });
   const content = el('div', { id: 'dbgContent' });
@@ -577,8 +650,10 @@
   const rowB = el('div', { id: 'dbgRowB' });
   const rowC = el('div', { id: 'dbgRowC' });
   const body = el('div', { id: 'dbgBody' });
-  const villagerSection = el('div', { id: 'dbgVillagerSection' });
-  const villagerHead = el('div', { className: 'dbg-villagers-head' });
+  const narrowLayout = win.innerWidth <= 720;
+  const villagerSectionParts = createSection('dbgVillagerSection', 'Villagers', narrowLayout);
+  const villagerSection = villagerSectionParts.section;
+  const villagerHead = villagerSectionParts.head;
   const villagerTitle = el('span', { text: 'Villagers' });
   const villagerUpdated = el('span', { className: 'dbg-villager-updated', text: 'Waiting…' });
   const villagerList = el('div', { id: 'dbgVillagerList' });
@@ -637,6 +712,8 @@
     slopeValue
   ]);
   const shadingStateLabel = el('span', { className: 'dbg-shade-state', text: 'Shade: loading…' });
+  const shadingSection = createSection('dbgShadeSection', 'Shading', narrowLayout);
+  shadingSection.body.append(shadingSelect, ambientLabel, intensityLabel, slopeLabel, shadingStateLabel);
   const perfBtn = el('button', null, 'Perf');
   const connBtn = el('button', null, 'Conn');
   const permsBtn = el('button', null, 'Perms');
@@ -647,6 +724,8 @@
   const shotBtn = el('button', null, 'Shot');
   const diagBtn = el('button', null, 'Diag');
   const safeBtn = el('button', null, 'Safe');
+  const filterSection = createSection('dbgFilterSection', 'Network & Filters', narrowLayout);
+  filterSection.body.append(netLabel, filterSelect, searchInput);
 
   copyBtn.classList.add('dbg-aux');
   exportBtn.classList.add('dbg-aux');
@@ -670,15 +749,9 @@
   rowB.append(
     markBtn,
     stateBtn,
-    shadingSelect,
-    ambientLabel,
-    intensityLabel,
-    slopeLabel,
-    shadingStateLabel,
-    fpsLabel,
-    netLabel,
-    filterSelect,
-    searchInput
+    shadingSection.section,
+    filterSection.section,
+    fpsLabel
   );
 
   rowC.append(
@@ -694,8 +767,13 @@
   rowC.append(diagBtn, safeBtn);
 
   head.append(rowA, rowB, rowC);
-  villagerHead.append(villagerTitle, villagerUpdated);
-  villagerSection.append(villagerHead, villagerList, villagerEmpty);
+  villagerHead.classList.add('dbg-villagers-head');
+  villagerHead.replaceChildren(
+    el('span', { className: 'dbg-villagers-title' }, [villagerTitle, villagerUpdated]),
+    villagerSectionParts.toggle
+  );
+  villagerSectionParts.body.append(villagerList, villagerEmpty);
+  villagerSection.append(villagerHead, villagerSectionParts.body);
   content.append(villagerSection, body);
   tray.append(head, content);
   doc.body.appendChild(tray);
