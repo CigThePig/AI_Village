@@ -44,6 +44,8 @@
   const style = doc.createElement('style');
   style.textContent = `
     #dbgTray {
+      --dbg-head-height: 0px;
+      --dbg-vertical-margins: calc(20px + env(safe-area-inset-bottom, 0));
       position: fixed;
       left: 8px;
       bottom: calc(8px + env(safe-area-inset-bottom, 0));
@@ -117,11 +119,14 @@
       flex: 1 1 auto;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
-      min-height: 240px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      -webkit-overflow-scrolling: touch;
     }
     #dbgBody {
-      flex: 1 1 220px;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
       padding: 10px;
       background: #0f1522;
@@ -132,7 +137,8 @@
     #dbgVillagerSection {
       background: #0c111d;
       border-bottom: 1px solid #1f2a3d;
-      flex: 0 1 180px;
+      flex: 0 0 auto;
+      min-height: 0;
       overflow: auto;
       padding: 10px;
     }
@@ -330,10 +336,11 @@
         display: none;
       }
       #dbgContent {
-        min-height: 200px;
+        min-height: 0;
+        max-height: calc(100vh - var(--dbg-head-height, 180px) - var(--dbg-vertical-margins, 24px));
       }
       #dbgVillagerSection {
-        flex-basis: 150px;
+        flex-basis: auto;
       }
       #dbgTray label {
         flex: 1 1 120px;
@@ -694,6 +701,15 @@
   doc.body.appendChild(tray);
   doc.body.appendChild(pill);
 
+  function updateHeadMetrics() {
+    requestAnimationFrame(() => {
+      const headRect = head.getBoundingClientRect();
+      tray.style.setProperty('--dbg-head-height', Math.round(headRect.height) + 'px');
+    });
+  }
+
+  updateHeadMetrics();
+
   let shadingHooksInstalled = false;
   let shadingSyncInterval = null;
 
@@ -817,6 +833,7 @@
     collapseBtn.textContent = trayCollapsed ? 'Expand' : 'Collapse';
     collapseBtn.setAttribute('aria-expanded', trayCollapsed ? 'false' : 'true');
     collapseBtn.setAttribute('aria-label', trayCollapsed ? 'Expand debug panel' : 'Collapse debug panel');
+    updateHeadMetrics();
   }
 
   setCollapsedState(false);
@@ -1866,9 +1883,11 @@
     win.addEventListener('offline', () => add('NOTE', 'Went offline.'));
     win.addEventListener('orientationchange', () => {
       add('NOTE', 'orientation: ' + getOrientation());
+      updateHeadMetrics();
     });
     win.addEventListener('resize', () => {
       updateViewportLabel();
+      updateHeadMetrics();
     });
   }
 
