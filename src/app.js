@@ -355,6 +355,8 @@ const ANIMAL_TYPES = {
     minCount: 8
   }
 };
+const HUNT_RANGE = 3.5;
+const HUNT_RETRY_COOLDOWN = 140;
 const ANIMAL_BEHAVIORS = {
   deer: {
     roamRadius: 4,
@@ -1421,6 +1423,57 @@ function chooseFleeTarget(animal, from, behavior, occupancy){
     return { x: targetX+0.12*R(), y: targetY+0.12*R() };
   }
   return pickRoamTarget(animal, behavior, occupancy);
+}
+
+function findAnimalById(id){
+  if(!id) return null;
+  for(const a of animals){
+    if(a && a.id===id){ return a; }
+  }
+  return null;
+}
+
+function removeAnimal(animal){
+  if(!animal) return false;
+  const idx=animals.indexOf(animal);
+  if(idx!==-1){ animals.splice(idx,1); return true; }
+  return false;
+}
+
+function resolveHuntYield({ animal, lodge }){
+  const effects=lodge?.effects || {};
+  const gameBonus=Number.isFinite(effects.gameYieldBonus)?effects.gameYieldBonus:0;
+  const hideBonus=Number.isFinite(effects.hideYieldBonus)?effects.hideYieldBonus:0;
+  const baseMeat=1 + (R()<0.42 ? 1 : 0);
+  const meat=Math.max(1, Math.round(baseMeat * (1+gameBonus)));
+  const hideChance=0.35 + hideBonus*0.5;
+  return { meat, pelts: R()<hideChance ? 1 : 0 };
+}
+
+function findHuntApproachPath(v, animal, { range=HUNT_RANGE, maxPath=320 }={}){
+  if(!v || !animal) return null;
+  const ax=Math.round(animal.x);
+  const ay=Math.round(animal.y);
+  const radius=Math.max(1, Math.ceil(range));
+  let best=null;
+  for(let dy=-radius; dy<=radius; dy++){
+    for(let dx=-radius; dx<=radius; dx++){
+      const tx=ax+dx, ty=ay+dy;
+      const dist=Math.hypot(tx - animal.x, ty - animal.y);
+      if(dist>range) continue;
+      if(tx<0||ty<0||tx>=GRID_W||ty>=GRID_H) continue;
+      if(tileOccupiedByBuilding(tx,ty)) continue;
+      const tile=world.tiles[idx(tx,ty)];
+      if(tile===TILES.WATER) continue;
+      if(!WALKABLE.has(tile)) continue;
+      const p=pathfind(v.x|0, v.y|0, tx, ty, maxPath);
+      if(!p) continue;
+      if(!best || p.length<best.score){
+        best={ path:p, score:p.length, dest:{x:tx,y:ty} };
+      }
+    }
+  }
+  return best;
 }
 
 function interactWithVillage(animal, behavior, occupancy){
@@ -3230,6 +3283,41 @@ function generateJobs(){
     }
   }
 
+  const lodge=findHunterLodge();
+  if(lodge && countEquippedBows()>0){
+    const center=buildingCenter(lodge);
+    const effects=lodge.effects || {};
+    const huntRadius=Number.isFinite(effects.huntingRadius)?effects.huntingRadius:6;
+    const existingHunts=jobs.filter(j=>j && j.type==='hunt' && !j.cancelled);
+    const targeted=new Set(existingHunts.map(j=>j.targetAid).filter(Boolean));
+    const availableArchers=Math.max(0, countEquippedBows() - existingHunts.length);
+    if(availableArchers>0){
+      const candidates=animals
+        .filter(a=>a && a.state!=='dead')
+        .filter(a=>Math.abs(a.x-center.x)<=huntRadius && Math.abs(a.y-center.y)<=huntRadius)
+        .filter(a=>!targeted.has(a.id))
+        .map(a=>({ animal:a, dist:Math.abs(a.x-center.x)+Math.abs(a.y-center.y) }))
+        .sort((a,b)=>a.dist-b.dist);
+      const famineSeverity=computeFamineSeverity(bb);
+      const huntPrio=0.6 + famineSeverity*0.25 + (policy.sliders.food||0)*0.25 + (policy.sliders.explore||0)*0.12;
+      let created=0;
+      for(const {animal} of candidates){
+        if(created>=availableArchers) break;
+        const job=addJob({
+          type:'hunt',
+          x:Math.round(animal.x),
+          y:Math.round(animal.y),
+          targetAid:animal.id,
+          bid:lodge.id,
+          prio:huntPrio
+        });
+        if(job){
+          created++;
+        }
+      }
+    }
+  }
+
   for(const b of buildings){
     ensureBuildingData(b);
     if(b.built>=1){
@@ -3524,6 +3612,7 @@ function villagerTick(v){
     }
     const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
     let dest={x:j.x,y:j.y};
+    let plannedPath=null;
     if(j.type==='build'){
       const b=buildings.find(bb=>bb.id===j.bid);
       if(b){
@@ -3564,8 +3653,22 @@ function villagerTick(v){
           dest={x:Math.round(center.x), y:Math.round(center.y)};
         }
       }
+    } else if(j.type==='hunt'){
+      const animal=findAnimalById(j.targetAid);
+      if(animal){
+        const approach=findHuntApproachPath(v, animal, { range:HUNT_RANGE });
+        if(approach){
+          dest=approach.dest;
+          plannedPath=approach.path;
+        }
+      }
+      if(!plannedPath){
+        suppressJob(j, HUNT_RETRY_COOLDOWN);
+        v._nextPathTick=tick+12;
+        continue;
+      }
     }
-    const p=pathfind(v.x|0,v.y|0,dest.x,dest.y);
+    const p=plannedPath || pathfind(v.x|0,v.y|0,dest.x,dest.y);
     if(p){
       v.path=p;
       v.state=j.type==='haul'?'haul_pickup':j.type;
@@ -4112,6 +4215,7 @@ function pickJobFor(v){
   for(const j of jobs){
     let supplyStatus=null;
     let buildTarget=null;
+    if(j.type==='hunt' && !v.equippedBow) continue;
     if(j.type==='build'){
       buildTarget=buildings.find(bb=>bb.id===j.bid);
       if(!buildTarget || buildTarget.built>=1) continue;
@@ -4149,6 +4253,11 @@ function pickJobFor(v){
     let distance;
     if(j.type==='build'){
       distance=buildTarget?distanceToFootprint(v.x|0, v.y|0, buildTarget):Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    } else if(j.type==='hunt'){
+      const targetAnimal=findAnimalById(j.targetAid);
+      const targetX=targetAnimal?.x ?? j.x;
+      const targetY=targetAnimal?.y ?? j.y;
+      distance=Math.abs((v.x|0)-Math.round(targetX))+Math.abs((v.y|0)-Math.round(targetY));
     } else {
       distance=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
     }
@@ -4202,6 +4311,59 @@ else if(v.state==='mine'){
   v.state='idle';
   applySkillGain(v, 'constructionSkill', 0.016, 0.88, 1);
   finishJob(v, remove);
+}
+else if(v.state==='hunt'){
+  const job=v.targetJob;
+  const animal=job?findAnimalById(job.targetAid):null;
+  const lodge=job?buildings.find(bb=>bb.id===job.bid && bb.kind==='hunterLodge'):null;
+  if(!job || !animal || animal.state==='dead'){
+    v.thought=moodThought(v,'Lost prey');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  const dist=Math.hypot(animal.x-v.x, animal.y-v.y);
+  if(dist>HUNT_RANGE+0.2){
+    const approach=findHuntApproachPath(v, animal, { range:HUNT_RANGE });
+    if(approach?.path){
+      v.path=approach.path;
+      v.state='hunt';
+      v.thought=moodThought(v,'Stalking');
+      return;
+    }
+    suppressJob(job, HUNT_RETRY_COOLDOWN);
+    v.thought=moodThought(v,'Prey escaped');
+    v.state='idle';
+    finishJob(v, true);
+    return;
+  }
+  const behavior=ANIMAL_BEHAVIORS[animal.type] || {};
+  const skill=clamp(Number.isFinite(v.constructionSkill)?v.constructionSkill:0.5,0,1);
+  const moodFactor=clamp((v.happy-0.5)*0.5,-0.15,0.2);
+  const lodgeBonus=Number.isFinite(lodge?.effects?.gameYieldBonus)?lodge.effects.gameYieldBonus*0.2:0;
+  const successChance=clamp(0.55 + skill*0.25 + moodFactor + lodgeBonus, 0.25, 0.95);
+  if(R()<successChance){
+    const yieldResult=resolveHuntYield({ animal, lodge });
+    dropItem(animal.x|0, animal.y|0, ITEM.FOOD, yieldResult.meat);
+    if(yieldResult.pelts>0){
+      dropItem(animal.x|0, animal.y|0, 'pelt', yieldResult.pelts);
+    }
+    queueAnimalLabel('Taken', '#ffd27f', animal.x+0.1, animal.y-0.1);
+    removeAnimal(animal);
+    v.happy=clamp(v.happy+0.06,0,1);
+    applySkillGain(v, 'constructionSkill', 0.014, 0.9, 1);
+    v.thought=moodThought(v,'Successful hunt');
+  } else {
+    animal.state='flee';
+    animal.target=chooseFleeTarget(animal, v, behavior, new Map());
+    animal.fleeTicks=Math.round((behavior.roamTicks?.[0]||40)*0.8);
+    v.happy=clamp(v.happy-0.015,0,1);
+    applySkillGain(v, 'constructionSkill', 0.008, 0.9, 1);
+    suppressJob(job, HUNT_RETRY_COOLDOWN);
+    v.thought=moodThought(v,'Missed the shot');
+  }
+  v.state='idle';
+  finishJob(v, true);
 }
 else if(v.state==='forage'){
   if(Number.isInteger(v.targetI) && world.berries[v.targetI]>0){

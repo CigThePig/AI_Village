@@ -1,4 +1,4 @@
-const HEAVY_JOB_TYPES = new Set(['chop', 'mine', 'build', 'haul', 'craft_bow']);
+const HEAVY_JOB_TYPES = new Set(['chop', 'mine', 'build', 'haul', 'craft_bow', 'hunt']);
 const NURTURE_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 const FARM_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 
