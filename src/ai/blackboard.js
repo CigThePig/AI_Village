@@ -74,6 +74,14 @@ function availableResource(totals, reserved, key) {
   return Math.max(0, total - res);
 }
 
+function countEquippedBows(villagers) {
+  let total = 0;
+  for (const villager of villagers) {
+    if (villager?.equippedBow) total++;
+  }
+  return total;
+}
+
 function inspectJobs(jobs) {
   let buildPush = false;
   let growthPush = false;
@@ -131,7 +139,8 @@ export function computeBlackboard(state, policy) {
   const { hungry, starving } = countVillagerNeeds(villagers, hungerThresholds);
   const availableWood = availableResource(totals, reserved, 'wood');
   const availableStone = availableResource(totals, reserved, 'stone');
-  const availableBow = availableResource(totals, reserved, 'bow');
+  const equippedBow = countEquippedBows(villagers);
+  const availableBow = availableResource(totals, reserved, 'bow') + equippedBow;
 
   const famine = starving > 0 || availableFood <= Math.max(0, villagers.length - hungry);
   const { buildPush, growthPush } = inspectJobs(jobs);
