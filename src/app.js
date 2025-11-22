@@ -1717,7 +1717,7 @@ function assignAdultTraits(v, role=rollAdultRole()){
   v.farmingSkill=farmingSkill;
   v.constructionSkill=constructionSkill;
 }
-function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null, equippedBow:false }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
 function newChildVillager(x,y,parents){
   const v=newVillager(x,y);
   v.role='child';
@@ -3043,6 +3043,16 @@ function countVillagerInventory(itemType){
   return total;
 }
 
+function countEquippedBows(list=villagers){
+  let total=0;
+  for(const v of list){
+    if(v?.equippedBow){
+      total++;
+    }
+  }
+  return total;
+}
+
 function findHunterLodge(){
   let best=null;
   for(const b of buildings){
@@ -3197,7 +3207,7 @@ function generateJobs(){
 
   if(allowCraftBow){
     const desiredBows = Math.max(1, Math.ceil(villagerCount * 0.25));
-    const bowOnVillagers = countVillagerInventory(ITEM.BOW);
+    const bowOnVillagers = countVillagerInventory(ITEM.BOW) + countEquippedBows();
     const availableBows = (bb?.availableBow ?? availableToReserve('bow')) + bowOnVillagers;
     const activeCraftJobs = jobs.filter(j=>j && j.type==='craft_bow' && !j.cancelled).length;
     const shortage = Math.max(0, desiredBows - availableBows - activeCraftJobs);
@@ -3492,6 +3502,9 @@ function villagerTick(v){
   } else if(needsFood){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
+  }
+  if(v.state==='idle' && !urgentFood && !needsFood && !v.targetJob){
+    if(tryEquipBow(v)) return;
   }
   const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.22;
   const fatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
@@ -4007,6 +4020,26 @@ function tryStorageIdle(v){
   v.nextStorageIdleTick=Math.max(v.nextStorageIdleTick||0, tick+80);
   return false;
 }
+
+function tryEquipBow(v){
+  if(v.lifeStage==='child') return false;
+  if(v.equippedBow) return false;
+  if(v.inv) return false;
+  if(v.state!=='idle') return false;
+  if(tick<v._nextPathTick) return false;
+  if(availableToReserve('bow')<=0) return false;
+  const storage=findNearestBuilding(v.x|0,v.y|0,'storage');
+  if(!storage) return false;
+  const entry=findEntryTileNear(storage, v.x|0, v.y|0) || {x:Math.round(buildingCenter(storage).x), y:Math.round(buildingCenter(storage).y)};
+  const p=pathfind(v.x|0,v.y|0,entry.x,entry.y);
+  if(!p) return false;
+  v.path=p;
+  v.state='equip_bow';
+  v.targetBuilding=storage;
+  v.thought=moodThought(v,'Fetching bow');
+  v._nextPathTick=tick+12;
+  return true;
+}
 function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
 function scoreExistingJobForVillager(j, v, blackboard){
   if(!j) return -Infinity;
@@ -4418,6 +4451,17 @@ else if(v.state==='craft_bow'){
   v.state='idle';
   finishJob(v, true);
 }
+else if(v.state==='equip_bow'){
+  const storage=v.targetBuilding||findNearestBuilding(cx,cy,'storage');
+  if(storage && spendCraftMaterials({ bow:1 })){
+    v.equippedBow=true;
+    v.thought=moodThought(v,'Equipped bow');
+  } else {
+    v.thought=moodThought(v,'No bow available');
+  }
+  v.state='idle';
+  v.targetBuilding=null;
+}
 else if(v.state==='to_storage'){
   if(v.inv){
     if(v.inv.type===ITEM.FOOD && ((v.starveStage||0)>=2 || v.condition==='sick')){
@@ -4568,7 +4612,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,num:ensureVillagerNumber(v)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -4623,7 +4667,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
     const lifeStage = v.stage==='child' ? 'child' : 'adult';
     const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
-    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null };
+    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true };
     ensureVillagerNumber(villagerRecord, v.num);
     villagers.push(villagerRecord);
   });
