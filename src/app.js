@@ -3665,7 +3665,8 @@ function villagerTick(v){
       if(!plannedPath){
         suppressJob(j, HUNT_RETRY_COOLDOWN);
         v._nextPathTick=tick+12;
-        continue;
+        // No viable path; skip further processing for this villager until retry.
+        return;
       }
     }
     const p=plannedPath || pathfind(v.x|0,v.y|0,dest.x,dest.y);
