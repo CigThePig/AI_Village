@@ -1771,7 +1771,7 @@ function assignAdultTraits(v, role=rollAdultRole()){
   v.farmingSkill=farmingSkill;
   v.constructionSkill=constructionSkill;
 }
-function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null, equippedBow:false }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null, equippedBow:false, experience:createExperienceLedger() }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
 function newChildVillager(x,y,parents){
   const v=newVillager(x,y);
   v.role='child';
@@ -3244,6 +3244,84 @@ function addJob(job){
   if(hasSimilarJob(job) || isJobSuppressed(job)) return null;
   job.id=uid(); job.assigned=0; jobs.push(job); return job;
 }
+
+const JOB_EXPERIENCE_MAP = Object.freeze({
+  sow: 'farming',
+  harvest: 'farming',
+  forage: 'farming',
+  chop: 'construction',
+  mine: 'construction',
+  build: 'construction',
+  haul: 'hauling',
+  hunt: 'hunting',
+  craft_bow: 'crafting'
+});
+
+const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
+const XP_SKILL_STEP = 0.05;
+
+function createExperienceLedger(){
+  return {
+    farming: 0,
+    construction: 0,
+    crafting: 0,
+    hunting: 0,
+    hauling: 0
+  };
+}
+
+function normalizeExperienceLedger(raw){
+  const ledger = createExperienceLedger();
+  if(!raw || typeof raw!=='object') return ledger;
+  for(const key of Object.keys(ledger)){
+    const value = raw[key];
+    if(Number.isFinite(value) && value>0){
+      ledger[key] = value;
+    }
+  }
+  return ledger;
+}
+
+function ensureExperienceLedger(v){
+  if(!v) return createExperienceLedger();
+  if(!v.experience || typeof v.experience !== 'object'){
+    v.experience = createExperienceLedger();
+  } else {
+    v.experience = normalizeExperienceLedger(v.experience);
+  }
+  return v.experience;
+}
+
+function addJobExperience(v, jobType, amount=1){
+  const ledger = ensureExperienceLedger(v);
+  const key = JOB_EXPERIENCE_MAP[jobType];
+  if(!key) return 0;
+  const current = Number.isFinite(ledger[key]) ? ledger[key] : 0;
+  const next = Math.max(0, current + Math.max(0, amount));
+  ledger[key] = next;
+  return next;
+}
+
+function experienceLevelFromXp(xp){
+  let level = 0;
+  for(let i=0;i<EXPERIENCE_THRESHOLDS.length;i++){
+    if(xp >= EXPERIENCE_THRESHOLDS[i]){
+      level = i;
+    }
+  }
+  return level;
+}
+
+function effectiveSkillFromExperience(v, skillKey, fallback=0.5, jobType=null){
+  const base = clamp(Number.isFinite(v?.[skillKey]) ? v[skillKey] : fallback, 0, 1);
+  if(!jobType) return base;
+  const ledger = ensureExperienceLedger(v);
+  const key = JOB_EXPERIENCE_MAP[jobType];
+  const xp = key ? Number.isFinite(ledger[key]) ? ledger[key] : 0 : 0;
+  const level = experienceLevelFromXp(xp);
+  const bonus = clamp(level * XP_SKILL_STEP, 0, 0.25);
+  return clamp(base + bonus, 0, 1);
+}
 function moodMotivation(v){ return clamp((v.happy-0.5)*2,-1,1); }
 function moodPrefix(v){
   if(v.happy>=0.8) return '😊 ';
@@ -4407,6 +4485,7 @@ if(v.state==='chop'){
   } else {
     v.thought=moodThought(v,'Nothing to chop');
   }
+  addJobExperience(v, 'chop', remove ? 2 : 1);
   v.state='idle';
   finishJob(v, remove);
 }
@@ -4426,6 +4505,7 @@ else if(v.state==='mine'){
   }
   v.state='idle';
   applySkillGain(v, 'constructionSkill', 0.016, 0.88, 1);
+  addJobExperience(v, 'mine', remove ? 2 : 1);
   finishJob(v, remove);
 }
 else if(v.state==='hunt'){
@@ -4454,7 +4534,7 @@ else if(v.state==='hunt'){
     return;
   }
   const behavior=ANIMAL_BEHAVIORS[animal.type] || {};
-  const skill=clamp(Number.isFinite(v.constructionSkill)?v.constructionSkill:0.5,0,1);
+  const skill=effectiveSkillFromExperience(v, 'constructionSkill', 0.5, 'hunt');
   const moodFactor=clamp((v.happy-0.5)*0.5,-0.15,0.2);
   const lodgeBonus=Number.isFinite(lodge?.effects?.gameYieldBonus)?lodge.effects.gameYieldBonus*0.2:0;
   const successChance=clamp(0.55 + skill*0.25 + moodFactor + lodgeBonus, 0.25, 0.95);
@@ -4468,6 +4548,7 @@ else if(v.state==='hunt'){
     removeAnimal(animal);
     v.happy=clamp(v.happy+0.06,0,1);
     applySkillGain(v, 'constructionSkill', 0.014, 0.9, 1);
+    addJobExperience(v, 'hunt', 2.5);
     v.thought=moodThought(v,'Successful hunt');
   } else {
     animal.state='flee';
@@ -4476,6 +4557,7 @@ else if(v.state==='hunt'){
     v.happy=clamp(v.happy-0.015,0,1);
     applySkillGain(v, 'constructionSkill', 0.008, 0.9, 1);
     suppressJob(job, HUNT_RETRY_COOLDOWN);
+    addJobExperience(v, 'hunt', 1);
     v.thought=moodThought(v,'Missed the shot');
   }
   v.state='idle';
@@ -4496,6 +4578,7 @@ else if(v.state==='forage'){
   } else {
     v.thought=moodThought(v,'Berries gone');
   }
+  addJobExperience(v, 'forage', 1);
   v.state='idle';
   finishJob(v, true);
 }
@@ -4532,6 +4615,7 @@ else if(v.state==='sow'){
   }
   v.state='idle';
   applySkillGain(v, 'farmingSkill', 0.012, 0.9, 1);
+  addJobExperience(v, 'sow', 1);
   finishJob(v, true);
 }
 else if(v.state==='harvest'){
@@ -4554,6 +4638,7 @@ else if(v.state==='harvest'){
   world.growth[i]=0;
   v.state='idle';
   applySkillGain(v, 'farmingSkill', 0.018, 0.9, 1);
+  addJobExperience(v, 'harvest', 2);
   finishJob(v, true);
 }
 else if(v.state==='build'){
@@ -4611,6 +4696,7 @@ else if(v.state==='build'){
     remove=true;
   }
   applySkillGain(v, 'constructionSkill', remove ? 0.02 : 0.012, 0.9, 1);
+  addJobExperience(v, 'build', remove ? 3 : 1);
   v.state='idle';
   finishJob(v, remove);
 }
@@ -4688,6 +4774,7 @@ else if(v.state==='haul_deliver'){
     }
     if(b){ b.pending[res]=Math.max(0,(b.pending[res]||0)-qty); }
     applySkillGain(v, 'constructionSkill', 0.01, 0.9, 1);
+    addJobExperience(v, 'haul', 1);
   } else if(job && job.type==='haul' && job.stage==='pickup'){
     const qty=job.qty||0;
     if(res){
@@ -4727,6 +4814,7 @@ else if(v.state==='craft_bow'){
     v.thought=moodThought(v,'Dropped bow');
   }
   applySkillGain(v, 'constructionSkill', 0.012, 0.9, 1);
+  addJobExperience(v, 'craft_bow', 2.5);
   v.state='idle';
   finishJob(v, true);
 }
@@ -4893,7 +4981,7 @@ function seasonTick(){
 }
 
 /* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
+function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v),xp:normalizeExperienceLedger(v.experience)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
 function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
   applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
   applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
@@ -4948,7 +5036,8 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
     const lifeStage = v.stage==='child' ? 'child' : 'adult';
     const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
-    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true };
+    const experience = normalizeExperienceLedger(v.xp || v.experience);
+    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true, experience };
     ensureVillagerNumber(villagerRecord, v.num);
     villagers.push(villagerRecord);
   });
