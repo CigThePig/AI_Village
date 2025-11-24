@@ -70,6 +70,9 @@ export function score(job, villager, policy, blackboard) {
   const seasonWinterSowPenalty = Number.isFinite(style.seasonWinterSowPenalty) ? style.seasonWinterSowPenalty : 0;
   const travelCostWeight = Number.isFinite(style.travelCostWeight) ? style.travelCostWeight : 0;
   const famineUrgencyWeight = Number.isFinite(style.famineUrgencyWeight) ? style.famineUrgencyWeight : 0;
+  const foodTightHarvestBonus = Number.isFinite(style.foodTightHarvestBonus) ? style.foodTightHarvestBonus : 0;
+  const foodTightNonFarmPenalty = Number.isFinite(style.foodTightNonFarmPenalty) ? style.foodTightNonFarmPenalty : 0;
+  const foodComfortPerVillager = Number.isFinite(style.foodComfortPerVillager) ? style.foodComfortPerVillager : 1;
 
   const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
   let effectivePriority = rawPriority;
@@ -170,6 +173,19 @@ export function score(job, villager, policy, blackboard) {
           value += famineSeverity * famineUrgencyWeight;
         } else {
           value -= famineSeverity * (famineUrgencyWeight * 0.5);
+        }
+      }
+    }
+
+    if (foodComfortPerVillager > 0) {
+      const villagerCount = Math.max(1, blackboard.villagers || 0);
+      const foodPerVillager = (blackboard.availableFood || 0) / villagerCount;
+      const foodTightness = clamp((foodComfortPerVillager - foodPerVillager) / foodComfortPerVillager, 0, 1);
+      if (foodTightness > 0) {
+        if (job.type === 'harvest') {
+          value += foodTightHarvestBonus * foodTightness;
+        } else if (!FARM_JOB_TYPES.has(job.type)) {
+          value -= foodTightNonFarmPenalty * foodTightness;
         }
       }
     }

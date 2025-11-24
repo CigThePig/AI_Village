@@ -48,6 +48,10 @@ const DEFAULT_JOB_STYLE = Object.freeze({
   adaptiveForageMaxPath: 320,
   travelCostWeight: 0.02,
   famineUrgencyWeight: 0.08,
+  // Food urgency tuning: stronger harvest bias when food per villager is low.
+  foodTightHarvestBonus: 0.18,
+  foodTightNonFarmPenalty: 0.08,
+  foodComfortPerVillager: 1.1,
   reprioritizeMargin: 0.06
 });
 
