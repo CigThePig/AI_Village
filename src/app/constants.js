@@ -8,7 +8,7 @@ import {
   CAMERA_MAX_Z,
   DAY_LENGTH,
   LAYER_ORDER
-} from './config.js';
+} from '../config.js';
 
 const coords = (() => {
   const TILE = TILE_SIZE;
