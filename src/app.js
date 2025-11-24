@@ -23,6 +23,10 @@ const makeHillshade = terrainAPI ? terrainAPI.makeHillshade : null;
 const WORLDGEN_DEFAULTS = configAPI ? configAPI.WORLDGEN_DEFAULTS : undefined;
 const SHADING_DEFAULTS = configAPI ? configAPI.SHADING_DEFAULTS : undefined;
 
+// Keep nights at their previous duration while doubling the daylight window.
+const DAYTIME_PORTION = 2 / 3;
+const NIGHTTIME_PORTION = 1 - DAYTIME_PORTION;
+
 if (typeof generateTerrain !== 'function' || typeof makeHillshade !== 'function') {
   throw new Error('AI Village terrain module unavailable.');
 }
@@ -1148,8 +1152,22 @@ if (typeof window !== 'undefined') {
   };
 }
 
+function computeDayNightAngle(currentDayTime) {
+  // Shift the phase so dayTime 0 stays centered on midday for legacy saves.
+  const phase = ((currentDayTime / DAY_LEN) + (DAYTIME_PORTION / 2)) % 1;
+  const wrappedPhase = phase < 0 ? phase + 1 : phase;
+
+  if (wrappedPhase < DAYTIME_PORTION) {
+    const dayPhase = wrappedPhase / DAYTIME_PORTION;
+    return dayPhase * Math.PI - Math.PI / 2; // -π/2 .. π/2 (sunrise -> sunset)
+  }
+
+  const nightPhase = (wrappedPhase - DAYTIME_PORTION) / NIGHTTIME_PORTION;
+  return Math.PI / 2 + nightPhase * Math.PI; // π/2 .. 3π/2 (sunset -> sunrise)
+}
+
 function ambientAt(currentDayTime) {
-  const theta = (currentDayTime / DAY_LEN) * 2 * Math.PI;
+  const theta = computeDayNightAngle(currentDayTime);
   const cosv = Math.max(0, Math.cos(theta));
   const ramp = cosv * cosv;
   const A = LIGHTING.nightFloor + (1 - LIGHTING.nightFloor) * ramp;
