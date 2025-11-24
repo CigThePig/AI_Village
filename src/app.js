@@ -315,19 +315,19 @@ let lastZonePlanTick = tick - PLANNER_INTERVAL.zones;
 let lastBuildPlanTick = tick - PLANNER_INTERVAL.build;
 const progressionMemory = new Map();
 
-R = typeof rng.generator === 'function' ? rng.generator : Math.random;
-Object.defineProperty(rng, 'generator', {
-  configurable: true,
-  enumerable: true,
-  get() {
-    return R;
-  },
-  set(value) {
-    if (typeof value === 'function') {
-      R = value;
+  setRandomSource(typeof rng.generator === 'function' ? rng.generator : Math.random);
+  Object.defineProperty(rng, 'generator', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return R;
+    },
+    set(value) {
+      if (typeof value === 'function') {
+        setRandomSource(value);
+      }
     }
-  }
-});
+  });
 rng.seed = Number.isFinite(rng.seed) ? rng.seed >>> 0 : (Date.now() | 0);
 
 let debugKitInstance = null;
@@ -4367,9 +4367,14 @@ else if(v.state==='storage_idle'){
   v.thought=moodThought(v,'Tidying storage');
 } }
 
-/* ==================== Pathfinding ==================== */
-function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
-function pathfind(sx,sy,tx,ty,limit=400){
+  /* ==================== Pathfinding ==================== */
+  const PF = {
+    qx: new Int16Array(GRID_SIZE),
+    qy: new Int16Array(GRID_SIZE),
+    came: new Int32Array(GRID_SIZE)
+  };
+  function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
+  function pathfind(sx,sy,tx,ty,limit=400){
   // Normalize coordinates to integer tile indices so the path reconstruction loop
   // always terminates, even if callers accidentally pass fractional values.
   sx = Math.round(clamp(sx, 0, GRID_W - 1));
@@ -4997,15 +5002,17 @@ function applySpriteShadeLit(context, x, y, w, h, light){
   return applySpriteShade(context, x, y, w, h, normalized);
 }
 
-function sampleShade(tx, ty){
-  if (!world || LIGHTING.mode === 'off') return 1;
-  if (LIGHTING.useMultiplyComposite) return 1;
-  return sampleLightAt(world, tx, ty);
-}
+  function sampleShade(tx, ty){
+    if (!world || LIGHTING.mode === 'off') return 1;
+    if (LIGHTING.useMultiplyComposite) return 1;
+    return sampleLightAt(world, tx, ty);
+  }
 
-function applyNightColorShift(r, g, b, normalized){
-  const nightStrength = clamp01(1 - currentAmbient);
-  if (nightStrength <= 0) return [r, g, b];
+  let currentAmbient = 1;
+
+  function applyNightColorShift(r, g, b, normalized){
+    const nightStrength = clamp01(1 - currentAmbient);
+    if (nightStrength <= 0) return [r, g, b];
 
   const desaturate = 0.18 * nightStrength;
   const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
