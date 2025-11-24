@@ -37,9 +37,9 @@ const LIGHTING = {
   mode: 'hillshade',
   useMultiplyComposite: true,
   lightmapScale: 0.25,
-  uiMinLight: 0.90,
+  uiMinLight: 0.94,
   exposure: 1.0,
-  nightFloor: 0.25,
+  nightFloor: 0.32,
   lightCap: 1.40,
   softLights: true,
   debugShowLightmap: false
@@ -1140,7 +1140,17 @@ function ambientAt(currentDayTime) {
   const cosv = Math.max(0, Math.cos(theta));
   const ramp = cosv * cosv;
   const A = LIGHTING.nightFloor + (1 - LIGHTING.nightFloor) * ramp;
-  return Math.min(1.0, A * LIGHTING.exposure);
+
+  // Apply a simple moon-phase that oscillates over several in-game days.
+  // The multiplier only influences darker hours so daytime colors remain unchanged.
+  const moonCycle = DAY_LEN * 6;
+  const moonTheta = ((tick % moonCycle) / moonCycle) * 2 * Math.PI;
+  const moonPhase = (1 + Math.sin(moonTheta - Math.PI / 2)) * 0.5; // 0..1
+  const moonlight = 0.9 + 0.3 * moonPhase; // 0.9 (new moon) .. 1.2 (full moon)
+  const nightBlend = clamp01(1 - ramp);
+  const ambientWithMoon = A * (1 + nightBlend * (moonlight - 1));
+
+  return Math.min(1.0, ambientWithMoon * LIGHTING.exposure);
 }
 
 function normalizeShadingMode(mode) {
@@ -5557,6 +5567,35 @@ function sampleShade(tx, ty){
   return sampleLightAt(world, tx, ty);
 }
 
+function applyNightColorShift(r, g, b, normalized){
+  const nightStrength = clamp01(1 - currentAmbient);
+  if (nightStrength <= 0) return [r, g, b];
+
+  const desaturate = 0.18 * nightStrength;
+  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  r = r * (1 - desaturate) + luma * desaturate;
+  g = g * (1 - desaturate) + luma * desaturate;
+  b = b * (1 - desaturate) + luma * desaturate;
+
+  const blueLift = 1 + 0.10 * nightStrength;
+  const redDampen = 1 - 0.06 * nightStrength;
+  const greenDampen = 1 - 0.03 * nightStrength;
+  r *= redDampen;
+  g *= greenDampen;
+  b *= blueLift;
+
+  const visibilityLift = 8 * nightStrength * (1 - normalized);
+  r += visibilityLift;
+  g += visibilityLift;
+  b += visibilityLift;
+
+  return [
+    clamp(Math.round(r), 0, 255),
+    clamp(Math.round(g), 0, 255),
+    clamp(Math.round(b), 0, 255)
+  ];
+}
+
 function shadeFillColor(color, shade){
   const normalized = clamp01(shade);
   if (normalized >= 0.999 || typeof color !== 'string') return color;
@@ -5574,7 +5613,8 @@ function shadeFillColor(color, shade){
       return color;
     }
     const scale = (component) => clamp(Math.round(component * normalized), 0, 255);
-    return `rgb(${scale(r)},${scale(g)},${scale(b)})`;
+    [r, g, b] = applyNightColorShift(scale(r), scale(g), scale(b), normalized);
+    return `rgb(${r},${g},${b})`;
   }
   const rgbaMatch = color.match(/^rgba?\(([^)]+)\)$/i);
   if (rgbaMatch){
@@ -5589,7 +5629,9 @@ function shadeFillColor(color, shade){
     const baseB = parseComponent(parts[2]);
     const alpha = parts.length >= 4 ? clamp(parseComponent(parts[3]), 0, 1) : 1;
     const scale = (component) => clamp(Math.round(clamp(component, 0, 255) * normalized), 0, 255);
-    return `rgba(${scale(baseR)},${scale(baseG)},${scale(baseB)},${alpha})`;
+    let [r, g, b] = [scale(baseR), scale(baseG), scale(baseB)];
+    [r, g, b] = applyNightColorShift(r, g, b, normalized);
+    return `rgba(${r},${g},${b},${alpha})`;
   }
   return color;
 }
