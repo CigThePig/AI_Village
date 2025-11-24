@@ -3352,7 +3352,10 @@ const STARVE_THRESH={ hungry:0.82, starving:1.08, sick:1.22 };
 const STARVE_COLLAPSE_TICKS=140;
 const STARVE_RECOVERY_TICKS=280;
 const STARVE_TOAST_COOLDOWN=420;
-const HUNGER_RATE=0.00105;
+// Hunger tuning knob: soften the rate a bit so farms can keep pace once established.
+const HUNGER_RATE=0.00095;
+// Balance knob: how much a bite of food reduces hunger.
+const FOOD_HUNGER_RECOVERY=0.65;
 const ENERGY_DRAIN_BASE=0.0011;
 const PREGNANCY_TICKS=DAY_LEN*2;
 const CHILDHOOD_TICKS=DAY_LEN*5;
@@ -3500,6 +3503,7 @@ function villagerTick(v){
   if(v.condition==='sick' && v.sickTimer>0){ return; }
   const urgentFood = stage>=2 || v.condition==='sick';
   const needsFood = stage>=1;
+  let panicHarvestJob=null;
   if(v.state==='resting'){
     if(urgentFood){
       endBuildingStay(v);
@@ -3591,6 +3595,10 @@ function villagerTick(v){
     if(consumeFood(v)){ v.thought=moodThought(v,'Eating'); return; }
     if(foragingJob(v)) return;
   }
+  // Panic harvest behavior when hungry: grab ripe crops if idle and food is tight.
+  if((urgentFood||needsFood) && v.state==='idle' && !v.targetJob){
+    panicHarvestJob = findPanicHarvestJob(v);
+  }
   if(v.state==='idle' && !urgentFood && !needsFood && !v.targetJob){
     if(tryEquipBow(v)) return;
   }
@@ -3610,7 +3618,7 @@ function villagerTick(v){
     if(v.lifeStage==='child'){
       v.targetJob=null;
     }
-    const j=pickJobFor(v); if(j && tick>=v._nextPathTick){
+    const j=(panicHarvestJob || pickJobFor(v)); if(j && tick>=v._nextPathTick){
     let dest={x:j.x,y:j.y};
     let plannedPath=null;
     if(j.type==='build'){
@@ -3702,12 +3710,12 @@ function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && dist
 function consumeFood(v){
   let source=null;
   if(v.inv && v.inv.type===ITEM.FOOD){
-    v.hunger-=0.6;
+    v.hunger-=FOOD_HUNGER_RECOVERY;
     v.inv=null;
     source='pack';
   } else if(storageTotals.food>0){
     storageTotals.food--;
-    v.hunger-=0.6;
+    v.hunger-=FOOD_HUNGER_RECOVERY;
     source='camp';
   }
   if(source){
@@ -4205,6 +4213,22 @@ function maybeInterruptJob(v, { blackboard=null, margin=0 } = {}){
   }
   return false;
 }
+// Finds an open harvest job when food is tight and a villager is free.
+function findPanicHarvestJob(v){
+  const bb = ensureBlackboardSnapshot();
+  let best=null, bestScore=-Infinity;
+  for(const j of jobs){
+    if(!j || j.type!=='harvest') continue;
+    if(j.assigned>=1) continue;
+    const i=idx(j.x,j.y);
+    if(world.growth[i]<=0) continue;
+    const distance=Math.abs((v.x|0)-j.x)+Math.abs((v.y|0)-j.y);
+    const jobView={ type:j.type, prio:j.prio, distance };
+    const jobScore=scoreJob(jobView, v, policy, bb);
+    if(jobScore>bestScore){ bestScore=jobScore; best=j; }
+  }
+  return best;
+}
 function pickJobFor(v){
   if(v.lifeStage==='child') return null;
   let best=null,bs=-Infinity;
@@ -4370,7 +4394,7 @@ else if(v.state==='forage'){
   if(Number.isInteger(v.targetI) && world.berries[v.targetI]>0){
     world.berries[v.targetI]--;
     if((v.starveStage||0)>=2 || v.condition==='sick'){
-      v.hunger-=0.6;
+      v.hunger-=FOOD_HUNGER_RECOVERY;
       if(v.hunger<0) v.hunger=0;
       handleVillagerFed(v,'berries');
       v.thought=moodThought(v,'Ate berries');
@@ -4421,7 +4445,8 @@ else if(v.state==='sow'){
 }
 else if(v.state==='harvest'){
   if(world.growth[i]>0){
-    let yieldAmount=1;
+    // Balance knob: base yield per crop tile.
+    let yieldAmount=2;
     const { harvestBonus } = agricultureBonusesAt(cx,cy);
     if(harvestBonus>0){
       const whole=Math.floor(harvestBonus);
@@ -4754,7 +4779,8 @@ function seasonTick(){
     const prev=world.growth[i];
     if(prev<=0 || prev>=240) continue;
     const y=(i/GRID_W)|0, x=i%GRID_W;
-    let delta=1;
+    // Crop balance knob: faster base growth to help farms stabilize food.
+    let delta=1.2;
     if(hasFarmBoosters){
       const { growthBonus } = agricultureBonusesAt(x,y);
       if(growthBonus>0){
@@ -4766,7 +4792,8 @@ function seasonTick(){
     }
     const next=Math.min(240, prev+delta);
     world.growth[i]=next;
-    if(prev<160 && next>=160){
+    // Slightly earlier harvest window so ripe food gets picked before withering.
+    if(prev<150 && next>=150){
       if(!violatesSpacing(x,y,'harvest',creationCfg)){
         addJob({type:'harvest',x,y, prio:0.65+(policy.sliders.food||0)*0.6});
       }
