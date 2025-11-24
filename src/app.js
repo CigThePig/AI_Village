@@ -3747,6 +3747,14 @@ function villagerTick(v){
     v.socialTimer=0;
     v.thought=moodThought(v,'Greeting the dawn');
   }
+  // If daylight has clearly arrived, break out of lingering campfire gatherings.
+  if(!nightNow && (v.state==='socialize' || v.state==='socializing')){
+    endBuildingStay(v);
+    v.state='idle';
+    v.socialTimer=0;
+    v.nextSocialTick = Math.max(v.nextSocialTick || 0, tick + Math.floor(SOCIAL_COOLDOWN_TICKS * 0.4));
+    v.thought=moodThought(v,'Back to work');
+  }
   if(v.state==='resting'){
     if(urgentFood){
       endBuildingStay(v);
