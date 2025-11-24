@@ -3,421 +3,54 @@ import { policy } from './policy/policy.js';
 import { computeBlackboard } from './ai/blackboard.js';
 import { score as scoreJob, computeFamineSeverity } from './ai/scoring.js';
 import {
-  TILE_SIZE,
-  ENTITY_TILE_SIZE,
-  GRID_WIDTH,
-  GRID_HEIGHT,
-  SPEED_OPTIONS,
-  CAMERA_MIN_Z,
+  ANIMAL_BEHAVIORS,
+  ANIMAL_TYPES,
   CAMERA_MAX_Z,
+  CAMERA_MIN_Z,
+  COARSE_SAVE_SIZE,
+  CRAFTING_RECIPES,
   DAY_LENGTH,
-  LAYER_ORDER
-} from './config.js';
-
-const AIV_SCOPE = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this);
-const terrainAPI = AIV_SCOPE && AIV_SCOPE.AIV_TERRAIN ? AIV_SCOPE.AIV_TERRAIN : null;
-const configAPI = AIV_SCOPE && AIV_SCOPE.AIV_CONFIG ? AIV_SCOPE.AIV_CONFIG : null;
-
-const generateTerrain = terrainAPI ? terrainAPI.generateTerrain : null;
-const makeHillshade = terrainAPI ? terrainAPI.makeHillshade : null;
-const WORLDGEN_DEFAULTS = configAPI ? configAPI.WORLDGEN_DEFAULTS : undefined;
-const SHADING_DEFAULTS = configAPI ? configAPI.SHADING_DEFAULTS : undefined;
-
-// Keep nights at their previous duration while doubling the daylight window.
-const DAYTIME_PORTION = 2 / 3;
-const NIGHTTIME_PORTION = 1 - DAYTIME_PORTION;
-
-if (typeof generateTerrain !== 'function' || typeof makeHillshade !== 'function') {
-  throw new Error('AI Village terrain module unavailable.');
-}
-if (!WORLDGEN_DEFAULTS || !SHADING_DEFAULTS) {
-  throw new Error('AI Village configuration unavailable.');
-}
-
-let setShadingModeImpl = () => {};
-let setShadingParamsImpl = () => {};
-
-const LIGHTING = {
-  mode: 'hillshade',
-  useMultiplyComposite: true,
-  lightmapScale: 0.25,
-  uiMinLight: 0.94,
-  exposure: 1.0,
-  nightFloor: 0.32,
-  lightCap: 1.40,
-  softLights: true,
-  debugShowLightmap: false
-};
-
-const clamp01 = (value) => {
-  if (!Number.isFinite(value)) {
-    return value > 0 ? 1 : 0;
-  }
-  return value <= 0 ? 0 : value >= 1 ? 1 : value;
-};
-
-function setShadingMode(mode) {
-  return setShadingModeImpl(mode);
-}
-
-function setShadingParams(params = {}) {
-  return setShadingParamsImpl(params);
-}
-
-if (typeof globalThis !== 'undefined') {
-  // Provide provisional globals so the debug overlay can bind immediately.
-  globalThis.setShadingMode = setShadingMode;
-  globalThis.setShadingParams = setShadingParams;
-  globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
-}
-
-function makeAltitudeShade(height, w, h, cfg = SHADING_DEFAULTS) {
-  const size = w * h;
-  const shade = new Float32Array(size);
-  if (!height || height.length !== size || size === 0) {
-    return shade;
-  }
-  const ambient = clamp01(typeof cfg?.ambient === 'number' ? cfg.ambient : SHADING_DEFAULTS.ambient);
-  const intensity = clamp01(typeof cfg?.intensity === 'number' ? cfg.intensity : SHADING_DEFAULTS.intensity);
-  shade.fill(ambient);
-  const span = intensity * 2;
-  if (span === 0) {
-    return shade;
-  }
-  const min = ambient - intensity;
-  for (let i = 0; i < size; i++) {
-    const hVal = clamp01(height[i]);
-    const lit = clamp01(min + span * hVal);
-    shade[i] = lit;
-  }
-  return shade;
-}
+  DIR4,
+  ENTITY_TILE_PX,
+  GRID_H,
+  GRID_SIZE,
+  GRID_W,
+  HUNT_RANGE,
+  HUNT_RETRY_COOLDOWN,
+  ITEM,
+  LIGHT_VECTOR,
+  LIGHT_VECTOR_LENGTH,
+  LAYER_ORDER,
+  SAVE_KEY,
+  SAVE_VERSION,
+  SHADOW_DIRECTION,
+  SHADOW_DIRECTION_ANGLE,
+  SHADE_COLOR_CACHE,
+  SPEEDS,
+  TILE,
+  TILES,
+  TREE_VERTICAL_RAISE,
+  WALKABLE,
+  ZONES,
+  baseIdx,
+  baseVisibleTileBounds,
+  coords,
+  pxToTileX,
+  pxToTileY,
+  tileToPxX,
+  tileToPxY
+} from './app/constants.js';
+import { AIV_SCOPE, DAYTIME_PORTION, NIGHTTIME_PORTION, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
+import { LIGHTING, clamp01, makeAltitudeShade, registerShadingHandlers, setShadingMode, setShadingParams } from './app/lighting.js';
+import { Storage, describeError, reportFatal, setUpdateCallback, showFatalOverlay } from './app/storage.js';
+import { MAX_Z, MIN_Z, DPR, H, W, cam, canvas, clampCam, context2d, ctx, resize } from './app/canvas.js';
+import { R, clamp, irnd, mulberry32, rnd, setRandomSource, uid } from './app/rng.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
 
-// ---- Safe storage wrapper ----
-const Storage = (() => {
-  const host = typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : null);
-  let store = null;
-  try {
-    if (host && host.localStorage) {
-      store = host.localStorage;
-    }
-  } catch (e) {
-    store = null;
-  }
-
-  let available = false;
-  if (store) {
-    try {
-      const k = '__aiv_test__' + Math.random();
-      store.setItem(k, '1');
-      store.removeItem(k);
-      available = true;
-    } catch (e) {
-      available = false;
-    }
-  }
-
-  function get(key, def = null) {
-    if (!available || !store) return def;
-    try {
-      const v = store.getItem(key);
-      return v === null ? def : v;
-    } catch (e) {
-      return def;
-    }
-  }
-
-  function set(key, value) {
-    if (!available || !store) return false;
-    try {
-      store.setItem(key, value);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function del(key) {
-    if (!available || !store) return false;
-    try {
-      store.removeItem(key);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  return {
-    get available() { return available; },
-    set available(v) { available = !!v; },
-    get,
-    set,
-    del
-  };
-})();
-
-function describeError(value) {
-  if (value == null) {
-    return 'Fatal error';
-  }
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (value instanceof Error) {
-    return value.stack || value.message || String(value);
-  }
-  if (typeof value === 'object') {
-    const stack = value.stack || value.message;
-    if (stack) {
-      return stack;
-    }
-    try {
-      return JSON.stringify(value, null, 2);
-    } catch (jsonErr) {
-      return String(value);
-    }
-  }
-  return String(value);
-}
-
-function showFatalOverlay(err) {
-  if (typeof document === 'undefined') {
-    console.error('Startup error', describeError(err));
-    return;
-  }
-  const message = describeError(err);
-  let div = document.getElementById('fatal-overlay');
-  if (!div) {
-    div = document.createElement('div');
-    div.id = 'fatal-overlay';
-    div.style.cssText = `
-      position:fixed;left:12px;right:12px;top:12px;z-index:9999;
-      background:rgba(20,24,33,0.96);color:#e9f1ff;border:1px solid rgba(255,255,255,0.15);
-      border-radius:12px;padding:12px;font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-      box-shadow:0 10px 30px rgba(0,0,0,.6)
-    `;
-    document.body.appendChild(div);
-  }
-  if (typeof div.replaceChildren === 'function') {
-    div.replaceChildren();
-  } else {
-    while (div.firstChild) {
-      div.removeChild(div.firstChild);
-    }
-  }
-
-  const title = document.createElement('b');
-  title.textContent = 'Startup error';
-  div.appendChild(title);
-  div.appendChild(document.createElement('br'));
-
-  const pre = document.createElement('pre');
-  pre.style.whiteSpace = 'pre-wrap';
-  pre.textContent = message;
-  div.appendChild(pre);
-
-  const button = document.createElement('button');
-  button.id = 'btnContinueNoSave';
-  button.style.marginTop = '8px';
-  button.textContent = 'Continue (no save)';
-  div.appendChild(button);
-
-  const btn = button;
-  btn.onclick = () => {
-    // Try to recover by disabling storage and starting the loop if needed
-    if (typeof Storage !== 'undefined') {
-      Storage.available = false;
-      const bs=document.getElementById('btnSave');
-      if(bs){ bs.disabled=true; bs.title='Saving unavailable in this context'; }
-    }
-    div.remove();
-    try { requestAnimationFrame(update); } catch(e){}
-  };
-}
-
-function reportFatal(message, data) {
-  let usedDebugKit = false;
-  const debugKit = window.DebugKit;
-  if (debugKit != null && typeof debugKit.fatal === 'function') {
-    try {
-      debugKit.fatal(message, data || null);
-      usedDebugKit = true;
-    } catch (e) {
-      // fall through to overlay fallback
-    }
-  }
-  if (usedDebugKit !== true) {
-    let fallback = message;
-    if ((fallback == null || fallback === '') && data != null) {
-      if (typeof data === 'object' && (data.stack || data.message)) {
-        fallback = data;
-      } else {
-        fallback = String(data);
-      }
-    }
-    if (fallback == null || fallback === '') {
-      fallback = 'Fatal error';
-    }
-    showFatalOverlay(fallback);
-  }
-}
-
-// Surface any unhandled error
-window.addEventListener('error', (e) => {
-  const detail = e && (e.error || e.message || e);
-  reportFatal(detail, e);
-});
-window.addEventListener('unhandledrejection', (e) => {
-  const detail = e && (e.reason || e);
-  reportFatal(detail, e);
-});
-
-/* ==================== Constants & Types ==================== */
-const coords = (() => {
-  const TILE = TILE_SIZE;
-  const ENTITY_TILE_PX = ENTITY_TILE_SIZE;
-  let GRID_W = GRID_WIDTH;
-  let GRID_H = GRID_HEIGHT;
-
-  function tileToPxX(tx, cam){ return Math.floor((tx - cam.x) * TILE * cam.z); }
-  function tileToPxY(ty, cam){ return Math.floor((ty - cam.y) * TILE * cam.z); }
-  function pxToTileX(sx, cam){ return (sx / (TILE * cam.z)) + cam.x; }
-  function pxToTileY(sy, cam){ return (sy / (TILE * cam.z)) + cam.y; }
-  function idx(x, y){ return y * GRID_W + x; }
-  function visibleTileBounds(W,H,cam){
-    const spanX = Math.ceil(W/(TILE*cam.z));
-    const spanY = Math.ceil(H/(TILE*cam.z));
-    return {
-      x0: Math.floor(cam.x)-1,
-      y0: Math.floor(cam.y)-1,
-      x1: Math.ceil(cam.x)+spanX+1,
-      y1: Math.ceil(cam.y)+spanY+1
-    };
-  }
-
-  return {
-    TILE,
-    ENTITY_TILE_PX,
-    get GRID_W(){ return GRID_W; },
-    set GRID_W(v){ GRID_W = v; },
-    get GRID_H(){ return GRID_H; },
-    set GRID_H(v){ GRID_H = v; },
-    tileToPxX,
-    tileToPxY,
-    pxToTileX,
-    pxToTileY,
-    idx,
-    visibleTileBounds
-  };
-})();
-
-const {
-  TILE,
-  ENTITY_TILE_PX,
-  tileToPxX,
-  tileToPxY,
-  pxToTileX,
-  pxToTileY,
-  visibleTileBounds: baseVisibleTileBounds,
-  idx: baseIdx
-} = coords;
-const GRID_W = coords.GRID_W;
-const GRID_H = coords.GRID_H;
-const GRID_SIZE = GRID_W * GRID_H;
-const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 4;
-const COARSE_SAVE_SIZE = 96;
-const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
-const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
-const WALKABLE = new Set([
-  TILES.GRASS,
-  TILES.FOREST,
-  TILES.ROCK,
-  TILES.FERTILE,
-  TILES.FARMLAND,
-  TILES.SAND,
-  TILES.SNOW,
-  TILES.MEADOW,
-  TILES.MARSH
-]);
-const ANIMAL_TYPES = {
-  deer: {
-    label: 'Deer',
-    preferred: [TILES.MEADOW, TILES.FOREST],
-    fallback: [TILES.GRASS, TILES.FERTILE],
-    density: 0.00045,
-    minCount: 10
-  },
-  boar: {
-    label: 'Boar',
-    preferred: [TILES.FOREST, TILES.MARSH],
-    fallback: [TILES.GRASS, TILES.SAND],
-    density: 0.00035,
-    minCount: 8
-  }
-};
-const HUNT_RANGE = 3.5;
-const HUNT_RETRY_COOLDOWN = 140;
-const ANIMAL_BEHAVIORS = {
-  deer: {
-    roamRadius: 4,
-    idleTicks: [28, 90],
-    roamTicks: [60, 140],
-    speed: 0.14,
-    fleeSpeed: 0.21,
-    grazeChance: 0.12,
-    grazeRadius: 1,
-    fearRadius: 4,
-    fleeDistance: 4.5,
-    observeMood: 0.006,
-    idleBob: 1.6
-  },
-  boar: {
-    roamRadius: 3,
-    idleTicks: [22, 70],
-    roamTicks: [45, 120],
-    speed: 0.12,
-    fleeSpeed: 0.18,
-    grazeChance: 0.16,
-    grazeRadius: 1,
-    fearRadius: 3,
-    fleeDistance: 3.5,
-    observeMood: 0.004,
-    idleBob: 1.2
-  }
-};
-const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone', BOW:'bow' };
-const CRAFTING_RECIPES = {
-  bow: Object.freeze({ wood: 2, stone: 1 })
-};
-const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
-const TREE_VERTICAL_RAISE = 6; // pixels to lift tree sprites so trunks anchor in their tile
-const LIGHT_VECTOR = { x:-0.75, y:-0.65 };
-const LIGHT_VECTOR_LENGTH = Math.hypot(LIGHT_VECTOR.x, LIGHT_VECTOR.y) || 1;
-const SHADOW_DIRECTION = {
-  x: -LIGHT_VECTOR.x / LIGHT_VECTOR_LENGTH,
-  y: -LIGHT_VECTOR.y / LIGHT_VECTOR_LENGTH
-};
-const SHADOW_DIRECTION_ANGLE = Math.atan2(SHADOW_DIRECTION.y, SHADOW_DIRECTION.x);
-const SHADE_COLOR_CACHE = (() => {
-  const cache = new Array(256);
-  for (let i = 0; i < 256; i++) {
-    cache[i] = `rgb(${i},${i},${i})`;
-  }
-  return cache;
-})();
-const SPEEDS = SPEED_OPTIONS;
-const PF = {
-  qx: new Int16Array(GRID_SIZE),
-  qy: new Int16Array(GRID_SIZE),
-  came: new Int32Array(GRID_SIZE)
-};
 let waterRowMask = new Uint8Array(GRID_H);
 let zoneRowMask = new Uint8Array(GRID_H);
-let currentAmbient = 1;
 const lightmapCacheState = {
   ambient: null,
   mode: null,
@@ -539,99 +172,6 @@ function applyArrayScaled(target, source, factor, fillValue=0){
       }
     }
   }
-}
-
-/* ==================== Canvas & Camera ==================== */
-const canvas = document.getElementById('game');
-function context2d(canvas, opts){
-  if (!canvas || typeof canvas.getContext !== 'function'){
-    reportFatal(new Error('Unable to access a 2D drawing surface.'));
-    return null;
-  }
-
-  let context = null;
-  let lastError = null;
-
-  if (opts){
-    try {
-      context = canvas.getContext('2d', opts) || null;
-    } catch (err){
-      lastError = err;
-    }
-  }
-
-  if (!context){
-    const shouldRetryWithoutAlpha = opts && Object.prototype.hasOwnProperty.call(opts, 'alpha') && opts.alpha === false;
-    if (shouldRetryWithoutAlpha || !opts){
-      try {
-        context = canvas.getContext('2d') || null;
-      } catch (err){
-        if (!lastError) lastError = err;
-      }
-    }
-  }
-
-  if (!context){
-    const details = [];
-    if (opts){
-      try { details.push(`options=${JSON.stringify(opts)}`); }
-      catch (e){ details.push('options=[unserializable]'); }
-    } else {
-      details.push('options=default');
-    }
-    if (lastError){
-      details.push(`error=${lastError.message || lastError}`);
-    }
-    const message = `Unable to acquire 2D rendering context (${details.join(', ')}).`;
-    if (lastError){
-      console.error(message, lastError);
-    } else {
-      console.error(message);
-    }
-    reportFatal(new Error(message));
-    return null;
-  }
-
-  // We size canvases in device pixels (see resize) so disable smoothing once per context for crisp art.
-  try {
-    context.imageSmoothingEnabled = false;
-  } catch (err){
-    console.warn('Unable to configure image smoothing on context:', err);
-  }
-  return context;
-}
-const ctx = context2d(canvas, { alpha:false });
-canvas.style.touchAction = 'none';
-let DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-let W=0, H=0;
-let cam = { x:0, y:0, z:2.2 }; // x,y in tiles; draw scales by z
-const MIN_Z=CAMERA_MIN_Z, MAX_Z=CAMERA_MAX_Z;
-
-function resize(){
-  DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-  const rect = canvas.getBoundingClientRect();
-  W = Math.floor(rect.width * DPR);
-  H = Math.floor(rect.height * DPR);
-  canvas.width = W;
-  canvas.height = H;
-}
-resize(); window.addEventListener('resize', resize);
-function clampCam(){
-  const maxX = GRID_W - W / (TILE * cam.z);
-  const maxY = GRID_H - H / (TILE * cam.z);
-  cam.x = Math.max(0, Math.min(cam.x, Math.max(0, maxX)));
-  cam.y = Math.max(0, Math.min(cam.y, Math.max(0, maxY)));
-}
-
-/* ==================== RNG ==================== */
-function mulberry32(seed) { return function(){ let t=seed+=0x6D2B79F5; t=Math.imul(t^t>>>15,t|1); t^=t+Math.imul(t^t>>>7,t|61); return ((t^t>>>14)>>>0)/4294967296; } }
-let R = Math.random;
-const irnd=(a,b)=> (R()*(b-a+1)|0)+a;
-const rnd=(a,b)=> R()*(b-a)+a;
-const clamp=(v,mi,ma)=>v<mi?mi:(v>ma?ma:v);
-function uid() {
-  try { return (crypto.getRandomValues(new Uint32Array(1))[0]>>>0); }
-  catch { return Math.floor(Math.random()*2**31); }
 }
 
 /* ==================== Tileset (pixel art generated in code) ==================== */
@@ -1248,14 +788,7 @@ function applyShadingParams({ ambient, intensity, slopeScale } = {}) {
   applyShadingMode(SHADING_DEFAULTS.mode);
 }
 
-setShadingModeImpl = applyShadingMode;
-setShadingParamsImpl = applyShadingParams;
-
-if (typeof globalThis !== 'undefined') {
-  globalThis.setShadingMode = applyShadingMode;
-  globalThis.setShadingParams = applyShadingParams;
-  globalThis.SHADING_DEFAULTS = SHADING_DEFAULTS;
-}
+registerShadingHandlers({ setMode: applyShadingMode, setParams: applyShadingParams });
 const BUILDINGS = {
   campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
@@ -6429,6 +5962,8 @@ function update(){
   render();
   requestAnimationFrame(update);
 }
+
+setUpdateCallback(update);
 
 /* ==================== Boot ==================== */
 function boot(){
