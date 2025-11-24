@@ -1,6 +1,21 @@
 const HEAVY_JOB_TYPES = new Set(['chop', 'mine', 'build', 'haul', 'craft_bow', 'hunt']);
 const NURTURE_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 const FARM_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
+const ADVANCED_JOB_TYPES = new Set(['build', 'craft_bow']);
+
+const JOB_EXPERIENCE_MAP = Object.freeze({
+  sow: 'farming',
+  harvest: 'farming',
+  forage: 'farming',
+  chop: 'construction',
+  mine: 'construction',
+  build: 'construction',
+  haul: 'hauling',
+  hunt: 'hunting',
+  craft_bow: 'crafting'
+});
+
+const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
 
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) {
@@ -22,6 +37,34 @@ function getCaps(policy) {
 function resolveSkill(value, fallback = 0.5) {
   if (Number.isFinite(value)) return clamp(value, 0, 1);
   return clamp(fallback, 0, 1);
+}
+
+function resolveVillagerExperience(villager, jobType) {
+  if (!villager || !jobType) return 0;
+  const ledger = villager.experience;
+  const key = JOB_EXPERIENCE_MAP[jobType];
+  if (!ledger || !key) return 0;
+  const raw = ledger[key];
+  return Number.isFinite(raw) ? Math.max(0, raw) : 0;
+}
+
+function resolveExperienceLevel(xp) {
+  let level = 0;
+  for (let i = 0; i < EXPERIENCE_THRESHOLDS.length; i++) {
+    if (xp >= EXPERIENCE_THRESHOLDS[i]) {
+      level = i;
+    }
+  }
+  return level;
+}
+
+function resolveDynamicSkill(villager, value, fallback, jobType, xpStep) {
+  const base = resolveSkill(value, fallback);
+  if (!villager || !jobType || !xpStep) return base;
+  const xp = resolveVillagerExperience(villager, jobType);
+  const level = resolveExperienceLevel(xp);
+  const bonus = clamp(level * xpStep, 0, 0.25);
+  return clamp(base + bonus, 0, 1);
 }
 
 export function computeFamineSeverity(blackboard) {
@@ -73,6 +116,9 @@ export function score(job, villager, policy, blackboard) {
   const foodTightHarvestBonus = Number.isFinite(style.foodTightHarvestBonus) ? style.foodTightHarvestBonus : 0;
   const foodTightNonFarmPenalty = Number.isFinite(style.foodTightNonFarmPenalty) ? style.foodTightNonFarmPenalty : 0;
   const foodComfortPerVillager = Number.isFinite(style.foodComfortPerVillager) ? style.foodComfortPerVillager : 1;
+  const experienceSkillStep = Number.isFinite(style.experienceSkillStep) ? style.experienceSkillStep : 0.05;
+  const advancedTaskAffinity = Number.isFinite(style.advancedTaskAffinity) ? style.advancedTaskAffinity : 0.12;
+  const leveledTaskBias = Number.isFinite(style.leveledTaskBias) ? style.leveledTaskBias : 0.05;
 
   const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
   let effectivePriority = rawPriority;
@@ -113,12 +159,32 @@ export function score(job, villager, policy, blackboard) {
   }
 
   if (FARM_JOB_TYPES.has(job.type)) {
-    const farmingSkill = resolveSkill(villager.farmingSkill, villager.role === 'farmer' ? 0.7 : 0.5);
+    const farmingSkill = resolveDynamicSkill(
+      villager,
+      villager.farmingSkill,
+      villager.role === 'farmer' ? 0.7 : 0.5,
+      job.type,
+      experienceSkillStep
+    );
     value += (farmingSkill - 0.5) * farmingSkillWeight;
   }
   if (HEAVY_JOB_TYPES.has(job.type)) {
-    const constructionSkill = resolveSkill(villager.constructionSkill, villager.role === 'worker' ? 0.65 : 0.5);
+    const constructionSkill = resolveDynamicSkill(
+      villager,
+      villager.constructionSkill,
+      villager.role === 'worker' ? 0.65 : 0.5,
+      job.type,
+      experienceSkillStep
+    );
     value += (constructionSkill - 0.5) * constructionSkillWeight;
+  }
+
+  const villagerLevel = resolveExperienceLevel(resolveVillagerExperience(villager, job.type));
+  if (villagerLevel > 0) {
+    value += villagerLevel * leveledTaskBias;
+    if (ADVANCED_JOB_TYPES.has(job.type)) {
+      value += villagerLevel * advancedTaskAffinity;
+    }
   }
 
   const energy = Number.isFinite(villager.energy) ? villager.energy : 1;
