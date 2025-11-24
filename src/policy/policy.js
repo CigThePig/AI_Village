@@ -81,6 +81,53 @@ const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
   coldSeasonTightening: 0.05
 });
 
+const DEFAULT_PROGRESS_TIERS = Object.freeze([
+  {
+    id: 'stockpile',
+    minPopulation: 2,
+    requires: { wood: 12 },
+    priority: 1.4,
+    plans: [
+      { kind: 'storage', target: 1, reason: 'stash essential supplies', radius: 16 }
+    ]
+  },
+  {
+    id: 'housing',
+    minPopulation: 4,
+    requires: { wood: 16 },
+    priority: 1.7,
+    plans: [
+      { kind: 'hut', target: 2, reason: 'give villagers beds', radius: 18 }
+    ]
+  },
+  {
+    id: 'workshops',
+    minPopulation: 5,
+    requires: { wood: 18, stone: 2 },
+    priority: 2.1,
+    plans: [
+      { kind: 'hunterLodge', target: 1, reason: 'organize hunts', radius: 18 }
+    ]
+  },
+  {
+    id: 'infrastructure',
+    minPopulation: 6,
+    requires: { wood: 20, stone: 6 },
+    priority: 2.6,
+    plans: [
+      { kind: 'well', target: 1, reason: 'secure water and mood', radius: 18 },
+      { kind: 'farmplot', target: 3, reason: 'grow steady crops', radius: 18 }
+    ]
+  }
+]);
+
+const DEFAULT_PROGRESSION = Object.freeze({
+  hysteresisTicks: 240,
+  resourceHysteresis: 0.18,
+  maxPlansPerTick: 2,
+  tiers: DEFAULT_PROGRESS_TIERS
+});
+
 export const policy = {
   state: null,
   sliders: { ...DEFAULT_SLIDERS },
@@ -116,5 +163,6 @@ export const policy = {
     jobScoring: { ...DEFAULT_JOB_STYLE },
     hunger: { ...DEFAULT_HUNGER_THRESHOLDS },
     jobCreation: { ...DEFAULT_JOB_CREATION }
-  }
+  },
+  progression: { ...DEFAULT_PROGRESSION }
 };

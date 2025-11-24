@@ -892,6 +892,7 @@ let lastBlackboardLogTick = tick;
 const PLANNER_INTERVAL = { zones: 90, build: 120 };
 let lastZonePlanTick = tick - PLANNER_INTERVAL.zones;
 let lastBuildPlanTick = tick - PLANNER_INTERVAL.build;
+const progressionMemory = new Map();
 
 R = typeof rng.generator === 'function' ? rng.generator : Math.random;
 Object.defineProperty(rng, 'generator', {
@@ -2713,6 +2714,92 @@ function planZones(bb){
   return changed;
 }
 
+function getProgressionSettings(){
+  const cfg = policy?.progression || {};
+  const tiers = Array.isArray(cfg.tiers) ? cfg.tiers : [];
+  const hysteresisTicks = Number.isFinite(cfg.hysteresisTicks) ? cfg.hysteresisTicks : 240;
+  const resourceHysteresis = clamp(Number.isFinite(cfg.resourceHysteresis) ? cfg.resourceHysteresis : 0.18, 0, 0.9);
+  const maxPlansPerTick = Math.max(1, Number.isFinite(cfg.maxPlansPerTick) ? cfg.maxPlansPerTick | 0 : 2);
+  return { tiers, hysteresisTicks, resourceHysteresis, maxPlansPerTick };
+}
+
+function meetsProgressionRequirements(requirements, available, unlocked, hysteresis){
+  if(!requirements || typeof requirements!=='object') return true;
+  const slack=Math.max(0, unlocked ? 1 - hysteresis : 1);
+  for(const [key, needRaw] of Object.entries(requirements)){
+    const need=Number(needRaw);
+    if(!Number.isFinite(need) || need<=0) continue;
+    const threshold=Math.max(0, need*slack);
+    if((available[key]||0) < threshold) return false;
+  }
+  return true;
+}
+
+function applyProgressionPlanner(buildQueue, bb, plannedTotals, anchor){
+  const cfg=getProgressionSettings();
+  if(cfg.tiers.length===0) return {};
+  const defaultAnchor=anchor || findPrimaryAnchor() || { x: Math.round(GRID_W/2), y: Math.round(GRID_H/2) };
+  const available={
+    food: bb?.availableFood ?? availableToReserve('food'),
+    wood: bb?.availableWood ?? availableToReserve('wood'),
+    stone: bb?.availableStone ?? availableToReserve('stone')
+  };
+  const additionalTargets={};
+  let injected=0;
+
+  for(const tier of cfg.tiers){
+    if(injected>=cfg.maxPlansPerTick) break;
+    if(!tier || !tier.id) continue;
+    const state=progressionMemory.get(tier.id)||{ cooldownUntil:0, unlocked:false };
+    const minPop = Number.isFinite(tier.minPopulation) ? tier.minPopulation : (Number.isFinite(tier.minVillagers) ? tier.minVillagers : 0);
+    if(minPop>0 && (bb?.villagers || villagers.length) < minPop){
+      state.unlocked=false;
+      progressionMemory.set(tier.id, state);
+      continue;
+    }
+    const requirements=tier.requires || tier.requirements;
+    const resourcesOk=meetsProgressionRequirements(requirements, available, state.unlocked, cfg.resourceHysteresis);
+    if(!resourcesOk){
+      if(!meetsProgressionRequirements(requirements, available, false, cfg.resourceHysteresis*0.5)){
+        state.unlocked=false;
+      }
+      progressionMemory.set(tier.id, state);
+      continue;
+    }
+    if(tick<state.cooldownUntil) continue;
+
+    const plans=Array.isArray(tier.plans)?tier.plans:[];
+    let addedForTier=0;
+    for(const plan of plans){
+      if(injected>=cfg.maxPlansPerTick) break;
+      if(!plan || !plan.kind) continue;
+      const counts=countBuildingsByKind(plan.kind);
+      const target=Number.isFinite(plan.target)?plan.target:Number.isFinite(plan.minTotal)?plan.minTotal:Number.isFinite(tier.target)?tier.target:1;
+      if(counts.total>=target) continue;
+      const anchorOffset=plan.anchorOffset || tier.anchorOffset || null;
+      const tierAnchor=plan.anchor || tier.anchor || defaultAnchor;
+      const planAnchor=anchorOffset?{ x:(tierAnchor.x||0)+(anchorOffset.x||0), y:(tierAnchor.y||0)+(anchorOffset.y||0) }:tierAnchor;
+      const priority=Number.isFinite(plan.priority)?plan.priority:(Number.isFinite(tier.priority)?tier.priority:2);
+      buildQueue.push({ priority, kind:plan.kind, anchor:planAnchor, reason:plan.reason || tier.reason || 'progress milestone', radius:plan.radius || tier.radius || 18, context:plan.context || tier.context });
+      additionalTargets[plan.kind]=Math.max(additionalTargets[plan.kind]||0, target);
+      addedForTier++; injected++;
+    }
+    if(addedForTier>0){
+      state.unlocked=true;
+      state.cooldownUntil=tick+cfg.hysteresisTicks;
+      progressionMemory.set(tier.id, state);
+    }
+  }
+
+  for(const key of Object.keys(additionalTargets)){
+    if(!Number.isFinite(plannedTotals[key])){
+      plannedTotals[key]=plannedTotals[key]||0;
+    }
+  }
+
+  return additionalTargets;
+}
+
 function planBuildings(bb){
   if(!world) return false;
   const anchor=findPrimaryAnchor();
@@ -2805,6 +2892,7 @@ function planBuildings(bb){
   if(!woodBufferOk) storageTarget=Math.min(storageTarget, 1);
 
   const buildQueue=[];
+  const progressionTargets=applyProgressionPlanner(buildQueue, bb, plannedTotals, anchor);
   if(plannedTotals.hut < hutTarget && (!lowEnergy || hutCounts.total<hutTargetBase)){
     const fatiguePenalty=lowEnergy ? 1 : 0;
     buildQueue.push({ priority:1+fatiguePenalty, kind:'hut', anchor:{ x:anchor.x+2, y:anchor.y+1 }, reason:'shelter plan' });
@@ -2843,6 +2931,9 @@ function planBuildings(bb){
     storage: storageTarget,
     hunterLodge: hunterTarget
   };
+  for(const [kind, target] of Object.entries(progressionTargets)){
+    targetByKind[kind]=Math.max(targetByKind[kind] ?? 0, target);
+  }
   const maxPlacements=Math.min(TUNING.maxPlacements, buildQueue.length);
   let placedThisTick=0;
   let reservedWoodForPlans=0;
