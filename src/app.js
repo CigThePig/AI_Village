@@ -1153,6 +1153,21 @@ function ambientAt(currentDayTime) {
   return Math.min(1.0, ambientWithMoon * LIGHTING.exposure);
 }
 
+const NIGHT_AMBIENT_THRESHOLD = 0.6;
+const DAWN_AMBIENT_THRESHOLD = 0.68;
+
+function isNightAmbient(ambient) {
+  return ambient <= NIGHT_AMBIENT_THRESHOLD;
+}
+
+function isDawnAmbient(ambient) {
+  return ambient >= DAWN_AMBIENT_THRESHOLD;
+}
+
+function isNightTime() {
+  return isNightAmbient(ambientAt(dayTime));
+}
+
 function normalizeShadingMode(mode) {
   if (mode === 'off' || mode === 'altitude') return mode;
   return 'hillshade';
@@ -1247,11 +1262,12 @@ const BUILDINGS = {
       hydrationRadius: 4,
       hydrationGrowthBonus: 0.45,
       moodBonus: 0.0007,
-      hydrationBuff: 0.25
-    },
-    tooltip: 'Villagers drink here to stay hydrated; hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
+    hydrationBuff: 0.25
+  },
+  tooltip: 'Villagers drink here to stay hydrated; hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
   }
 };
+const CAMPFIRE_EFFECT_RADIUS = (BUILDINGS?.campfire?.effects?.radius | 0) || 2;
 
 const FOOTPRINT = {
   campfire: { w:2, h:2 },
@@ -3264,7 +3280,8 @@ const JOB_EXPERIENCE_MAP = Object.freeze({
   build: 'construction',
   haul: 'hauling',
   hunt: 'hunting',
-  craft_bow: 'crafting'
+  craft_bow: 'crafting',
+  socialize: 'social'
 });
 
 const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
@@ -3276,7 +3293,8 @@ function createExperienceLedger(){
     construction: 0,
     crafting: 0,
     hunting: 0,
-    hauling: 0
+    hauling: 0,
+    social: 0
   };
 }
 
@@ -3561,6 +3579,8 @@ const SOCIAL_BASE_TICKS=88;
 const SOCIAL_COOLDOWN_TICKS=DAY_LEN*0.2;
 const SOCIAL_MOOD_TICK=0.0013;
 const SOCIAL_ENERGY_TICK=0.00055;
+const NIGHT_CAMPFIRE_MOOD_TICK=0.0012;
+const NIGHT_CAMPFIRE_XP_TICK=0.15;
 const STORAGE_IDLE_BASE=70;
 const STORAGE_IDLE_COOLDOWN=DAY_LEN*0.12;
 function issueStarveToast(v,text,force=false){ const ready=(v.nextStarveWarning||0)<=tick; if(force||ready){ Toast.show(text); v.nextStarveWarning=tick+STARVE_TOAST_COOLDOWN; } }
@@ -3602,6 +3622,9 @@ function villagerTick(v){
       tryStartPregnancy(v);
     }
   }
+  const ambientNow = ambientAt(dayTime);
+  const nightNow = isNightAmbient(ambientNow);
+  const dawnNow = isDawnAmbient(ambientNow);
   const style = policy?.style?.jobScoring || {};
   const blackboard = ensureBlackboardSnapshot();
   const resting=v.state==='resting';
@@ -3619,6 +3642,10 @@ function villagerTick(v){
   let happyDelta=warm?0.001:-0.0002;
   const { moodBonus } = agricultureBonusesAt(tileX, tileY);
   if(moodBonus){ happyDelta+=moodBonus; }
+  if(warm && nightNow){
+    happyDelta+=NIGHT_CAMPFIRE_MOOD_TICK;
+    addJobExperience(v, 'socialize', NIGHT_CAMPFIRE_XP_TICK);
+  }
   const wellFed=v.hunger<STARVE_THRESH.hungry*0.55;
   const wellRested=v.energy>0.55;
   if(wellFed&&wellRested){
@@ -3683,6 +3710,12 @@ function villagerTick(v){
   const urgentFood = stage>=2 || v.condition==='sick';
   const needsFood = stage>=1;
   let panicHarvestJob=null;
+  if(v.state==='socializing' && dawnNow){
+    endBuildingStay(v);
+    v.state='idle';
+    v.socialTimer=0;
+    v.thought=moodThought(v,'Greeting the dawn');
+  }
   if(v.state==='resting'){
     if(urgentFood){
       endBuildingStay(v);
@@ -3790,6 +3823,9 @@ function villagerTick(v){
   if(v.state==='idle' && !urgentFood){
     if(tryHydrateAtWell(v)) return;
   }
+  if(nightNow && v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
+    if(tryCampfireSocial(v, { ambientNow, forceNight: true })) return;
+  }
   const reprioritizeMargin = Number.isFinite(style.reprioritizeMargin) ? style.reprioritizeMargin : 0.06;
   if(maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
   if(v.path && v.path.length>0){ stepAlong(v); return; }
@@ -3881,11 +3917,13 @@ function villagerTick(v){
       if(tryStorageIdle(v)) return;
     }
     if(v.state==='idle' && !needsFood && !urgentFood && !v.targetJob){
-      if(tryCampfireSocial(v)) return;
+      if(tryCampfireSocial(v, { ambientNow })) return;
     }
   if(handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
 }
-function nearbyWarmth(x,y){ return buildings.some(b=>b.kind==='campfire' && distanceToFootprint(x,y,b)<=2); }
+function nearbyWarmth(x,y){
+  return buildings.some(b=>b.kind==='campfire' && distanceToFootprint(x,y,b)<=CAMPFIRE_EFFECT_RADIUS);
+}
 function consumeFood(v){
   let source=null;
   if(v.inv && v.inv.type===ITEM.FOOD){
@@ -4268,12 +4306,14 @@ function tryHydrateAtWell(v){
   v.nextHydrateTick=Math.max(v.nextHydrateTick||0, tick+60);
   return false;
 }
-function tryCampfireSocial(v){
+function tryCampfireSocial(v, { ambientNow = ambientAt(dayTime), forceNight = false } = {}){
   if(tick<v._nextPathTick) return false;
   if(v.nextSocialTick>tick) return false;
   if((v.starveStage||0)>=1) return false;
-  const ambientNow=ambientAt(dayTime);
-  if(ambientNow>0.62) return false;
+  const nightAmbient=isNightAmbient(ambientNow);
+  if(!nightAmbient && !forceNight) return false;
+  if(!nightAmbient && forceNight && !isNightTime()) return false;
+  if(isDawnAmbient(ambientNow)) return false;
   const camp=findNearestBuilding(v.x|0,v.y|0,'campfire');
   if(!camp) return false;
   const entry=findEntryTileNear(camp, v.x|0, v.y|0) || {x:Math.round(buildingCenter(camp).x), y:Math.round(buildingCenter(camp).y)};
@@ -5675,6 +5715,7 @@ function render(){
   const shadingMode = normalizeShadingMode(LIGHTING.mode);
   if (LIGHTING.mode !== shadingMode) LIGHTING.mode = shadingMode;
   const ambient = shadingMode === 'off' ? 1 : ambientAt(dayTime);
+  const nightActive = isNightAmbient(ambient);
   currentAmbient = ambient;
 
   villagerLabels.length = 0;
@@ -5687,7 +5728,8 @@ function render(){
         const fp=getFootprint(b.kind);
         const emitterX=b.x + (fp?.w||1)*0.5;
         const emitterY=b.y + (fp?.h||1)*0.5;
-        world.emitters.push({ x:emitterX, y:emitterY, radius:7.5, intensity:0.45, falloff:2.0, flicker:true });
+        const emitterIntensity = nightActive ? 0.55 : 0.4;
+        world.emitters.push({ x:emitterX, y:emitterY, radius:7.5, intensity:emitterIntensity, falloff:2.0, flicker:true });
       }
     }
   }
@@ -5892,6 +5934,19 @@ function render(){
         grd.addColorStop(1,'rgba(255,120,60,0)');
         ctx.fillStyle=grd;
         ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill();
+        if(nightActive){
+          ctx.save();
+          ctx.globalAlpha=0.25+0.15*Math.random();
+          ctx.fillStyle='rgba(255,210,150,0.85)';
+          for(let i=0;i<2;i++){
+            const emberX=gx + (12 + Math.random()*8)*cam.z + (Math.random()*2-1)*cam.z;
+            const emberY=gy + (4 - Math.random()*10)*cam.z;
+            ctx.beginPath();
+            ctx.arc(emberX, emberY, Math.max(0.6, 1.1*Math.random())*cam.z, 0, Math.PI*2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
       }
     }
 
