@@ -1,5 +1,12 @@
 (function () {
-  const DEBUG = new URLSearchParams(location.search).get('debug') == '1' || localStorage.getItem('debug') == 'true';
+  const DEBUG = (() => {
+    const qsDebug = new URLSearchParams(location.search).get('debug') == '1';
+    try {
+      return qsDebug || localStorage.getItem('debug') == 'true';
+    } catch (err) {
+      return qsDebug;
+    }
+  })();
   if (!DEBUG) {
     return;
   }
