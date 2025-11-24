@@ -5780,9 +5780,9 @@ function render(){
   __ck('albedo:begin', true, null);
   ctx.fillStyle='#0a0c10';
   ctx.fillRect(0,0,W,H);
-  // base map scaled by cam.z
-  const baseDx = Math.round(-cam.x*TILE*cam.z);
-  const baseDy = Math.round(-cam.y*TILE*cam.z);
+  // base map scaled by cam.z (match tileToPx flooring for consistent transforms)
+  const baseDx = tileToPxX(0, cam);
+  const baseDy = tileToPxY(0, cam);
   if(staticAlbedoCanvas){
     ctx.drawImage(staticAlbedoCanvas, 0,0, staticAlbedoCanvas.width, staticAlbedoCanvas.height,
       baseDx, baseDy,
