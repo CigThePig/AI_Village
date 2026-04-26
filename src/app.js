@@ -5859,7 +5859,6 @@ function update(){
       planBuildings(gameState.bb);
       lastBuildPlanTick=tick;
     }
-    rebuildItemTileIndex();
     updateAnimals();
     updateNocturnalEntities(ambientNow);
     for(const v of villagers){
@@ -5872,8 +5871,8 @@ function update(){
           if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); }
         }
       }
+      villagerTick(v);
     }
-    for(const v of villagers){ villagerTick(v); }
     flushPendingBirths();
   }
   render();
