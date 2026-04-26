@@ -1060,6 +1060,7 @@ function updateAnimals(){
 }
 
 function newWorld(seed=Date.now()|0){
+  if(typeof unbindUIListeners === 'function') unbindUIListeners();
   if(typeof unbindCanvasInputs === 'function') unbindCanvasInputs();
   const normalizedSeed = seed >>> 0;
   rng.seed = normalizedSeed;
@@ -1218,6 +1219,7 @@ function newWorld(seed=Date.now()|0){
   Toast.show('Villagers will choose buildings and resource zones automatically.');
   centerCamera(campfire.x,campfire.y); markStaticDirty();
   if(typeof bindCanvasInputs === 'function') bindCanvasInputs();
+  if(typeof bindUIListeners === 'function') bindUIListeners();
 }
 function rollAdultRole(){ const r=R(); return r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; }
 function assignAdultTraits(v, role=rollAdultRole()){
@@ -1634,28 +1636,64 @@ function zoneHasWorkNow(z, i){
   return false;
 }
 
-el('btnPause').addEventListener('click', ()=> { paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; });
-el('btnSpeed').addEventListener('click', ()=> { speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; });
-el('btnPrior').addEventListener('click', ()=> {
-  const sheet=document.getElementById('sheetPrior');
-  const open=sheet.getAttribute('data-open')==='true';
-  toggleSheet('sheetPrior', !open);
-});
+function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
+
 const btnSave=el('btnSave');
 if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
-btnSave.addEventListener('click', ()=>{ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); });
-el('btnNew').addEventListener('click', ()=> { newWorld(); });
-el('btnHelpClose').addEventListener('click', ()=> { el('help').style.display='none'; Storage.set('aiv_help_px3','1'); });
-document.querySelectorAll('[data-mode]').forEach((btn)=>{
-  btn.addEventListener('click', ()=> openMode(btn.dataset.mode || 'inspect'));
-});
-function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
-['sheetPrior'].forEach(id=>{ const s=document.getElementById(id); s.addEventListener('click', (e)=>{ if(e.target.closest('.sheet-close')) toggleSheet(id,false); }); });
 
-document.addEventListener('click', (e)=>{
+/* Named handlers — required so removeEventListener can match the same reference */
+function onPauseClick(){ paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; }
+function onSpeedClick(){ speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; }
+function onPriorClick(){ const sheet=document.getElementById('sheetPrior'); const open=sheet.getAttribute('data-open')==='true'; toggleSheet('sheetPrior',!open); }
+function onSaveClick(){ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); }
+function onNewClick(){ newWorld(); }
+function onHelpCloseClick(){ el('help').style.display='none'; Storage.set('aiv_help_px3','1'); }
+function onSheetPriorClick(e){ if(e.target.closest('.sheet-close')) toggleSheet('sheetPrior',false); }
+function onDocumentClick(e){
+  const modeBtn = e.target.closest('[data-mode]');
+  if(modeBtn){ openMode(modeBtn.dataset.mode||'inspect'); return; }
   if(e.target.closest('.sheet') || e.target.closest('.pill-controls')) return;
   toggleSheet('sheetPrior', false);
-});
+}
+function onKeyDown(e){ if((e.key==='l'||e.key==='L')&&e.altKey){ LIGHTING.debugShowLightmap=!LIGHTING.debugShowLightmap; e.preventDefault(); } }
+function onPrioFoodInput(e){ policy.sliders.food=(parseInt(e.target.value,10)||0)/100; }
+function onPrioBuildInput(e){ policy.sliders.build=(parseInt(e.target.value,10)||0)/100; }
+function onPrioExploreInput(e){ policy.sliders.explore=(parseInt(e.target.value,10)||0)/100; }
+
+let uiListenersBound = false;
+function bindUIListeners(){
+  if(uiListenersBound) return;
+  el('btnPause').addEventListener('click', onPauseClick);
+  el('btnSpeed').addEventListener('click', onSpeedClick);
+  el('btnPrior').addEventListener('click', onPriorClick);
+  btnSave.addEventListener('click', onSaveClick);
+  el('btnNew').addEventListener('click', onNewClick);
+  el('btnHelpClose').addEventListener('click', onHelpCloseClick);
+  document.getElementById('sheetPrior').addEventListener('click', onSheetPriorClick);
+  document.addEventListener('click', onDocumentClick);
+  window.addEventListener('keydown', onKeyDown);
+  document.getElementById('prioFood').addEventListener('input', onPrioFoodInput);
+  document.getElementById('prioBuild').addEventListener('input', onPrioBuildInput);
+  document.getElementById('prioExplore').addEventListener('input', onPrioExploreInput);
+  uiListenersBound = true;
+}
+function unbindUIListeners(){
+  if(!uiListenersBound) return;
+  el('btnPause').removeEventListener('click', onPauseClick);
+  el('btnSpeed').removeEventListener('click', onSpeedClick);
+  el('btnPrior').removeEventListener('click', onPriorClick);
+  btnSave.removeEventListener('click', onSaveClick);
+  el('btnNew').removeEventListener('click', onNewClick);
+  el('btnHelpClose').removeEventListener('click', onHelpCloseClick);
+  document.getElementById('sheetPrior').removeEventListener('click', onSheetPriorClick);
+  document.removeEventListener('click', onDocumentClick);
+  window.removeEventListener('keydown', onKeyDown);
+  document.getElementById('prioFood').removeEventListener('input', onPrioFoodInput);
+  document.getElementById('prioBuild').removeEventListener('input', onPrioBuildInput);
+  document.getElementById('prioExplore').removeEventListener('input', onPrioExploreInput);
+  uiListenersBound = false;
+}
+bindUIListeners();
 
 /* ==================== Pointer Input ==================== */
 const activePointers = new Map();
@@ -1773,17 +1811,7 @@ function unbindCanvasInputs(){
 }
 bindCanvasInputs();
 
-window.addEventListener('keydown', (e)=>{
-  if((e.key==='l' || e.key==='L') && e.altKey){
-    LIGHTING.debugShowLightmap = !LIGHTING.debugShowLightmap;
-    e.preventDefault();
-  }
-});
-
 /* ==================== Automation Helpers ==================== */
-document.getElementById('prioFood').addEventListener('input', e=> policy.sliders.food=(parseInt(e.target.value,10)||0)/100 );
-document.getElementById('prioBuild').addEventListener('input', e=> policy.sliders.build=(parseInt(e.target.value,10)||0)/100 );
-document.getElementById('prioExplore').addEventListener('input', e=> policy.sliders.explore=(parseInt(e.target.value,10)||0)/100 );
 
 function availableToReserve(resource){
   return (storageTotals[resource]||0) - (storageReserved[resource]||0);

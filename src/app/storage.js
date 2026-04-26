@@ -174,6 +174,7 @@ function reportFatal(err, extra) {
   }
 }
 
+// Module-lifetime: fatal-error reporters must survive world swaps to catch post-swap crashes.
 if (typeof window !== 'undefined') {
   window.addEventListener('error', (e) => {
     const detail = e && (e.error || e.message || e);
