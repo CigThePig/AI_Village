@@ -1330,7 +1330,7 @@ function zoneHasWorkNow(z, i){
 const _uiSystem = createUISystem({
   policy,
   time,
-  saveGame,
+  saveGame: (...args) => saveGame(...args),
   newWorld
 });
 const Toast = _uiSystem.Toast;
