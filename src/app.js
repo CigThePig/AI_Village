@@ -26,20 +26,18 @@ import {
   ZONES,
   baseIdx,
   baseVisibleTileBounds,
-  coords,
-  pxToTileX,
-  pxToTileY,
   tileToPxX,
   tileToPxY
 } from './app/constants.js';
 import { AIV_SCOPE, DAYTIME_PORTION, NIGHTTIME_PORTION, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
 import { LIGHTING, clamp01, makeAltitudeShade, registerShadingHandlers, setShadingMode, setShadingParams } from './app/lighting.js';
-import { Storage, describeError, reportFatal, setUpdateCallback, showFatalOverlay } from './app/storage.js';
-import { MAX_Z, MIN_Z, DPR, H, W, cam, canvas, clampCam, context2d, ctx, resize } from './app/canvas.js';
+import { Storage, reportFatal, setUpdateCallback } from './app/storage.js';
+import { H, W, cam, clampCam, context2d, ctx } from './app/canvas.js';
 import { R, clamp, irnd, mulberry32, rnd, setRandomSource, uid } from './app/rng.js';
 import { Tileset, SHADOW_TEXTURE, buildTileset, makeCanvas } from './app/tileset.js';
 import { createPathfinder } from './app/pathfinding.js';
 import { createSaveSystem } from './app/save.js';
+import { createUISystem } from './app/ui.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
@@ -1555,77 +1553,7 @@ function agricultureBonusesAt(x,y){
 }
 
 /* ==================== UI & Sheets ==================== */
-const el=(id)=>document.getElementById(id);
-
-// --- Toast system (top center, queued, auto-dismiss) ---
-const Toast = (() => {
-  const host = document.createElement('div');
-  host.id = 'toastHost';
-  host.style.cssText = `
-    position:fixed; top:72px; left:50%; transform:translateX(-50%);
-    display:flex; flex-direction:column; gap:8px; z-index:5000; pointer-events:none;
-  `;
-  document.body.appendChild(host);
-
-  const q=[];
-  let showing=0;
-
-  function show(text, ms=2200){
-    q.push({text, ms});
-    if(!showing) next();
-  }
-  function next(){
-    if(!q.length){ showing=0; return; }
-    showing=1;
-    const {text, ms}=q.shift();
-    const el=document.createElement('div');
-    el.className='toast';
-    el.textContent=text;
-    el.style.cssText=`
-      background: rgba(20,24,33,0.96);
-      border:1px solid rgba(255,255,255,0.12);
-      color:#e9f1ff; font-weight:700; font-size:14px;
-      border-radius:12px; padding:10px 14px; box-shadow:0 6px 18px rgba(0,0,0,.35);
-    `;
-    host.appendChild(el);
-    setTimeout(()=>{
-      el.style.transition='opacity .2s ease, transform .2s ease';
-      el.style.opacity='0'; el.style.transform='translateY(-6px)';
-      setTimeout(()=>{ el.remove(); next(); },220);
-    }, ms);
-  }
-  return { show };
-})();
-
-// Legacy shim for old toast() calls
-window.toast = (msg, ms) => Toast.show(msg, ms);
-
-let ui={ mode:'inspect' };
-
-function openMode(mode){
-  const nextMode = (typeof mode === 'string' && mode.trim()) ? mode : 'inspect';
-  ui.mode = nextMode;
-
-  if (typeof document !== 'undefined') {
-    const root = document.body || document.documentElement;
-    if (root) {
-      root.setAttribute('data-mode', nextMode);
-    }
-
-    const modeButtons = document.querySelectorAll('[data-mode]');
-    modeButtons.forEach((btn) => {
-      const active = btn.dataset.mode === nextMode;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-  }
-
-  if (typeof canvas !== 'undefined' && canvas && canvas.style) {
-    canvas.style.cursor = nextMode === 'inspect' ? 'default' : 'crosshair';
-  }
-
-  return ui.mode;
-}
+const el = (id) => document.getElementById(id);
 
 const ZONE_JOB_TYPES = {
   [ZONES.FARM]: 'sow',
@@ -1667,193 +1595,20 @@ function zoneHasWorkNow(z, i){
   return false;
 }
 
-function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
-
-const uiRefs = {
-  btnPause: el('btnPause'),
-  btnSpeed: el('btnSpeed'),
-  btnPrior: el('btnPrior'),
-  btnSave: el('btnSave'),
-  btnNew: el('btnNew'),
-  btnHelpClose: el('btnHelpClose'),
-  help: el('help'),
-  sheetPrior: el('sheetPrior'),
-  prioFood: el('prioFood'),
-  prioBuild: el('prioBuild'),
-  prioExplore: el('prioExplore')
-};
-const btnSave = uiRefs.btnSave;
-if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
-
-/* Named handlers — required so removeEventListener can match the same reference */
-function onPauseClick(){ paused=!paused; uiRefs.btnPause.textContent=paused?'▶️':'⏸'; }
-function onSpeedClick(){ speedIdx=(speedIdx+1)%SPEEDS.length; uiRefs.btnSpeed.textContent=SPEEDS[speedIdx]+'×'; }
-function onPriorClick(){ const open=uiRefs.sheetPrior.getAttribute('data-open')==='true'; toggleSheet('sheetPrior',!open); }
-function onSaveClick(){ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); }
-function onNewClick(){ newWorld(); }
-function onHelpCloseClick(){ uiRefs.help.style.display='none'; Storage.set('aiv_help_px3','1'); }
-function onSheetPriorClick(e){ if(e.target.closest('.sheet-close')) toggleSheet('sheetPrior',false); }
-function onDocumentClick(e){
-  const modeBtn = e.target.closest('[data-mode]');
-  if(modeBtn){ openMode(modeBtn.dataset.mode||'inspect'); return; }
-  if(e.target.closest('.sheet') || e.target.closest('.pill-controls')) return;
-  toggleSheet('sheetPrior', false);
-}
-function onKeyDown(e){ if((e.key==='l'||e.key==='L')&&e.altKey){ LIGHTING.debugShowLightmap=!LIGHTING.debugShowLightmap; e.preventDefault(); } }
-function onPrioFoodInput(e){ policy.sliders.food=(parseInt(e.target.value,10)||0)/100; }
-function onPrioBuildInput(e){ policy.sliders.build=(parseInt(e.target.value,10)||0)/100; }
-function onPrioExploreInput(e){ policy.sliders.explore=(parseInt(e.target.value,10)||0)/100; }
-
-let uiListenersBound = false;
-function bindUIListeners(){
-  if(uiListenersBound) return;
-  uiRefs.btnPause.addEventListener('click', onPauseClick);
-  uiRefs.btnSpeed.addEventListener('click', onSpeedClick);
-  uiRefs.btnPrior.addEventListener('click', onPriorClick);
-  uiRefs.btnSave.addEventListener('click', onSaveClick);
-  uiRefs.btnNew.addEventListener('click', onNewClick);
-  uiRefs.btnHelpClose.addEventListener('click', onHelpCloseClick);
-  uiRefs.sheetPrior.addEventListener('click', onSheetPriorClick);
-  document.addEventListener('click', onDocumentClick);
-  window.addEventListener('keydown', onKeyDown);
-  uiRefs.prioFood.addEventListener('input', onPrioFoodInput);
-  uiRefs.prioBuild.addEventListener('input', onPrioBuildInput);
-  uiRefs.prioExplore.addEventListener('input', onPrioExploreInput);
-  uiListenersBound = true;
-}
-function unbindUIListeners(){
-  if(!uiListenersBound) return;
-  uiRefs.btnPause.removeEventListener('click', onPauseClick);
-  uiRefs.btnSpeed.removeEventListener('click', onSpeedClick);
-  uiRefs.btnPrior.removeEventListener('click', onPriorClick);
-  uiRefs.btnSave.removeEventListener('click', onSaveClick);
-  uiRefs.btnNew.removeEventListener('click', onNewClick);
-  uiRefs.btnHelpClose.removeEventListener('click', onHelpCloseClick);
-  uiRefs.sheetPrior.removeEventListener('click', onSheetPriorClick);
-  document.removeEventListener('click', onDocumentClick);
-  window.removeEventListener('keydown', onKeyDown);
-  uiRefs.prioFood.removeEventListener('input', onPrioFoodInput);
-  uiRefs.prioBuild.removeEventListener('input', onPrioBuildInput);
-  uiRefs.prioExplore.removeEventListener('input', onPrioExploreInput);
-  uiListenersBound = false;
-}
+const _uiSystem = createUISystem({
+  policy,
+  time,
+  saveGame,
+  newWorld
+});
+const Toast = _uiSystem.Toast;
+const openMode = _uiSystem.openMode;
+const bindUIListeners = _uiSystem.bindUIListeners;
+const unbindUIListeners = _uiSystem.unbindUIListeners;
+const bindCanvasInputs = _uiSystem.bindCanvasInputs;
+const unbindCanvasInputs = _uiSystem.unbindCanvasInputs;
+const toTile = _uiSystem.toTile;
 bindUIListeners();
-
-/* ==================== Pointer Input ==================== */
-const activePointers = new Map();
-let primaryPointer = null;
-let pinch = null;
-
-// tiny tap debugger to confirm events
-const dbg = document.createElement('div');
-dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5000;color:#9cb2cc;font:12px system-ui;pointer-events:none';
-document.body.appendChild(dbg);
-const setDbg = (s)=> dbg.textContent = s;
-
-function pointerScale(){
-  const r = canvas.getBoundingClientRect();
-  return { sx: canvas.width / r.width, sy: canvas.height / r.height };
-}
-
-function screenToWorld(px, py){
-  const rect = canvas.getBoundingClientRect();         // CSS pixels
-  const sx = (px - rect.left) * (canvas.width  / rect.width);   // device px
-  const sy = (py - rect.top)  * (canvas.height / rect.height);  // device px
-  // camera is in tiles; conversion helpers live in coords
-  return {
-    x: pxToTileX(sx, cam),
-    y: pxToTileY(sy, cam)
-  };
-}
-
-function toTile(v){ return Math.floor(v); }
-
-function onPointerDown(e){
-  setDbg(`down ${e.pointerType} mode=${ui.mode}`);
-  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY, type:e.pointerType});
-  canvas.setPointerCapture(e.pointerId);
-  if(e.pointerType==='touch' && activePointers.size===2){
-    const pts = Array.from(activePointers.values());
-    pinch = {
-      startDist: Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y),
-      startZ: cam.z,
-      midx: (pts[0].x+pts[1].x)/2,
-      midy: (pts[0].y+pts[1].y)/2
-    };
-    primaryPointer = null;
-  } else if(!primaryPointer){
-    primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
-  }
-  e.preventDefault();
-}
-
-function onPointerMove(e){
-  if(!activePointers.has(e.pointerId)) return;
-  const p = activePointers.get(e.pointerId);
-  p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
-  const {sx:scaleX, sy:scaleY} = pointerScale();
-  if(pinch && activePointers.size===2){
-    const pts = Array.from(activePointers.values());
-    const dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
-    const before = screenToWorld(pinch.midx, pinch.midy);
-    cam.z = clamp((dist/(pinch.startDist||1))*pinch.startZ, MIN_Z, MAX_Z);
-    const after = screenToWorld(pinch.midx, pinch.midy);
-    cam.x += (after.x - before.x);
-    cam.y += (after.y - before.y);
-    const midx = (pts[0].x + pts[1].x) / 2,
-          midy = (pts[0].y + pts[1].y) / 2;
-    cam.x -= pxToTileX((midx - pinch.midx) * scaleX, cam) - cam.x;
-    cam.y -= pxToTileY((midy - pinch.midy) * scaleY, cam) - cam.y;
-    pinch.midx = midx; pinch.midy = midy;
-    clampCam();
-  } else if(primaryPointer && e.pointerId===primaryPointer.id){
-    const dx=(e.clientX-primaryPointer.sx)*scaleX;
-    const dy=(e.clientY-primaryPointer.sy)*scaleY;
-    const dtX = pxToTileX(dx, cam) - cam.x;
-    const dtY = pxToTileY(dy, cam) - cam.y;
-    cam.x = primaryPointer.camx - dtX;
-    cam.y = primaryPointer.camy - dtY;
-    clampCam();
-  }
-}
-
-function endPointer(e){
-  if(!activePointers.has(e.pointerId)) return;
-  activePointers.delete(e.pointerId);
-  if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
-  if(activePointers.size<2) pinch=null;
-}
-
-function onWheel(e){
-  const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
-  const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
-  cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
-}
-
-let canvasInputsBound = false;
-function bindCanvasInputs(){
-  if(canvasInputsBound) return;
-  canvas.addEventListener('pointerdown', onPointerDown, {passive:false});
-  canvas.addEventListener('pointermove', onPointerMove, {passive:false});
-  canvas.addEventListener('pointerup', endPointer, {passive:false});
-  canvas.addEventListener('pointercancel', endPointer, {passive:false});
-  canvas.addEventListener('pointerleave', endPointer, {passive:false});
-  canvas.addEventListener('wheel', onWheel);
-  canvasInputsBound = true;
-}
-function unbindCanvasInputs(){
-  if(!canvasInputsBound) return;
-  canvas.removeEventListener('pointerdown', onPointerDown, {passive:false});
-  canvas.removeEventListener('pointermove', onPointerMove, {passive:false});
-  canvas.removeEventListener('pointerup', endPointer, {passive:false});
-  canvas.removeEventListener('pointercancel', endPointer, {passive:false});
-  canvas.removeEventListener('pointerleave', endPointer, {passive:false});
-  canvas.removeEventListener('wheel', onWheel);
-  activePointers.clear();
-  primaryPointer = null;
-  pinch = null;
-  canvasInputsBound = false;
-}
 bindCanvasInputs();
 
 /* ==================== Automation Helpers ==================== */
