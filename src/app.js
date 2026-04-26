@@ -22,6 +22,7 @@ import {
   LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
   SAVE_KEY,
+  SAVE_MIGRATIONS,
   SAVE_VERSION,
   SHADOW_DIRECTION,
   SHADOW_DIRECTION_ANGLE,
@@ -1059,6 +1060,7 @@ function updateAnimals(){
 }
 
 function newWorld(seed=Date.now()|0){
+  if(typeof unbindCanvasInputs === 'function') unbindCanvasInputs();
   const normalizedSeed = seed >>> 0;
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
@@ -1212,9 +1214,10 @@ function newWorld(seed=Date.now()|0){
 
   ensureDebugKitConfigured();
 
-  toast('New pixel map created.');
-  toast('Villagers will choose buildings and resource zones automatically.');
+  Toast.show('New pixel map created.');
+  Toast.show('Villagers will choose buildings and resource zones automatically.');
   centerCamera(campfire.x,campfire.y); markStaticDirty();
+  if(typeof bindCanvasInputs === 'function') bindCanvasInputs();
 }
 function rollAdultRole(){ const r=R(); return r<0.25?'farmer':r<0.5?'worker':r<0.75?'explorer':'sleepy'; }
 function assignAdultTraits(v, role=rollAdultRole()){
@@ -1225,7 +1228,7 @@ function assignAdultTraits(v, role=rollAdultRole()){
   v.farmingSkill=farmingSkill;
   v.constructionSkill=constructionSkill;
 }
-function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null, equippedBow:false, experience:createExperienceLedger() }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
+function newVillager(x,y){ const v={ id:uid(), x,y,path:[], hunger:rnd(0.2,0.5), energy:rnd(0.5,0.9), happy:rnd(0.4,0.8), hydration:0.7, hydrationBuffTicks:0, nextHydrateTick:0, inv:null, state:'idle', thought:'Wandering', _nextPathTick:0, _wanderFailures:new Map(), _forageFailures:new Map(), condition:'normal', starveStage:0, nextStarveWarning:0, sickTimer:0, recoveryTimer:0, ageTicks:0, lifeStage:'adult', pregnancyTimer:0, pregnancyMateId:null, childhoodTimer:0, parents:[], nextPregnancyTick:0, socialTimer:0, nextSocialTick:0, storageIdleTimer:0, nextStorageIdleTick:0, hydrationTimer:0, activeBuildingId:null, equippedBow:false, experience:createExperienceLedger() }; assignAdultTraits(v); ensureVillagerNumber(v); return v; }
 function newChildVillager(x,y,parents){
   const v=newVillager(x,y);
   v.role='child';
@@ -1683,7 +1686,7 @@ function screenToWorld(px, py){
 
 function toTile(v){ return Math.floor(v); }
 
-canvas.addEventListener('pointerdown', (e)=>{
+function onPointerDown(e){
   setDbg(`down ${e.pointerType} mode=${ui.mode}`);
   activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY, type:e.pointerType});
   canvas.setPointerCapture(e.pointerId);
@@ -1700,9 +1703,9 @@ canvas.addEventListener('pointerdown', (e)=>{
     primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
   }
   e.preventDefault();
-},{passive:false});
+}
 
-canvas.addEventListener('pointermove', (e)=>{
+function onPointerMove(e){
   if(!activePointers.has(e.pointerId)) return;
   const p = activePointers.get(e.pointerId);
   p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
@@ -1730,7 +1733,7 @@ canvas.addEventListener('pointermove', (e)=>{
     cam.y = primaryPointer.camy - dtY;
     clampCam();
   }
-},{passive:false});
+}
 
 function endPointer(e){
   activePointers.delete(e.pointerId);
@@ -1738,15 +1741,37 @@ function endPointer(e){
   if(activePointers.size<2) pinch=null;
 }
 
-canvas.addEventListener('pointerup', endPointer, {passive:false});
-canvas.addEventListener('pointercancel', endPointer, {passive:false});
-canvas.addEventListener('pointerleave', endPointer, {passive:false});
-
-canvas.addEventListener('wheel', (e)=>{
+function onWheel(e){
   const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
   const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
-cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
-});
+  cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
+}
+
+let canvasInputsBound = false;
+function bindCanvasInputs(){
+  if(canvasInputsBound) return;
+  canvas.addEventListener('pointerdown', onPointerDown, {passive:false});
+  canvas.addEventListener('pointermove', onPointerMove, {passive:false});
+  canvas.addEventListener('pointerup', endPointer, {passive:false});
+  canvas.addEventListener('pointercancel', endPointer, {passive:false});
+  canvas.addEventListener('pointerleave', endPointer, {passive:false});
+  canvas.addEventListener('wheel', onWheel);
+  canvasInputsBound = true;
+}
+function unbindCanvasInputs(){
+  if(!canvasInputsBound) return;
+  canvas.removeEventListener('pointerdown', onPointerDown, {passive:false});
+  canvas.removeEventListener('pointermove', onPointerMove, {passive:false});
+  canvas.removeEventListener('pointerup', endPointer, {passive:false});
+  canvas.removeEventListener('pointercancel', endPointer, {passive:false});
+  canvas.removeEventListener('pointerleave', endPointer, {passive:false});
+  canvas.removeEventListener('wheel', onWheel);
+  activePointers.clear();
+  primaryPointer = null;
+  pinch = null;
+  canvasInputsBound = false;
+}
+bindCanvasInputs();
 
 window.addEventListener('keydown', (e)=>{
   if((e.key==='l' || e.key==='L') && e.altKey){
@@ -3613,7 +3638,6 @@ function pickWeightedRandom(candidates){
 }
 function selectReachableWanderTarget(v,candidates,pathLimit,cooldown){
   if(!candidates || candidates.length===0) return null;
-  if(!v._wanderFailures) v._wanderFailures=new Map();
   for (const [key, until] of Array.from(v._wanderFailures.entries())) {
     if (until <= tick) v._wanderFailures.delete(key);
   }
@@ -3699,7 +3723,6 @@ function foragingJob(v){
   const maxPathLimit = Number.isFinite(style.adaptiveForageMaxPath) ? style.adaptiveForageMaxPath : 240;
   const pathLimit = Math.max(basePathLimit, Math.round(basePathLimit + famineSeverity * Math.max(0, maxPathLimit - basePathLimit)));
   const sx=v.x|0,sy=v.y|0; let best=null,bd=999;
-  if(!v._forageFailures) v._forageFailures=new Map();
   for (const [key, until] of Array.from(v._forageFailures.entries())) {
     if (until <= tick) v._forageFailures.delete(key);
   }
@@ -4473,7 +4496,15 @@ function seasonTick(){
 
 /* ==================== Save/Load ==================== */
 function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v),xp:normalizeExperienceLedger(v.experience)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0;
+function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; let d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0;
+  for(let v=version; v<SAVE_VERSION; v++){
+    const migrate=SAVE_MIGRATIONS.get(v);
+    if(typeof migrate==='function'){
+      try { d = migrate(d) || d; }
+      catch(err){ console.warn('AIV loadGame: migration from v'+v+' failed', err); return false; }
+    }
+  }
+
   const tileData=normalizeArraySource(d.tiles);
   const zoneData=normalizeArraySource(d.zone);
   const treeData=normalizeArraySource(d.trees);
@@ -4500,7 +4531,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
       console.warn('AIV loadGame: '+name+' layer length '+arr.length+' does not match expected '+expectedLen+' (upscaleFactor='+upscaleFactor+')');
     }
   }
-  newWorld(d.seed);
+  newWorld(Number.isFinite(d.seed) ? d.seed : undefined);
   applyArrayScaled(world.tiles, tileData, upscaleFactor, 0);
   applyArrayScaled(world.zone, zoneData, upscaleFactor, ZONES.NONE);
   applyArrayScaled(world.trees, treeData, upscaleFactor, 0);
@@ -4555,7 +4586,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     const lifeStage = v.stage==='child' ? 'child' : 'adult';
     const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
     const experience = normalizeExperienceLedger(v.xp || v.experience);
-    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true, experience };
+    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, _wanderFailures:new Map(), _forageFailures:new Map(), condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true, experience };
     ensureVillagerNumber(villagerRecord, v.num);
     villagers.push(villagerRecord);
   });
@@ -5804,8 +5835,8 @@ function update(){
     updateAnimals();
     updateNocturnalEntities(ambientNow);
     for(const v of villagers){
+      if(itemTileIndexDirty) rebuildItemTileIndex();
       if(!v.inv){
-        if(itemTileIndexDirty) rebuildItemTileIndex();
         const key=((v.y|0)*GRID_W)+(v.x|0);
         const itemIndex=itemTileIndex.get(key);
         if(itemIndex!==undefined){
@@ -5864,4 +5895,7 @@ if (AIV_SCOPE && typeof AIV_SCOPE === 'object') {
 export { boot as bootGame };
 export { gameState as state };
 export { LIGHTING };
+// Public debug surface: also installed onto window.AIV_APP above for DebugKit.
+// No internal modules import these — kept as an ES export so external tools
+// that prefer module imports over globals can still reach them.
 export { setShadingMode, setShadingParams, makeAltitudeShade, ambientAt, buildHillshadeQ, buildLightmap, sampleLightAt, shadeFillColorLit, applySpriteShadeLit };

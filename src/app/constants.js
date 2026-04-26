@@ -64,6 +64,14 @@ const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
 const SAVE_VERSION = 4;
 const COARSE_SAVE_SIZE = 96;
+
+// Sequential save-format migrations: when loading a save with version `v`,
+// `loadGame` runs SAVE_MIGRATIONS.get(v), then SAVE_MIGRATIONS.get(v+1), …
+// up to but not including SAVE_VERSION. Each function takes the parsed save
+// object and returns a (possibly mutated) save object suitable for the
+// next version. Empty for now — the pattern exists so future schema
+// changes don't silently corrupt saves.
+const SAVE_MIGRATIONS = new Map();
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([
@@ -165,6 +173,7 @@ export {
   LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
   SAVE_KEY,
+  SAVE_MIGRATIONS,
   SAVE_VERSION,
   SHADOW_DIRECTION,
   SHADOW_DIRECTION_ANGLE,

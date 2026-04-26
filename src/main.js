@@ -27,23 +27,16 @@ async function waitForDependencies() {
   if (hasWorldgenDependencies()) {
     return;
   }
-  const POLL_INTERVAL_MS = 10;
-  const MAX_ATTEMPTS = 300;
-  await new Promise((resolve, reject) => {
-    let attempts = 0;
-    const interval = setInterval(() => {
-      attempts++;
-      if (hasWorldgenDependencies()) {
-        clearInterval(interval);
-        resolve();
-        return;
-      }
-      if (attempts >= MAX_ATTEMPTS) {
-        clearInterval(interval);
-        reject(new Error('AI Village terrain dependencies failed to load before timeout.'));
-      }
-    }, POLL_INTERVAL_MS);
-  });
+  // bootstrap.js sets up window.AIV_WORLDGEN_READY before any worldgen
+  // <script defer> evaluates; terrain.js resolves it once it has installed
+  // window.AIV_TERRAIN. Await that instead of polling.
+  const ready = GLOBAL_SCOPE && GLOBAL_SCOPE.AIV_WORLDGEN_READY;
+  if (ready && typeof ready.then === 'function') {
+    await ready;
+  }
+  if (!hasWorldgenDependencies()) {
+    throw new Error('AI Village terrain dependencies failed to load before timeout.');
+  }
 }
 
 (async function bootstrap() {
@@ -57,6 +50,9 @@ async function waitForDependencies() {
       module.bootGame();
     }
   } catch (err) {
+    if (GLOBAL_SCOPE && typeof GLOBAL_SCOPE === 'object') {
+      GLOBAL_SCOPE.__AIV_BOOT_FAILED__ = err || new Error('AI Village failed to start');
+    }
     console.error('AI Village failed to start', err);
     if (GLOBAL_SCOPE && typeof GLOBAL_SCOPE.reportFatal === 'function') {
       try {

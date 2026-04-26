@@ -12,8 +12,8 @@ This repository hosts the static build of the AI Village pixel edition experienc
 A GitHub Actions workflow (`.github/workflows/deploy-pages.yml`) deploys the site automatically whenever changes land on `main`:
 
 1. Check out the repository.
-2. Upload the repository contents (excluding files listed in `.gpagesignore`).
-3. Publish the artifact to GitHub Pages.
+2. Run `npm ci` and `npm run build` to produce the Vite `dist/` bundle.
+3. Upload `dist/` as the GitHub Pages artifact and publish it.
 
 You can also trigger a deployment manually from the *Actions* tab using the **Run workflow** button.
 

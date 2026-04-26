@@ -140,6 +140,9 @@ export const policy = {
     if (fromState && typeof fromState === 'object') {
       this.sliders = fromState;
     } else {
+      if (state && fromState !== undefined) {
+        console.warn('policy.attach: state.population.priorities is not an object; falling back to defaults', fromState);
+      }
       this.sliders = { ...DEFAULT_SLIDERS };
     }
     return this;
