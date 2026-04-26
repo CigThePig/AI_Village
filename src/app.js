@@ -5,9 +5,6 @@ import { score as scoreJob, computeFamineSeverity } from './ai/scoring.js';
 import {
   ANIMAL_BEHAVIORS,
   ANIMAL_TYPES,
-  CAMERA_MAX_Z,
-  CAMERA_MIN_Z,
-  COARSE_SAVE_SIZE,
   CRAFTING_RECIPES,
   DAY_LENGTH,
   DIR4,
@@ -18,15 +15,9 @@ import {
   HUNT_RANGE,
   HUNT_RETRY_COOLDOWN,
   ITEM,
-  LIGHT_VECTOR,
-  LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
-  SAVE_KEY,
-  SAVE_MIGRATIONS,
-  SAVE_VERSION,
   SHADOW_DIRECTION,
   SHADOW_DIRECTION_ANGLE,
-  SHADE_COLOR_CACHE,
   SPEEDS,
   TILE,
   TILES,
@@ -48,6 +39,7 @@ import { MAX_Z, MIN_Z, DPR, H, W, cam, canvas, clampCam, context2d, ctx, resize 
 import { R, clamp, irnd, mulberry32, rnd, setRandomSource, uid } from './app/rng.js';
 import { Tileset, SHADOW_TEXTURE, buildTileset, makeCanvas } from './app/tileset.js';
 import { createPathfinder } from './app/pathfinding.js';
+import { createSaveSystem } from './app/save.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
@@ -4528,127 +4520,38 @@ function seasonTick(){
   }
 }
 
-/* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v),xp:normalizeExperienceLedger(v.experience)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; let d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0;
-  for(let v=version; v<SAVE_VERSION; v++){
-    const migrate=SAVE_MIGRATIONS.get(v);
-    if(typeof migrate==='function'){
-      try { d = migrate(d) || d; }
-      catch(err){ console.warn('AIV loadGame: migration from v'+v+' failed', err); return false; }
-    }
-  }
-
-  const tileData=normalizeArraySource(d.tiles);
-  const zoneData=normalizeArraySource(d.zone);
-  const treeData=normalizeArraySource(d.trees);
-  const rockData=normalizeArraySource(d.rocks);
-  const berryData=normalizeArraySource(d.berries);
-  const growthData=normalizeArraySource(d.growth);
-  const coarseLen=COARSE_SAVE_SIZE*COARSE_SAVE_SIZE;
-  const fullLen=GRID_W*GRID_H;
-  const isCoarseSave=version < SAVE_VERSION && tileData.length===coarseLen;
-  const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1;
-  const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1;
-  const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1;
-  const expectedLen=upscaleFactor>1?coarseLen:fullLen;
-  const layerSources=[
-    ['tiles', tileData],
-    ['zone', zoneData],
-    ['trees', treeData],
-    ['rocks', rockData],
-    ['berries', berryData],
-    ['growth', growthData]
-  ];
-  for(const [name, arr] of layerSources){
-    if(arr.length!==0 && arr.length!==expectedLen){
-      console.warn('AIV loadGame: '+name+' layer length '+arr.length+' does not match expected '+expectedLen+' (upscaleFactor='+upscaleFactor+')');
-    }
-  }
-  newWorld(Number.isFinite(d.seed) ? d.seed : undefined);
-  applyArrayScaled(world.tiles, tileData, upscaleFactor, 0);
-  applyArrayScaled(world.zone, zoneData, upscaleFactor, ZONES.NONE);
-  applyArrayScaled(world.trees, treeData, upscaleFactor, 0);
-  applyArrayScaled(world.rocks, rockData, upscaleFactor, 0);
-  applyArrayScaled(world.berries, berryData, upscaleFactor, 0);
-  applyArrayScaled(world.growth, growthData, upscaleFactor, 0);
-  if(typeof d.season==='number') world.season=d.season;
-  if(typeof d.tSeason==='number') world.tSeason=d.tSeason;
-  refreshWaterRowMaskFromTiles();
-  refreshZoneRowMask();
-  markZoneOverlayDirty();
-  buildings.length=0;
-  const buildingScale=upscaleFactor>1?upscaleFactor:1;
-  (d.buildings||[]).forEach(src=>{
-    if(!src) return;
-    const b={...src};
-    if(buildingScale>1){
-      const fp=getFootprint(b.kind);
-      const maxX=Math.max(0, GRID_W - (fp?.w||1));
-      const maxY=Math.max(0, GRID_H - (fp?.h||1));
-      const scaledX=Math.round((typeof b.x==='number'?b.x:0)*buildingScale);
-      const scaledY=Math.round((typeof b.y==='number'?b.y:0)*buildingScale);
-      b.x=clamp(scaledX,0,maxX);
-      b.y=clamp(scaledY,0,maxY);
-    }
-    ensureBuildingData(b);
-    buildings.push(b);
-  });
-  reindexAllBuildings();
-  markEmittersDirty();
-  const loadedTotals = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageTotals||{});
-  storageTotals.food = loadedTotals.food||0;
-  storageTotals.wood = loadedTotals.wood||0;
-  storageTotals.stone = loadedTotals.stone||0;
-  storageTotals.bow = loadedTotals.bow||0;
-  const loadedReserved = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageReserved||{});
-  storageReserved.food = loadedReserved.food||0;
-  storageReserved.wood = loadedReserved.wood||0;
-  storageReserved.stone = loadedReserved.stone||0;
-  storageReserved.bow = loadedReserved.bow||0;
-  villagers.length=0;
-  (d.villagers||[]).forEach(v=>{
-    if(!v) return;
-    const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0);
-    const cond=v.cond||(stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal');
-    let vx=typeof v.x==='number'?v.x:0;
-    let vy=typeof v.y==='number'?v.y:0;
-    if(buildingScale>1){
-      vx=clamp(Math.round(vx*buildingScale),0,GRID_W-1);
-      vy=clamp(Math.round(vy*buildingScale),0,GRID_H-1);
-    }
-    const farmingSkill = Number.isFinite(v.fs) ? clamp(v.fs, 0, 1) : (v.role==='farmer'?0.7:0.5);
-    const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
-    const lifeStage = v.stage==='child' ? 'child' : 'adult';
-    const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
-    const experience = normalizeExperienceLedger(v.xp || v.experience);
-    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, _wanderFailures:new Map(), _forageFailures:new Map(), condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true, experience };
-    ensureVillagerNumber(villagerRecord, v.num);
-    villagers.push(villagerRecord);
-  });
-  const animalScale=upscaleFactor>1?upscaleFactor:1;
-  animals.length=0;
-  (d.animals||[]).forEach(a=>{
-    if(!a || !ANIMAL_TYPES[a.type]) return;
-    let ax=typeof a.x==='number'?a.x:0;
-    let ay=typeof a.y==='number'?a.y:0;
-    if(animalScale>1){
-      ax=clamp(Math.round(ax*animalScale),0,GRID_W-1);
-      ay=clamp(Math.round(ay*animalScale),0,GRID_H-1);
-    }
-    const state=typeof a.state==='string'?a.state:'idle';
-    const nextActionTick=Number.isFinite(a.na)?a.na:tick+irnd(12,60);
-    const idlePhase=Number.isFinite(a.phase)?a.phase:irnd(0,900);
-    const nextVillageTick=Number.isFinite(a.nv)?a.nv:0;
-    const nextGrazeTick=Number.isFinite(a.ng)?a.ng:0;
-    const fleeTicks=Number.isFinite(a.flee)?a.flee:0;
-    animals.push({ id:a.id||uid(), type:a.type, x:ax, y:ay, dir:a.dir==='left'?'left':'right', state, nextActionTick, idlePhase, nextVillageTick, nextGrazeTick, fleeTicks });
-  });
-  Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
-
 /* ==================== Rendering ==================== */
 let staticAlbedoCanvas=null, staticAlbedoCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
+
+const _saveSystem = createSaveSystem({
+  getWorld: () => world,
+  getBuildings: () => buildings,
+  getVillagers: () => villagers,
+  getAnimals: () => animals,
+  getStorageTotals: () => storageTotals,
+  getStorageReserved: () => storageReserved,
+  getTick: () => tick,
+  starveThresh: STARVE_THRESH,
+  childhoodTicks: CHILDHOOD_TICKS,
+  ensureVillagerNumber,
+  normalizeExperienceLedger,
+  normalizeArraySource,
+  applyArrayScaled,
+  newWorld,
+  getFootprint,
+  ensureBuildingData,
+  reindexAllBuildings,
+  markEmittersDirty,
+  refreshWaterRowMaskFromTiles,
+  refreshZoneRowMask,
+  markZoneOverlayDirty,
+  markStaticDirty,
+  toast: Toast
+});
+const saveGame = _saveSystem.saveGame;
+const loadGame = _saveSystem.loadGame;
+
 function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticAlbedoCtx=context2d(staticAlbedoCanvas); } if(!world) return; const g=staticAlbedoCtx; if(!g) return; ensureRowMasksSize();
   for(let y=0;y<GRID_H;y++){
     let rowHasWater=0;
