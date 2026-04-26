@@ -189,6 +189,17 @@ const villagers = units.villagers;
 const jobs = units.jobs;
 const itemsOnGround = units.itemsOnGround;
 const animals = units.animals;
+const buildingsByKind = new Map();
+function indexBuilding(b){
+  if(!b || !b.kind) return;
+  let arr=buildingsByKind.get(b.kind);
+  if(!arr){ arr=[]; buildingsByKind.set(b.kind, arr); }
+  arr.push(b);
+}
+function reindexAllBuildings(){
+  buildingsByKind.clear();
+  for(const b of buildings) indexBuilding(b);
+}
 const nocturnalEntities = new Array(28).fill(null).map(() => ({
   active: false,
   x: 0,
@@ -1066,6 +1077,7 @@ function newWorld(seed=Date.now()|0){
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
+  buildingsByKind.clear();
   villagerNumberCounter = 1;
   storageTotals.food = 24;
   storageTotals.wood = 12;
@@ -1261,6 +1273,7 @@ function addBuilding(kind,x,y,opts={}){
     pending:{wood:0,stone:0}
   };
   buildings.push(b);
+  indexBuilding(b);
   return b;
 }
 
@@ -3858,7 +3871,7 @@ function tryEquipBow(v){
   v._nextPathTick=tick+12;
   return true;
 }
-function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; for(const b of buildings){ if(b.kind!==kind||b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
+function findNearestBuilding(x,y,kind){ let best=null,bd=Infinity; const list=buildingsByKind.get(kind); if(!list) return null; for(const b of list){ if(b.built<1) continue; const d=distanceToFootprint(x,y,b); if(d<bd){bd=d; best=b;} } return best; }
 function scoreExistingJobForVillager(j, v, blackboard){
   if(!j) return -Infinity;
   let supplyStatus=null;
@@ -4588,6 +4601,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     ensureBuildingData(b);
     buildings.push(b);
   });
+  reindexAllBuildings();
   const loadedTotals = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageTotals||{});
   storageTotals.food = loadedTotals.food||0;
   storageTotals.wood = loadedTotals.wood||0;
