@@ -28,7 +28,7 @@ import {
   tileToPxX,
   tileToPxY
 } from './app/constants.js';
-import { AIV_SCOPE, DAYTIME_PORTION, NIGHTTIME_PORTION, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
+import { AIV_SCOPE, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
 import { LIGHTING, clamp01, makeAltitudeShade, registerShadingHandlers, setShadingMode, setShadingParams } from './app/lighting.js';
 import { Storage, reportFatal, setUpdateCallback } from './app/storage.js';
 import { H, W, cam, clampCam, context2d, ctx } from './app/canvas.js';
@@ -53,6 +53,19 @@ import {
   tileOccupiedByBuildingIn,
   validateFootprintPlacementIn
 } from './app/world.js';
+import {
+  DAWN_AMBIENT_THRESHOLD,
+  addJobExperience,
+  applySkillGain,
+  createExperienceLedger,
+  createTimeOfDay,
+  effectiveSkillFromExperience,
+  isDawnAmbient,
+  isNightAmbient,
+  moodMotivation,
+  moodThought,
+  normalizeExperienceLedger
+} from './app/simulation.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
@@ -583,52 +596,13 @@ if (typeof window !== 'undefined') {
   };
 }
 
-function computeDayNightAngle(currentDayTime) {
-  // Shift the phase so dayTime 0 stays centered on midday for legacy saves.
-  const phase = ((currentDayTime / DAY_LEN) + (DAYTIME_PORTION / 2)) % 1;
-  const wrappedPhase = phase < 0 ? phase + 1 : phase;
-
-  if (wrappedPhase < DAYTIME_PORTION) {
-    const dayPhase = wrappedPhase / DAYTIME_PORTION;
-    return dayPhase * Math.PI - Math.PI / 2; // -π/2 .. π/2 (sunrise -> sunset)
-  }
-
-  const nightPhase = (wrappedPhase - DAYTIME_PORTION) / NIGHTTIME_PORTION;
-  return Math.PI / 2 + nightPhase * Math.PI; // π/2 .. 3π/2 (sunset -> sunrise)
-}
-
-function ambientAt(currentDayTime) {
-  const theta = computeDayNightAngle(currentDayTime);
-  const cosv = Math.max(0, Math.cos(theta));
-  const ramp = cosv * cosv;
-  const A = LIGHTING.nightFloor + (1 - LIGHTING.nightFloor) * ramp;
-
-  // Apply a simple moon-phase that oscillates over several in-game days.
-  // The multiplier only influences darker hours so daytime colors remain unchanged.
-  const moonCycle = DAY_LEN * 6;
-  const moonTheta = ((tick % moonCycle) / moonCycle) * 2 * Math.PI;
-  const moonPhase = (1 + Math.sin(moonTheta - Math.PI / 2)) * 0.5; // 0..1
-  const moonlight = 0.9 + 0.3 * moonPhase; // 0.9 (new moon) .. 1.2 (full moon)
-  const nightBlend = clamp01(1 - ramp);
-  const ambientWithMoon = A * (1 + nightBlend * (moonlight - 1));
-
-  return Math.min(1.0, ambientWithMoon * LIGHTING.exposure);
-}
-
-const NIGHT_AMBIENT_THRESHOLD = 0.6;
-const DAWN_AMBIENT_THRESHOLD = 0.68;
-
-function isNightAmbient(ambient) {
-  return ambient <= NIGHT_AMBIENT_THRESHOLD;
-}
-
-function isDawnAmbient(ambient) {
-  return ambient >= DAWN_AMBIENT_THRESHOLD;
-}
-
-function isNightTime() {
-  return isNightAmbient(ambientAt(dayTime));
-}
+const _timeOfDay = createTimeOfDay({
+  getTick: () => tick,
+  getDayTime: () => dayTime,
+  dayLen: DAY_LEN
+});
+const ambientAt = _timeOfDay.ambientAt;
+const isNightTime = _timeOfDay.isNightTime;
 
 function normalizeShadingMode(mode) {
   if (mode === 'off' || mode === 'altitude') return mode;
@@ -2320,94 +2294,6 @@ function addJob(job){
   job.id=uid(); job.assigned=0; jobs.push(job); return job;
 }
 
-const JOB_EXPERIENCE_MAP = Object.freeze({
-  sow: 'farming',
-  harvest: 'farming',
-  forage: 'farming',
-  chop: 'construction',
-  mine: 'construction',
-  build: 'construction',
-  haul: 'hauling',
-  hunt: 'hunting',
-  craft_bow: 'crafting',
-  socialize: 'social'
-});
-
-const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
-const XP_SKILL_STEP = 0.05;
-
-function createExperienceLedger(){
-  return {
-    farming: 0,
-    construction: 0,
-    crafting: 0,
-    hunting: 0,
-    hauling: 0,
-    social: 0
-  };
-}
-
-function normalizeExperienceLedger(raw){
-  const ledger = createExperienceLedger();
-  if(!raw || typeof raw!=='object') return ledger;
-  for(const key of Object.keys(ledger)){
-    const value = raw[key];
-    if(Number.isFinite(value) && value>0){
-      ledger[key] = value;
-    }
-  }
-  return ledger;
-}
-
-function ensureExperienceLedger(v){
-  if(!v) return createExperienceLedger();
-  if(!v.experience || typeof v.experience !== 'object'){
-    v.experience = createExperienceLedger();
-  } else {
-    v.experience = normalizeExperienceLedger(v.experience);
-  }
-  return v.experience;
-}
-
-function addJobExperience(v, jobType, amount=1){
-  const ledger = ensureExperienceLedger(v);
-  const key = JOB_EXPERIENCE_MAP[jobType];
-  if(!key) return 0;
-  const current = Number.isFinite(ledger[key]) ? ledger[key] : 0;
-  const next = Math.max(0, current + Math.max(0, amount));
-  ledger[key] = next;
-  return next;
-}
-
-function experienceLevelFromXp(xp){
-  let level = 0;
-  for(let i=0;i<EXPERIENCE_THRESHOLDS.length;i++){
-    if(xp >= EXPERIENCE_THRESHOLDS[i]){
-      level = i;
-    }
-  }
-  return level;
-}
-
-function effectiveSkillFromExperience(v, skillKey, fallback=0.5, jobType=null){
-  const base = clamp(Number.isFinite(v?.[skillKey]) ? v[skillKey] : fallback, 0, 1);
-  if(!jobType) return base;
-  const ledger = ensureExperienceLedger(v);
-  const key = JOB_EXPERIENCE_MAP[jobType];
-  const xp = key ? Number.isFinite(ledger[key]) ? ledger[key] : 0 : 0;
-  const level = experienceLevelFromXp(xp);
-  const bonus = clamp(level * XP_SKILL_STEP, 0, 0.25);
-  return clamp(base + bonus, 0, 1);
-}
-function moodMotivation(v){ return clamp((v.happy-0.5)*2,-1,1); }
-function moodPrefix(v){
-  if(v.happy>=0.8) return '😊 ';
-  if(v.happy>=0.6) return '🙂 ';
-  if(v.happy<=0.2) return '☹️ ';
-  if(v.happy<=0.4) return '😟 ';
-  return '';
-}
-function moodThought(v, base){ const prefix=moodPrefix(v); return prefix?`${prefix}${base}`:base; }
 function finishJob(v, remove=false){
   const job = v.targetJob;
   if(job){
@@ -2424,23 +2310,6 @@ function finishJob(v, remove=false){
   v.targetJob=null;
 }
 
-function applySkillGain(v, key, amount=0.02, softCap=0.9, hardCap=1){
-  const current = clamp(Number.isFinite(v[key]) ? v[key] : 0, 0, hardCap);
-  let delta = amount;
-  if (current >= softCap) {
-    const span = Math.max(0.0001, hardCap - softCap);
-    const progress = clamp((current - softCap) / span, 0, 1);
-    delta *= Math.max(0.15, 1 - progress);
-  }
-  const next = clamp(current + delta, 0, hardCap);
-  if (next > current) {
-    v[key] = next;
-    v.happy = clamp(v.happy + Math.min(0.01, (next - current) * 1.5), 0, 1);
-  } else {
-    v[key] = current;
-  }
-  return v[key];
-}
 function generateJobs(){
   const creationCfg = getJobCreationConfig();
   const bb = ensureBlackboardSnapshot();
