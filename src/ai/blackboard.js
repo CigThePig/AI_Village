@@ -7,7 +7,7 @@ const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
   coldSeasonTightening: 0.05
 });
 
-const FARM_JOB_TYPES = new Set(['sow', 'harvest']);
+const FARM_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 const BUILD_JOB_TYPES = new Set(['build']);
 const DEFAULT_FATIGUE_THRESHOLD = 0.32;
 

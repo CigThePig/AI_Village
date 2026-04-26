@@ -1,8 +1,8 @@
 (function () {
   const DEBUG = (() => {
-    const qsDebug = new URLSearchParams(location.search).get('debug') == '1';
+    const qsDebug = new URLSearchParams(location.search).get('debug') === '1';
     try {
-      return qsDebug || localStorage.getItem('debug') == 'true';
+      return qsDebug || localStorage.getItem('debug') === 'true';
     } catch (err) {
       return qsDebug;
     }

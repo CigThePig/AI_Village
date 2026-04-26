@@ -145,7 +145,7 @@ export const policy = {
     return this;
   },
   caps: {
-    buildWaiting(policyRef = null) {
+    buildWaiting(policyRef = null, _job = null, _villager = null, _blackboard = null) {
       const source = (policyRef || policy).sliders;
       const buildValue = typeof source?.build === 'number' ? source.build : DEFAULT_SLIDERS.build;
       return 0.5 + buildValue * 0.35;
