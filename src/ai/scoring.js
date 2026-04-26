@@ -18,9 +18,7 @@ const JOB_EXPERIENCE_MAP = Object.freeze({
 const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
 
 function clamp(value, min, max) {
-  if (!Number.isFinite(value)) {
-    return value > max ? max : min;
-  }
+  if (!Number.isFinite(value)) return min;
   if (value < min) return min;
   if (value > max) return max;
   return value;

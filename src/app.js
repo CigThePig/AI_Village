@@ -4473,13 +4473,40 @@ function seasonTick(){
 
 /* ==================== Save/Load ==================== */
 function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v),xp:normalizeExperienceLedger(v.experience)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0; const tileData=normalizeArraySource(d.tiles); const isCoarseSave=version < SAVE_VERSION && tileData.length===COARSE_SAVE_SIZE*COARSE_SAVE_SIZE; const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1; const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1; const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1; newWorld(d.seed);
-  applyArrayScaled(world.tiles, d.tiles, upscaleFactor, 0);
-  applyArrayScaled(world.zone, d.zone, upscaleFactor, ZONES.NONE);
-  applyArrayScaled(world.trees, d.trees, upscaleFactor, 0);
-  applyArrayScaled(world.rocks, d.rocks, upscaleFactor, 0);
-  applyArrayScaled(world.berries, d.berries, upscaleFactor, 0);
-  applyArrayScaled(world.growth, d.growth, upscaleFactor, 0);
+function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; const d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0;
+  const tileData=normalizeArraySource(d.tiles);
+  const zoneData=normalizeArraySource(d.zone);
+  const treeData=normalizeArraySource(d.trees);
+  const rockData=normalizeArraySource(d.rocks);
+  const berryData=normalizeArraySource(d.berries);
+  const growthData=normalizeArraySource(d.growth);
+  const coarseLen=COARSE_SAVE_SIZE*COARSE_SAVE_SIZE;
+  const fullLen=GRID_W*GRID_H;
+  const isCoarseSave=version < SAVE_VERSION && tileData.length===coarseLen;
+  const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1;
+  const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1;
+  const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1;
+  const expectedLen=upscaleFactor>1?coarseLen:fullLen;
+  const layerSources=[
+    ['tiles', tileData],
+    ['zone', zoneData],
+    ['trees', treeData],
+    ['rocks', rockData],
+    ['berries', berryData],
+    ['growth', growthData]
+  ];
+  for(const [name, arr] of layerSources){
+    if(arr.length!==0 && arr.length!==expectedLen){
+      console.warn('AIV loadGame: '+name+' layer length '+arr.length+' does not match expected '+expectedLen+' (upscaleFactor='+upscaleFactor+')');
+    }
+  }
+  newWorld(d.seed);
+  applyArrayScaled(world.tiles, tileData, upscaleFactor, 0);
+  applyArrayScaled(world.zone, zoneData, upscaleFactor, ZONES.NONE);
+  applyArrayScaled(world.trees, treeData, upscaleFactor, 0);
+  applyArrayScaled(world.rocks, rockData, upscaleFactor, 0);
+  applyArrayScaled(world.berries, berryData, upscaleFactor, 0);
+  applyArrayScaled(world.growth, growthData, upscaleFactor, 0);
   if(typeof d.season==='number') world.season=d.season;
   if(typeof d.tSeason==='number') world.tSeason=d.tSeason;
   refreshWaterRowMaskFromTiles();

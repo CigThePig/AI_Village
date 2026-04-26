@@ -13,8 +13,7 @@ console.log('AIV: HTML parsed v3.1');
     return;
   }
   const sources = [
-    { url: 'debugkit.js', label: 'debugkit.js' },
-    { url: 'https://cdn.jsdelivr.net/gh/CigThePig/AI_Village@main/public/debugkit.js', label: 'debugkit.js?cdn' }
+    { url: 'debugkit.js', label: 'debugkit.js' }
   ];
   const head = document.head || document.getElementsByTagName('head')[0] || document.body;
 
