@@ -200,6 +200,28 @@ function reindexAllBuildings(){
   buildingsByKind.clear();
   for(const b of buildings) indexBuilding(b);
 }
+let emittersDirty = true;
+function markEmittersDirty(){ emittersDirty = true; }
+const activeZoneJobs = { sow: new Set(), chop: new Set(), mine: new Set() };
+function clearActiveZoneJobs(){
+  activeZoneJobs.sow.clear();
+  activeZoneJobs.chop.clear();
+  activeZoneJobs.mine.clear();
+}
+function noteJobAssignmentChanged(j){
+  if(!j) return;
+  const set = activeZoneJobs[j.type];
+  if(!set) return;
+  const key = j.y * GRID_W + j.x;
+  if((j.assigned||0) > 0) set.add(key);
+  else set.delete(key);
+}
+function noteJobRemoved(j){
+  if(!j) return;
+  const set = activeZoneJobs[j.type];
+  if(!set) return;
+  set.delete(j.y * GRID_W + j.x);
+}
 const nocturnalEntities = new Array(28).fill(null).map(() => ({
   active: false,
   x: 0,
@@ -1078,6 +1100,8 @@ function newWorld(seed=Date.now()|0){
   rng.generator = mulberry32(normalizedSeed);
   jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
   buildingsByKind.clear();
+  clearActiveZoneJobs();
+  markEmittersDirty();
   villagerNumberCounter = 1;
   storageTotals.food = 24;
   storageTotals.wood = 12;
@@ -1274,6 +1298,7 @@ function addBuilding(kind,x,y,opts={}){
   };
   buildings.push(b);
   indexBuilding(b);
+  if(b.kind==='campfire' && b.built>=1) markEmittersDirty();
   return b;
 }
 
@@ -2543,6 +2568,7 @@ function cancelHaulJobsForBuilding(b){
           villager.state='idle';
         }
       }
+      noteJobRemoved(job);
       jobs.splice(i,1);
     }
   }
@@ -2857,9 +2883,13 @@ function finishJob(v, remove=false){
   const job = v.targetJob;
   if(job){
     job.assigned = Math.max(0, (job.assigned||0)-1);
+    noteJobAssignmentChanged(job);
     if(remove){
       const ji = jobs.indexOf(job);
-      if(ji !== -1) jobs.splice(ji,1);
+      if(ji !== -1){
+        noteJobRemoved(job);
+        jobs.splice(ji,1);
+      }
     }
   }
   v.targetJob=null;
@@ -3023,7 +3053,10 @@ function generateJobs(){
     if(!status.hasAnySupply){
       if(job){
         const ji=jobs.indexOf(job);
-        if(ji!==-1) jobs.splice(ji,1);
+        if(ji!==-1){
+          noteJobRemoved(job);
+          jobs.splice(ji,1);
+        }
       }
       continue;
     }
@@ -3120,7 +3153,7 @@ function villagerTick(v){
   const nightNow = isNightAmbient(ambientNow);
   const dawnNow = isDawnAmbient(ambientNow);
   const style = policy?.style?.jobScoring || {};
-  const blackboard = ensureBlackboardSnapshot();
+  const blackboard = gameState.bb;
   const resting=v.state==='resting';
   const hydrationDecay=HYDRATION_DECAY*(resting?0.55:1);
   v.hydration=clamp(v.hydration-hydrationDecay,0,1);
@@ -3404,6 +3437,7 @@ function villagerTick(v){
       v.targetJob=j;
       v.thought=j.type==='haul'?moodThought(v,'Hauling'):moodThought(v,j.type.toUpperCase());
       j.assigned++;
+      noteJobAssignmentChanged(j);
       v._nextPathTick=tick+12;
       return;
     }
@@ -3910,7 +3944,7 @@ function scoreExistingJobForVillager(j, v, blackboard){
 function maybeInterruptJob(v, { blackboard=null, margin=0 } = {}){
   const currentJob = v.targetJob;
   if(!currentJob) return false;
-  const bb = blackboard || ensureBlackboardSnapshot();
+  const bb = blackboard || gameState.bb;
   const famineEmergency = bb?.famine === true && currentJob.type!=='harvest' && currentJob.type!=='sow' && currentJob.type!=='forage';
   const jobStyle = policy?.style?.jobScoring || {};
   const reprioritizeMargin = Number.isFinite(margin) ? margin : (Number.isFinite(jobStyle.reprioritizeMargin) ? jobStyle.reprioritizeMargin : 0);
@@ -3934,7 +3968,7 @@ function maybeInterruptJob(v, { blackboard=null, margin=0 } = {}){
 }
 // Finds an open harvest job when food is tight and a villager is free.
 function findPanicHarvestJob(v){
-  const bb = ensureBlackboardSnapshot();
+  const bb = gameState.bb;
   let best=null, bestScore=-Infinity;
   for(const j of jobs){
     if(!j || j.type!=='harvest') continue;
@@ -3951,7 +3985,7 @@ function findPanicHarvestJob(v){
 function pickJobFor(v){
   if(v.lifeStage==='child') return null;
   let best=null,bs=-Infinity;
-  const blackboard = ensureBlackboardSnapshot();
+  const blackboard = gameState.bb;
   const minScore = typeof policy?.style?.jobScoring?.minPickScore === 'number'
     ? policy.style.jobScoring.minPickScore
     : 0;
@@ -4226,6 +4260,7 @@ else if(v.state==='build'){
         spent.wood=def.wood||0;
         spent.stone=def.stone||0;
         b.progress=cost;
+        if(b.kind==='campfire') markEmittersDirty();
         cancelHaulJobsForBuilding(b);
         markStaticDirty();
         v.thought=moodThought(v,'Built');
@@ -4602,6 +4637,7 @@ function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false
     buildings.push(b);
   });
   reindexAllBuildings();
+  markEmittersDirty();
   const loadedTotals = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageTotals||{});
   storageTotals.food = loadedTotals.food||0;
   storageTotals.wood = loadedTotals.wood||0;
@@ -5224,17 +5260,31 @@ function render(){
   villagerLabels.length = 0;
 
   if (!Array.isArray(world.emitters)) world.emitters = [];
-  world.emitters.length = 0;
-  if (shadingMode !== 'off'){
-    for (const b of buildings){
-      if(b && b.kind==='campfire' && (b.built||0) >= 1){
-        const fp=getFootprint(b.kind);
-        const emitterX=b.x + (fp?.w||1)*0.5;
-        const emitterY=b.y + (fp?.h||1)*0.5;
-        const emitterIntensity = nightActive ? 0.55 : 0.4;
-        world.emitters.push({ x:emitterX, y:emitterY, radius:7.5, intensity:emitterIntensity, falloff:2.0, flicker:true });
+  if (emittersDirty
+      || world._emittersShadingMode !== shadingMode
+      || world._emittersNightActive !== nightActive) {
+    world.emitters.length = 0;
+    if (shadingMode !== 'off') {
+      const campfires = buildingsByKind.get('campfire');
+      if (campfires){
+        const intensity = nightActive ? 0.55 : 0.4;
+        for (const b of campfires){
+          if((b.built||0) < 1) continue;
+          const fp = getFootprint(b.kind);
+          world.emitters.push({
+            x: b.x + (fp?.w||1)*0.5,
+            y: b.y + (fp?.h||1)*0.5,
+            radius: 7.5,
+            intensity,
+            falloff: 2.0,
+            flicker: true
+          });
+        }
       }
     }
+    world._emittersShadingMode = shadingMode;
+    world._emittersNightActive = nightActive;
+    emittersDirty = false;
   }
 
   const useMultiply = shadingMode !== 'off' && LIGHTING.useMultiplyComposite;
@@ -5272,14 +5322,6 @@ function render(){
   if(frames.length){
     const frame = Math.floor((tick/10)%frames.length);
     drawWaterOverlay(frames, frame, vis);
-  }
-
-  const activeZoneJobs={ sow:new Set(), chop:new Set(), mine:new Set() };
-  for(const job of jobs){
-    const type=job.type;
-    if((job.assigned||0)>0 && activeZoneJobs[type]){
-      activeZoneJobs[type].add(job.y*GRID_W + job.x);
-    }
   }
 
   drawZoneOverlay(activeZoneJobs, cam, baseDx, baseDy);
