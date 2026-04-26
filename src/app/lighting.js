@@ -1,4 +1,4 @@
-import { SHADING_DEFAULTS, AIV_SCOPE } from './environment.js';
+import { SHADING_DEFAULTS } from './environment.js';
 
 const LIGHTING = {
   mode: 'hillshade',
