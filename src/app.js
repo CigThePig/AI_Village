@@ -183,7 +183,7 @@ gameState.policy = policy;
 if (!gameState.bb) {
   gameState.bb = computeBlackboard(gameState, policy);
 }
-const { units, time, rng, stocks, queue, population } = gameState;
+const { units, time, rng, stocks, queue } = gameState;
 const buildings = units.buildings;
 const villagers = units.villagers;
 const jobs = units.jobs;
@@ -1825,6 +1825,7 @@ function onPointerMove(e){
 }
 
 function endPointer(e){
+  if(!activePointers.has(e.pointerId)) return;
   activePointers.delete(e.pointerId);
   if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
   if(activePointers.size<2) pinch=null;
