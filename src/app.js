@@ -5,9 +5,6 @@ import { score as scoreJob, computeFamineSeverity } from './ai/scoring.js';
 import {
   ANIMAL_BEHAVIORS,
   ANIMAL_TYPES,
-  CAMERA_MAX_Z,
-  CAMERA_MIN_Z,
-  COARSE_SAVE_SIZE,
   CRAFTING_RECIPES,
   DAY_LENGTH,
   DIR4,
@@ -18,15 +15,9 @@ import {
   HUNT_RANGE,
   HUNT_RETRY_COOLDOWN,
   ITEM,
-  LIGHT_VECTOR,
-  LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
-  SAVE_KEY,
-  SAVE_MIGRATIONS,
-  SAVE_VERSION,
   SHADOW_DIRECTION,
   SHADOW_DIRECTION_ANGLE,
-  SHADE_COLOR_CACHE,
   SPEEDS,
   TILE,
   TILES,
@@ -34,31 +25,53 @@ import {
   WALKABLE,
   ZONES,
   baseIdx,
-  baseVisibleTileBounds,
-  coords,
-  pxToTileX,
-  pxToTileY,
   tileToPxX,
   tileToPxY
 } from './app/constants.js';
-import { AIV_SCOPE, DAYTIME_PORTION, NIGHTTIME_PORTION, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
+import { AIV_SCOPE, SHADING_DEFAULTS, WORLDGEN_DEFAULTS, generateTerrain, makeHillshade } from './app/environment.js';
 import { LIGHTING, clamp01, makeAltitudeShade, registerShadingHandlers, setShadingMode, setShadingParams } from './app/lighting.js';
-import { Storage, describeError, reportFatal, setUpdateCallback, showFatalOverlay } from './app/storage.js';
-import { MAX_Z, MIN_Z, DPR, H, W, cam, canvas, clampCam, context2d, ctx, resize } from './app/canvas.js';
+import { Storage, reportFatal, setUpdateCallback } from './app/storage.js';
+import { H, W, cam, clampCam, context2d, ctx } from './app/canvas.js';
 import { R, clamp, irnd, mulberry32, rnd, setRandomSource, uid } from './app/rng.js';
 import { Tileset, SHADOW_TEXTURE, buildTileset, makeCanvas } from './app/tileset.js';
+import { createPathfinder } from './app/pathfinding.js';
+import { createSaveSystem } from './app/save.js';
+import { createUISystem } from './app/ui.js';
+import { createRenderSystem } from './app/render.js';
+import {
+  BUILDINGS,
+  CAMPFIRE_EFFECT_RADIUS,
+  agricultureBonusesAt as _agricultureBonusesAt,
+  buildingAtIn,
+  buildingCenter,
+  buildingEntryTiles,
+  buildingResourceNeed,
+  buildingSupplyStatus,
+  distanceToFootprint,
+  ensureBuildingData,
+  getFootprint,
+  tileOccupiedByBuildingIn,
+  validateFootprintPlacementIn
+} from './app/world.js';
+import {
+  DAWN_AMBIENT_THRESHOLD,
+  addJobExperience,
+  applySkillGain,
+  createExperienceLedger,
+  createTimeOfDay,
+  effectiveSkillFromExperience,
+  isDawnAmbient,
+  isNightAmbient,
+  moodMotivation,
+  moodThought,
+  normalizeExperienceLedger
+} from './app/simulation.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
 
 let waterRowMask = new Uint8Array(GRID_H);
 let zoneRowMask = new Uint8Array(GRID_H);
-const lightmapCacheState = {
-  ambient: null,
-  mode: null,
-  scale: null,
-  emitterSignature: null
-};
 const zoneOverlayCache = {
   canvas: null,
   ctx: null,
@@ -84,13 +97,6 @@ function ensureRowMasksSize(){
 
 function markZoneOverlayDirty(){
   zoneOverlayCache.dirty = true;
-}
-
-function resetLightmapCache(){
-  lightmapCacheState.ambient = null;
-  lightmapCacheState.mode = null;
-  lightmapCacheState.scale = null;
-  lightmapCacheState.emitterSignature = null;
 }
 
 function refreshWaterRowMaskFromTiles(){
@@ -590,52 +596,13 @@ if (typeof window !== 'undefined') {
   };
 }
 
-function computeDayNightAngle(currentDayTime) {
-  // Shift the phase so dayTime 0 stays centered on midday for legacy saves.
-  const phase = ((currentDayTime / DAY_LEN) + (DAYTIME_PORTION / 2)) % 1;
-  const wrappedPhase = phase < 0 ? phase + 1 : phase;
-
-  if (wrappedPhase < DAYTIME_PORTION) {
-    const dayPhase = wrappedPhase / DAYTIME_PORTION;
-    return dayPhase * Math.PI - Math.PI / 2; // -π/2 .. π/2 (sunrise -> sunset)
-  }
-
-  const nightPhase = (wrappedPhase - DAYTIME_PORTION) / NIGHTTIME_PORTION;
-  return Math.PI / 2 + nightPhase * Math.PI; // π/2 .. 3π/2 (sunset -> sunrise)
-}
-
-function ambientAt(currentDayTime) {
-  const theta = computeDayNightAngle(currentDayTime);
-  const cosv = Math.max(0, Math.cos(theta));
-  const ramp = cosv * cosv;
-  const A = LIGHTING.nightFloor + (1 - LIGHTING.nightFloor) * ramp;
-
-  // Apply a simple moon-phase that oscillates over several in-game days.
-  // The multiplier only influences darker hours so daytime colors remain unchanged.
-  const moonCycle = DAY_LEN * 6;
-  const moonTheta = ((tick % moonCycle) / moonCycle) * 2 * Math.PI;
-  const moonPhase = (1 + Math.sin(moonTheta - Math.PI / 2)) * 0.5; // 0..1
-  const moonlight = 0.9 + 0.3 * moonPhase; // 0.9 (new moon) .. 1.2 (full moon)
-  const nightBlend = clamp01(1 - ramp);
-  const ambientWithMoon = A * (1 + nightBlend * (moonlight - 1));
-
-  return Math.min(1.0, ambientWithMoon * LIGHTING.exposure);
-}
-
-const NIGHT_AMBIENT_THRESHOLD = 0.6;
-const DAWN_AMBIENT_THRESHOLD = 0.68;
-
-function isNightAmbient(ambient) {
-  return ambient <= NIGHT_AMBIENT_THRESHOLD;
-}
-
-function isDawnAmbient(ambient) {
-  return ambient >= DAWN_AMBIENT_THRESHOLD;
-}
-
-function isNightTime() {
-  return isNightAmbient(ambientAt(dayTime));
-}
+const _timeOfDay = createTimeOfDay({
+  getTick: () => tick,
+  getDayTime: () => dayTime,
+  dayLen: DAY_LEN
+});
+const ambientAt = _timeOfDay.ambientAt;
+const isNightTime = _timeOfDay.isNightTime;
 
 function normalizeShadingMode(mode) {
   if (mode === 'off' || mode === 'altitude') return mode;
@@ -687,58 +654,6 @@ function applyShadingParams({ ambient, intensity, slopeScale } = {}) {
 }
 
 registerShadingHandlers({ setMode: applyShadingMode, setParams: applyShadingParams });
-const BUILDINGS = {
-  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects:{ radius:4, moodBonus:0.0011 }, tooltip:'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
-  storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
-  hut:      { label: 'Hut',      cost:10, wood:10, stone: 0, effects:{ radius:3, moodBonus:0.0008 }, tooltip:'Shelter that gently lifts moods nearby.' },
-  hunterLodge: {
-    label: 'Hunter Lodge',
-    cost: 12,
-    wood: 10,
-    stone: 2,
-    effects: {
-      huntingRadius: 6,
-      gameYieldBonus: 0.25,
-      hideYieldBonus: 0.2
-    },
-    tooltip: 'Organizes hunts; improves meat and hide yields from wildlife within 6 tiles.'
-  },
-  farmplot: {
-    label: 'Farm Plot',
-    cost: 4,
-    wood: 4,
-    stone: 0,
-    effects: {
-      radius: 3,
-      growthBonus: 0.85,
-      harvestBonus: 0.65
-    },
-    tooltip: 'Boosts crop growth and yields within 3 tiles.'
-  },
-  well: {
-    label: 'Well',
-    cost: 6,
-    wood: 0,
-    stone: 6,
-    effects: {
-      hydrationRadius: 4,
-      hydrationGrowthBonus: 0.45,
-      moodBonus: 0.0007,
-    hydrationBuff: 0.25
-  },
-  tooltip: 'Villagers drink here to stay hydrated; hydrates farms in 4 tiles and keeps nearby villagers cheerful.'
-  }
-};
-const CAMPFIRE_EFFECT_RADIUS = (BUILDINGS?.campfire?.effects?.radius | 0) || 2;
-
-const FOOTPRINT = {
-  campfire: { w:2, h:2 },
-  storage:  { w:2, h:2 },
-  hut:      { w:2, h:2 },
-  hunterLodge: { w:2, h:2 },
-  farmplot: { w:2, h:2 },
-  well:     { w:2, h:2 }
-};
 
 function desiredAnimalsForType(type){
   const def = ANIMAL_TYPES[type];
@@ -1302,108 +1217,16 @@ function addBuilding(kind,x,y,opts={}){
   return b;
 }
 
-function getFootprint(kind){
-  return FOOTPRINT[kind] || { w:2, h:2 };
-}
-
-function buildingCenter(b){
-  const fp = getFootprint(b.kind);
-  return {
-    x: b.x + (fp.w - 1) / 2,
-    y: b.y + (fp.h - 1) / 2
-  };
-}
-
-function forEachFootprintTile(b, fn){
-  const fp = getFootprint(b.kind);
-  for(let yy=0; yy<fp.h; yy++){
-    for(let xx=0; xx<fp.w; xx++){
-      fn(b.x + xx, b.y + yy);
-    }
-  }
-}
-
 function tileOccupiedByBuilding(x, y, ignoreId=null){
-  for(const b of buildings){
-    if(ignoreId && b.id===ignoreId) continue;
-    const fp = getFootprint(b.kind);
-    if(x>=b.x && x<b.x+fp.w && y>=b.y && y<b.y+fp.h){
-      return true;
-    }
-  }
-  return false;
+  return tileOccupiedByBuildingIn(buildings, x, y, ignoreId);
 }
 
 function buildingAt(x, y){
-  for(const b of buildings){
-    const fp=getFootprint(b.kind);
-    if(x>=b.x && x<b.x+fp.w && y>=b.y && y<b.y+fp.h){
-      return b;
-    }
-  }
-  return null;
+  return buildingAtIn(buildings, x, y);
 }
 
 function validateFootprintPlacement(kind, tx, ty, opts={}){
-  const normalizedOpts = (opts && typeof opts === 'object') ? opts : { ignoreId: opts };
-  const { ignoreId=null, allowObstacles=false } = normalizedOpts;
-  const fp = getFootprint(kind);
-  if(tx<0 || ty<0 || tx+fp.w>GRID_W || ty+fp.h>GRID_H) return 'bounds';
-  for(let yy=0; yy<fp.h; yy++){
-    for(let xx=0; xx<fp.w; xx++){
-      const gx = tx + xx;
-      const gy = ty + yy;
-      const i = gy*GRID_W + gx;
-      const tile=world.tiles[i];
-      if(tile===TILES.WATER) return 'water';
-      if(tile===TILES.ROCK) return 'rock';
-      if(!allowObstacles){
-        if(world.trees?.[i]>0) return 'blocked';
-        if(world.rocks?.[i]>0) return 'blocked';
-      }
-    }
-  }
-  for(let yy=0; yy<fp.h; yy++){
-    for(let xx=0; xx<fp.w; xx++){
-      const gx = tx + xx;
-      const gy = ty + yy;
-      if(tileOccupiedByBuilding(gx, gy, ignoreId)) return 'occupied';
-    }
-  }
-  return null;
-}
-
-function distanceToFootprint(x, y, b){
-  const fp = getFootprint(b.kind);
-  const minX = b.x;
-  const maxX = b.x + fp.w - 1;
-  const minY = b.y;
-  const maxY = b.y + fp.h - 1;
-  let dx = 0;
-  if(x < minX) dx = minX - x;
-  else if(x > maxX) dx = x - maxX;
-  let dy = 0;
-  if(y < minY) dy = minY - y;
-  else if(y > maxY) dy = y - maxY;
-  return dx + dy;
-}
-
-function buildingEntryTiles(b){
-  const fp = getFootprint(b.kind);
-  const tiles=[];
-  const x0 = b.x;
-  const y0 = b.y;
-  const x1 = b.x + fp.w - 1;
-  const y1 = b.y + fp.h - 1;
-  for(let xx=x0; xx<=x1; xx++){
-    tiles.push({x:xx, y:y0-1});
-    tiles.push({x:xx, y:y1+1});
-  }
-  for(let yy=y0; yy<=y1; yy++){
-    tiles.push({x:x0-1, y:yy});
-    tiles.push({x:x1+1, y:yy});
-  }
-  return tiles;
+  return validateFootprintPlacementIn(buildings, world, kind, tx, ty, opts);
 }
 
 function findEntryTileNear(b, fromX, fromY){
@@ -1418,39 +1241,6 @@ function findEntryTileNear(b, fromX, fromY){
     }
   }
   return best;
-}
-
-function ensureBuildingData(b){
-  if(!b) return;
-  if(!b.store){ b.store={wood:0,stone:0,food:0}; }
-  if(!b.spent){
-    const def=BUILDINGS[b.kind]||{};
-    const cost=def.cost||((def.wood||0)+(def.stone||0));
-    const woodReq=def.wood||0;
-    const stoneReq=def.stone||0;
-    let progress=Math.max(0, b.progress||0);
-    if(b.built>=1){
-      b.spent={wood:woodReq, stone:stoneReq};
-    } else {
-      const spentWood=Math.min(progress, woodReq);
-      const spentStone=Math.min(Math.max(0, progress-spentWood), stoneReq);
-      b.spent={wood:spentWood, stone:spentStone};
-    }
-    if(b.progress===undefined) b.progress=Math.min(cost, (b.spent.wood||0)+(b.spent.stone||0));
-  } else {
-    if(typeof b.spent.wood!=='number') b.spent.wood=0;
-    if(typeof b.spent.stone!=='number') b.spent.stone=0;
-  }
-  if(!b.pending){ b.pending={wood:0,stone:0}; }
-  if(typeof b.pending.wood!=='number') b.pending.wood=0;
-  if(typeof b.pending.stone!=='number') b.pending.stone=0;
-  if(typeof b.progress!=='number') b.progress=(b.spent.wood||0)+(b.spent.stone||0);
-  if(!b.activity){ b.activity={occupants:0,lastUse:0,lastHydrate:0,lastSocial:0,lastRest:0}; }
-  if(typeof b.activity.occupants!=='number') b.activity.occupants=0;
-  if(typeof b.activity.lastUse!=='number') b.activity.lastUse=0;
-  if(typeof b.activity.lastHydrate!=='number') b.activity.lastHydrate=0;
-  if(typeof b.activity.lastSocial!=='number') b.activity.lastSocial=0;
-  if(typeof b.activity.lastRest!=='number') b.activity.lastRest=0;
 }
 
 function getBuildingById(id){
@@ -1490,149 +1280,12 @@ function endBuildingStay(v){
   v.targetBuilding=null;
 }
 
-function buildingResourceNeed(b, resource){
-  const def=BUILDINGS[b?.kind]||{};
-  const required=def[resource]||0;
-  const spent=b?.spent?.[resource]||0;
-  return Math.max(0, required-spent);
-}
-
-function buildingSupplyStatus(b){
-  ensureBuildingData(b);
-  const woodNeed = buildingResourceNeed(b, 'wood');
-  const stoneNeed = buildingResourceNeed(b, 'stone');
-  const storeWood = b?.store?.wood || 0;
-  const storeStone = b?.store?.stone || 0;
-  const pendingWood = b?.pending?.wood || 0;
-  const pendingStone = b?.pending?.stone || 0;
-  const reservedWood = storeWood + pendingWood;
-  const reservedStone = storeStone + pendingStone;
-  const requiresResources = (woodNeed > 0) || (stoneNeed > 0);
-  const hasAnySupply = requiresResources ? (reservedWood > 0 || reservedStone > 0) : true;
-  const hasAllReserved = reservedWood >= woodNeed && reservedStone >= stoneNeed;
-  const fullyDelivered = storeWood >= woodNeed && storeStone >= stoneNeed;
-  return {
-    woodNeed,
-    stoneNeed,
-    storeWood,
-    storeStone,
-    pendingWood,
-    pendingStone,
-    reservedWood,
-    reservedStone,
-    hasAnySupply,
-    hasAllReserved,
-    fullyDelivered
-  };
-}
-
 function agricultureBonusesAt(x,y){
-  let growthBonus=0, harvestBonus=0, moodBonus=0;
-  if(!buildings.length) return {growthBonus, harvestBonus, moodBonus};
-  const influenceFor=(radius, dist)=>{
-    if(radius>0){ return dist>radius?0:Math.max(0,1-dist/(radius+1)); }
-    return dist===0?1:0;
-  };
-  for(const b of buildings){
-    if(b.built<1) continue;
-    const def=BUILDINGS[b.kind]||{};
-    const eff=def.effects||{};
-    const dist=distanceToFootprint(x,y,b);
-    if(b.kind==='farmplot'){
-      const radius=(eff.radius|0);
-      const influence=influenceFor(radius, dist);
-      if(influence<=0) continue;
-      if(eff.growthBonus){ growthBonus+=eff.growthBonus*influence; }
-      if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
-    } else if(b.kind==='well'){
-      const radius=(eff.hydrationRadius|0);
-      const influence=influenceFor(radius, dist);
-      if(influence<=0) continue;
-      if(eff.hydrationGrowthBonus){ growthBonus+=eff.hydrationGrowthBonus*influence; }
-      if(eff.harvestBonus){ harvestBonus+=eff.harvestBonus*influence; }
-      if(eff.moodBonus){ moodBonus+=eff.moodBonus*influence; }
-    } else if(eff.moodBonus){
-      const radius=(eff.radius|0);
-      const influence=influenceFor(radius, dist);
-      if(influence<=0) continue;
-      moodBonus+=eff.moodBonus*influence;
-    }
-  }
-  return { growthBonus, harvestBonus, moodBonus };
+  return _agricultureBonusesAt(buildings, x, y);
 }
 
 /* ==================== UI & Sheets ==================== */
-const el=(id)=>document.getElementById(id);
-
-// --- Toast system (top center, queued, auto-dismiss) ---
-const Toast = (() => {
-  const host = document.createElement('div');
-  host.id = 'toastHost';
-  host.style.cssText = `
-    position:fixed; top:72px; left:50%; transform:translateX(-50%);
-    display:flex; flex-direction:column; gap:8px; z-index:5000; pointer-events:none;
-  `;
-  document.body.appendChild(host);
-
-  const q=[];
-  let showing=0;
-
-  function show(text, ms=2200){
-    q.push({text, ms});
-    if(!showing) next();
-  }
-  function next(){
-    if(!q.length){ showing=0; return; }
-    showing=1;
-    const {text, ms}=q.shift();
-    const el=document.createElement('div');
-    el.className='toast';
-    el.textContent=text;
-    el.style.cssText=`
-      background: rgba(20,24,33,0.96);
-      border:1px solid rgba(255,255,255,0.12);
-      color:#e9f1ff; font-weight:700; font-size:14px;
-      border-radius:12px; padding:10px 14px; box-shadow:0 6px 18px rgba(0,0,0,.35);
-    `;
-    host.appendChild(el);
-    setTimeout(()=>{
-      el.style.transition='opacity .2s ease, transform .2s ease';
-      el.style.opacity='0'; el.style.transform='translateY(-6px)';
-      setTimeout(()=>{ el.remove(); next(); },220);
-    }, ms);
-  }
-  return { show };
-})();
-
-// Legacy shim for old toast() calls
-window.toast = (msg, ms) => Toast.show(msg, ms);
-
-let ui={ mode:'inspect' };
-
-function openMode(mode){
-  const nextMode = (typeof mode === 'string' && mode.trim()) ? mode : 'inspect';
-  ui.mode = nextMode;
-
-  if (typeof document !== 'undefined') {
-    const root = document.body || document.documentElement;
-    if (root) {
-      root.setAttribute('data-mode', nextMode);
-    }
-
-    const modeButtons = document.querySelectorAll('[data-mode]');
-    modeButtons.forEach((btn) => {
-      const active = btn.dataset.mode === nextMode;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-  }
-
-  if (typeof canvas !== 'undefined' && canvas && canvas.style) {
-    canvas.style.cursor = nextMode === 'inspect' ? 'default' : 'crosshair';
-  }
-
-  return ui.mode;
-}
+const el = (id) => document.getElementById(id);
 
 const ZONE_JOB_TYPES = {
   [ZONES.FARM]: 'sow',
@@ -1674,193 +1327,20 @@ function zoneHasWorkNow(z, i){
   return false;
 }
 
-function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
-
-const uiRefs = {
-  btnPause: el('btnPause'),
-  btnSpeed: el('btnSpeed'),
-  btnPrior: el('btnPrior'),
-  btnSave: el('btnSave'),
-  btnNew: el('btnNew'),
-  btnHelpClose: el('btnHelpClose'),
-  help: el('help'),
-  sheetPrior: el('sheetPrior'),
-  prioFood: el('prioFood'),
-  prioBuild: el('prioBuild'),
-  prioExplore: el('prioExplore')
-};
-const btnSave = uiRefs.btnSave;
-if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
-
-/* Named handlers — required so removeEventListener can match the same reference */
-function onPauseClick(){ paused=!paused; uiRefs.btnPause.textContent=paused?'▶️':'⏸'; }
-function onSpeedClick(){ speedIdx=(speedIdx+1)%SPEEDS.length; uiRefs.btnSpeed.textContent=SPEEDS[speedIdx]+'×'; }
-function onPriorClick(){ const open=uiRefs.sheetPrior.getAttribute('data-open')==='true'; toggleSheet('sheetPrior',!open); }
-function onSaveClick(){ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); }
-function onNewClick(){ newWorld(); }
-function onHelpCloseClick(){ uiRefs.help.style.display='none'; Storage.set('aiv_help_px3','1'); }
-function onSheetPriorClick(e){ if(e.target.closest('.sheet-close')) toggleSheet('sheetPrior',false); }
-function onDocumentClick(e){
-  const modeBtn = e.target.closest('[data-mode]');
-  if(modeBtn){ openMode(modeBtn.dataset.mode||'inspect'); return; }
-  if(e.target.closest('.sheet') || e.target.closest('.pill-controls')) return;
-  toggleSheet('sheetPrior', false);
-}
-function onKeyDown(e){ if((e.key==='l'||e.key==='L')&&e.altKey){ LIGHTING.debugShowLightmap=!LIGHTING.debugShowLightmap; e.preventDefault(); } }
-function onPrioFoodInput(e){ policy.sliders.food=(parseInt(e.target.value,10)||0)/100; }
-function onPrioBuildInput(e){ policy.sliders.build=(parseInt(e.target.value,10)||0)/100; }
-function onPrioExploreInput(e){ policy.sliders.explore=(parseInt(e.target.value,10)||0)/100; }
-
-let uiListenersBound = false;
-function bindUIListeners(){
-  if(uiListenersBound) return;
-  uiRefs.btnPause.addEventListener('click', onPauseClick);
-  uiRefs.btnSpeed.addEventListener('click', onSpeedClick);
-  uiRefs.btnPrior.addEventListener('click', onPriorClick);
-  uiRefs.btnSave.addEventListener('click', onSaveClick);
-  uiRefs.btnNew.addEventListener('click', onNewClick);
-  uiRefs.btnHelpClose.addEventListener('click', onHelpCloseClick);
-  uiRefs.sheetPrior.addEventListener('click', onSheetPriorClick);
-  document.addEventListener('click', onDocumentClick);
-  window.addEventListener('keydown', onKeyDown);
-  uiRefs.prioFood.addEventListener('input', onPrioFoodInput);
-  uiRefs.prioBuild.addEventListener('input', onPrioBuildInput);
-  uiRefs.prioExplore.addEventListener('input', onPrioExploreInput);
-  uiListenersBound = true;
-}
-function unbindUIListeners(){
-  if(!uiListenersBound) return;
-  uiRefs.btnPause.removeEventListener('click', onPauseClick);
-  uiRefs.btnSpeed.removeEventListener('click', onSpeedClick);
-  uiRefs.btnPrior.removeEventListener('click', onPriorClick);
-  uiRefs.btnSave.removeEventListener('click', onSaveClick);
-  uiRefs.btnNew.removeEventListener('click', onNewClick);
-  uiRefs.btnHelpClose.removeEventListener('click', onHelpCloseClick);
-  uiRefs.sheetPrior.removeEventListener('click', onSheetPriorClick);
-  document.removeEventListener('click', onDocumentClick);
-  window.removeEventListener('keydown', onKeyDown);
-  uiRefs.prioFood.removeEventListener('input', onPrioFoodInput);
-  uiRefs.prioBuild.removeEventListener('input', onPrioBuildInput);
-  uiRefs.prioExplore.removeEventListener('input', onPrioExploreInput);
-  uiListenersBound = false;
-}
+const _uiSystem = createUISystem({
+  policy,
+  time,
+  saveGame,
+  newWorld
+});
+const Toast = _uiSystem.Toast;
+const openMode = _uiSystem.openMode;
+const bindUIListeners = _uiSystem.bindUIListeners;
+const unbindUIListeners = _uiSystem.unbindUIListeners;
+const bindCanvasInputs = _uiSystem.bindCanvasInputs;
+const unbindCanvasInputs = _uiSystem.unbindCanvasInputs;
+const toTile = _uiSystem.toTile;
 bindUIListeners();
-
-/* ==================== Pointer Input ==================== */
-const activePointers = new Map();
-let primaryPointer = null;
-let pinch = null;
-
-// tiny tap debugger to confirm events
-const dbg = document.createElement('div');
-dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5000;color:#9cb2cc;font:12px system-ui;pointer-events:none';
-document.body.appendChild(dbg);
-const setDbg = (s)=> dbg.textContent = s;
-
-function pointerScale(){
-  const r = canvas.getBoundingClientRect();
-  return { sx: canvas.width / r.width, sy: canvas.height / r.height };
-}
-
-function screenToWorld(px, py){
-  const rect = canvas.getBoundingClientRect();         // CSS pixels
-  const sx = (px - rect.left) * (canvas.width  / rect.width);   // device px
-  const sy = (py - rect.top)  * (canvas.height / rect.height);  // device px
-  // camera is in tiles; conversion helpers live in coords
-  return {
-    x: pxToTileX(sx, cam),
-    y: pxToTileY(sy, cam)
-  };
-}
-
-function toTile(v){ return Math.floor(v); }
-
-function onPointerDown(e){
-  setDbg(`down ${e.pointerType} mode=${ui.mode}`);
-  activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY, type:e.pointerType});
-  canvas.setPointerCapture(e.pointerId);
-  if(e.pointerType==='touch' && activePointers.size===2){
-    const pts = Array.from(activePointers.values());
-    pinch = {
-      startDist: Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y),
-      startZ: cam.z,
-      midx: (pts[0].x+pts[1].x)/2,
-      midy: (pts[0].y+pts[1].y)/2
-    };
-    primaryPointer = null;
-  } else if(!primaryPointer){
-    primaryPointer = {id:e.pointerId, sx:e.clientX, sy:e.clientY, camx:cam.x, camy:cam.y};
-  }
-  e.preventDefault();
-}
-
-function onPointerMove(e){
-  if(!activePointers.has(e.pointerId)) return;
-  const p = activePointers.get(e.pointerId);
-  p.x=e.clientX; p.y=e.clientY; activePointers.set(e.pointerId,p);
-  const {sx:scaleX, sy:scaleY} = pointerScale();
-  if(pinch && activePointers.size===2){
-    const pts = Array.from(activePointers.values());
-    const dist = Math.hypot(pts[1].x-pts[0].x, pts[1].y-pts[0].y);
-    const before = screenToWorld(pinch.midx, pinch.midy);
-    cam.z = clamp((dist/(pinch.startDist||1))*pinch.startZ, MIN_Z, MAX_Z);
-    const after = screenToWorld(pinch.midx, pinch.midy);
-    cam.x += (after.x - before.x);
-    cam.y += (after.y - before.y);
-    const midx = (pts[0].x + pts[1].x) / 2,
-          midy = (pts[0].y + pts[1].y) / 2;
-    cam.x -= pxToTileX((midx - pinch.midx) * scaleX, cam) - cam.x;
-    cam.y -= pxToTileY((midy - pinch.midy) * scaleY, cam) - cam.y;
-    pinch.midx = midx; pinch.midy = midy;
-    clampCam();
-  } else if(primaryPointer && e.pointerId===primaryPointer.id){
-    const dx=(e.clientX-primaryPointer.sx)*scaleX;
-    const dy=(e.clientY-primaryPointer.sy)*scaleY;
-    const dtX = pxToTileX(dx, cam) - cam.x;
-    const dtY = pxToTileY(dy, cam) - cam.y;
-    cam.x = primaryPointer.camx - dtX;
-    cam.y = primaryPointer.camy - dtY;
-    clampCam();
-  }
-}
-
-function endPointer(e){
-  if(!activePointers.has(e.pointerId)) return;
-  activePointers.delete(e.pointerId);
-  if(primaryPointer && e.pointerId===primaryPointer.id) primaryPointer=null;
-  if(activePointers.size<2) pinch=null;
-}
-
-function onWheel(e){
-  const delta=Math.sign(e.deltaY); const scale=delta>0?1/1.1:1.1; const mx=e.clientX,my=e.clientY;
-  const before=screenToWorld(mx,my); cam.z=clamp(cam.z*scale, MIN_Z, MAX_Z); const after=screenToWorld(mx,my);
-  cam.x += (after.x - before.x); cam.y += (after.y - before.y); clampCam();
-}
-
-let canvasInputsBound = false;
-function bindCanvasInputs(){
-  if(canvasInputsBound) return;
-  canvas.addEventListener('pointerdown', onPointerDown, {passive:false});
-  canvas.addEventListener('pointermove', onPointerMove, {passive:false});
-  canvas.addEventListener('pointerup', endPointer, {passive:false});
-  canvas.addEventListener('pointercancel', endPointer, {passive:false});
-  canvas.addEventListener('pointerleave', endPointer, {passive:false});
-  canvas.addEventListener('wheel', onWheel);
-  canvasInputsBound = true;
-}
-function unbindCanvasInputs(){
-  if(!canvasInputsBound) return;
-  canvas.removeEventListener('pointerdown', onPointerDown, {passive:false});
-  canvas.removeEventListener('pointermove', onPointerMove, {passive:false});
-  canvas.removeEventListener('pointerup', endPointer, {passive:false});
-  canvas.removeEventListener('pointercancel', endPointer, {passive:false});
-  canvas.removeEventListener('pointerleave', endPointer, {passive:false});
-  canvas.removeEventListener('wheel', onWheel);
-  activePointers.clear();
-  primaryPointer = null;
-  pinch = null;
-  canvasInputsBound = false;
-}
 bindCanvasInputs();
 
 /* ==================== Automation Helpers ==================== */
@@ -2589,6 +2069,15 @@ function cancelHaulJobsForBuilding(b){
 }
 function idx(x,y){ if(x<0||y<0||x>=GRID_W||y>=GRID_H) return -1; return baseIdx(x,y); }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
+const _pathfinder = createPathfinder({
+  idx,
+  tileOccupiedByBuilding,
+  getWorld: () => world,
+  getTick: () => tick,
+  perf: PERF
+});
+const passable = _pathfinder.passable;
+const pathfind = _pathfinder.pathfind;
 function centerCamera(x,y){
   cam.z = 2.2;
   cam.x = x - W / (TILE * cam.z) * 0.5;
@@ -2805,94 +2294,6 @@ function addJob(job){
   job.id=uid(); job.assigned=0; jobs.push(job); return job;
 }
 
-const JOB_EXPERIENCE_MAP = Object.freeze({
-  sow: 'farming',
-  harvest: 'farming',
-  forage: 'farming',
-  chop: 'construction',
-  mine: 'construction',
-  build: 'construction',
-  haul: 'hauling',
-  hunt: 'hunting',
-  craft_bow: 'crafting',
-  socialize: 'social'
-});
-
-const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
-const XP_SKILL_STEP = 0.05;
-
-function createExperienceLedger(){
-  return {
-    farming: 0,
-    construction: 0,
-    crafting: 0,
-    hunting: 0,
-    hauling: 0,
-    social: 0
-  };
-}
-
-function normalizeExperienceLedger(raw){
-  const ledger = createExperienceLedger();
-  if(!raw || typeof raw!=='object') return ledger;
-  for(const key of Object.keys(ledger)){
-    const value = raw[key];
-    if(Number.isFinite(value) && value>0){
-      ledger[key] = value;
-    }
-  }
-  return ledger;
-}
-
-function ensureExperienceLedger(v){
-  if(!v) return createExperienceLedger();
-  if(!v.experience || typeof v.experience !== 'object'){
-    v.experience = createExperienceLedger();
-  } else {
-    v.experience = normalizeExperienceLedger(v.experience);
-  }
-  return v.experience;
-}
-
-function addJobExperience(v, jobType, amount=1){
-  const ledger = ensureExperienceLedger(v);
-  const key = JOB_EXPERIENCE_MAP[jobType];
-  if(!key) return 0;
-  const current = Number.isFinite(ledger[key]) ? ledger[key] : 0;
-  const next = Math.max(0, current + Math.max(0, amount));
-  ledger[key] = next;
-  return next;
-}
-
-function experienceLevelFromXp(xp){
-  let level = 0;
-  for(let i=0;i<EXPERIENCE_THRESHOLDS.length;i++){
-    if(xp >= EXPERIENCE_THRESHOLDS[i]){
-      level = i;
-    }
-  }
-  return level;
-}
-
-function effectiveSkillFromExperience(v, skillKey, fallback=0.5, jobType=null){
-  const base = clamp(Number.isFinite(v?.[skillKey]) ? v[skillKey] : fallback, 0, 1);
-  if(!jobType) return base;
-  const ledger = ensureExperienceLedger(v);
-  const key = JOB_EXPERIENCE_MAP[jobType];
-  const xp = key ? Number.isFinite(ledger[key]) ? ledger[key] : 0 : 0;
-  const level = experienceLevelFromXp(xp);
-  const bonus = clamp(level * XP_SKILL_STEP, 0, 0.25);
-  return clamp(base + bonus, 0, 1);
-}
-function moodMotivation(v){ return clamp((v.happy-0.5)*2,-1,1); }
-function moodPrefix(v){
-  if(v.happy>=0.8) return '😊 ';
-  if(v.happy>=0.6) return '🙂 ';
-  if(v.happy<=0.2) return '☹️ ';
-  if(v.happy<=0.4) return '😟 ';
-  return '';
-}
-function moodThought(v, base){ const prefix=moodPrefix(v); return prefix?`${prefix}${base}`:base; }
 function finishJob(v, remove=false){
   const job = v.targetJob;
   if(job){
@@ -2909,23 +2310,6 @@ function finishJob(v, remove=false){
   v.targetJob=null;
 }
 
-function applySkillGain(v, key, amount=0.02, softCap=0.9, hardCap=1){
-  const current = clamp(Number.isFinite(v[key]) ? v[key] : 0, 0, hardCap);
-  let delta = amount;
-  if (current >= softCap) {
-    const span = Math.max(0.0001, hardCap - softCap);
-    const progress = clamp((current - softCap) / span, 0, 1);
-    delta *= Math.max(0.15, 1 - progress);
-  }
-  const next = clamp(current + delta, 0, hardCap);
-  if (next > current) {
-    v[key] = next;
-    v.happy = clamp(v.happy + Math.min(0.01, (next - current) * 1.5), 0, 1);
-  } else {
-    v[key] = current;
-  }
-  return v[key];
-}
 function generateJobs(){
   const creationCfg = getJobCreationConfig();
   const bb = ensureBlackboardSnapshot();
@@ -4480,72 +3864,6 @@ else if(v.state==='storage_idle'){
   v.thought=moodThought(v,'Tidying storage');
 } }
 
-  /* ==================== Pathfinding ==================== */
-  const PF = {
-    qx: new Int16Array(GRID_SIZE),
-    qy: new Int16Array(GRID_SIZE),
-    came: new Int32Array(GRID_SIZE)
-  };
-  function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
-  function pathfind(sx,sy,tx,ty,limit=400){
-  // Normalize coordinates to integer tile indices so the path reconstruction loop
-  // always terminates, even if callers accidentally pass fractional values.
-  sx = Math.round(clamp(sx, 0, GRID_W - 1));
-  sy = Math.round(clamp(sy, 0, GRID_H - 1));
-  tx = Math.round(clamp(tx, 0, GRID_W - 1));
-  ty = Math.round(clamp(ty, 0, GRID_H - 1));
-  const tStart = PERF.log ? performance.now() : 0;
-  if(sx===tx&&sy===ty){
-    if(PERF.log && (tick % 60) === 0) console.log(`pathfind 0.00ms`);
-    return [{x:tx,y:ty}];
-  }
-  const Wm=GRID_W,Hm=GRID_H;
-  const qx=PF.qx, qy=PF.qy, came=PF.came;
-  came.fill(-1);
-  let qs=0,qe=0;
-  qx[qe]=sx; qy[qe]=sy; qe++;
-  came[sy*Wm+sx]=sx+sy*Wm;
-  let found=false,steps=0;
-  while(qs<qe && steps<limit){
-    const x=qx[qs], y=qy[qs]; qs++; steps++;
-    for(const d of DIR4){
-      const nx=x+d[0], ny=y+d[1];
-      if(nx<0||ny<0||nx>=Wm||ny>=Hm) continue;
-      const ni=ny*Wm+nx;
-      if(came[ni]!==-1) continue;
-      if(!passable(nx,ny)) continue;
-      came[ni]=y*Wm+x;
-      qx[qe]=nx; qy[qe]=ny; qe++;
-      if(nx===tx&&ny===ty){ found=true; qs=qe; break; }
-    }
-  }
-  if(!found){
-    if(PERF.log && (tick % 60) === 0){
-      const tEnd = performance.now();
-      console.log(`pathfind ${(tEnd - tStart).toFixed(2)}ms`);
-    }
-    return null;
-  }
-  const path=[];
-  let cx=tx,cy=ty,ci=cy*Wm+cx;
-  while(!(cx===sx&&cy===sy)){
-    path.push({x:cx+0.0001,y:cy+0.0001});
-    const pi=came[ci];
-    // If we somehow lost the predecessor chain, bail out to avoid infinite loops
-    // and signal that the path is unusable.
-    if(pi===-1 || !Number.isFinite(pi)){
-      return null;
-    }
-    cy=(pi/Wm)|0; cx=pi%Wm; ci=cy*Wm+cx;
-  }
-  path.reverse();
-  if(PERF.log && (tick % 60) === 0){
-    const tEnd = performance.now();
-    console.log(`pathfind ${(tEnd - tStart).toFixed(2)}ms`);
-  }
-  return path;
-}
-
 /* ==================== Seasons/Growth ==================== */
 function seasonTick(){
   world.tSeason++;
@@ -4584,127 +3902,53 @@ function seasonTick(){
   }
 }
 
-/* ==================== Save/Load ==================== */
-function saveGame(){ const data={ saveVersion:SAVE_VERSION, seed:world.seed, tiles:Array.from(world.tiles), zone:Array.from(world.zone), trees:Array.from(world.trees), rocks:Array.from(world.rocks), berries:Array.from(world.berries), growth:Array.from(world.growth), season:world.season, tSeason:world.tSeason, buildings, storageTotals, storageReserved, villagers: villagers.map(v=>({id:v.id,x:v.x,y:v.y,h:v.hunger,e:v.energy,ha:v.happy,hy:v.hydration||0, hb:v.hydrationBuffTicks||0,nhy:v.nextHydrateTick||0,hs:v.socialTimer||0,nso:v.nextSocialTick||0,role:v.role,cond:v.condition||'normal',ss:v.starveStage||0,ns:v.nextStarveWarning||0,sk:v.sickTimer||0,rc:v.recoveryTimer||0,fs:v.farmingSkill||0,cs:v.constructionSkill||0,age:v.ageTicks||0,stage:v.lifeStage||'adult',preg:v.pregnancyTimer||0,ct:v.childhoodTimer||0,par:Array.isArray(v.parents)?v.parents:[],mate:v.pregnancyMateId||null,sit:v.storageIdleTimer||0,nsi:v.nextStorageIdleTick||0,ab:v.activeBuildingId||null,bw:v.equippedBow?1:0,num:ensureVillagerNumber(v),xp:normalizeExperienceLedger(v.experience)})), animals: animals.map(a=>({id:a.id,type:a.type,x:a.x,y:a.y,dir:a.dir||'right',state:a.state||'idle',na:a.nextActionTick||0,phase:a.idlePhase||0,nv:a.nextVillageTick||0,ng:a.nextGrazeTick||0,flee:a.fleeTicks||0})) }; Storage.set(SAVE_KEY, JSON.stringify(data)); }
-function loadGame(){ try{ const raw=Storage.get(SAVE_KEY); if(!raw) return false; let d=JSON.parse(raw); const version=typeof d.saveVersion==='number'?d.saveVersion|0:0;
-  for(let v=version; v<SAVE_VERSION; v++){
-    const migrate=SAVE_MIGRATIONS.get(v);
-    if(typeof migrate==='function'){
-      try { d = migrate(d) || d; }
-      catch(err){ console.warn('AIV loadGame: migration from v'+v+' failed', err); return false; }
-    }
-  }
-
-  const tileData=normalizeArraySource(d.tiles);
-  const zoneData=normalizeArraySource(d.zone);
-  const treeData=normalizeArraySource(d.trees);
-  const rockData=normalizeArraySource(d.rocks);
-  const berryData=normalizeArraySource(d.berries);
-  const growthData=normalizeArraySource(d.growth);
-  const coarseLen=COARSE_SAVE_SIZE*COARSE_SAVE_SIZE;
-  const fullLen=GRID_W*GRID_H;
-  const isCoarseSave=version < SAVE_VERSION && tileData.length===coarseLen;
-  const factorCandidate=isCoarseSave?Math.floor(GRID_W/COARSE_SAVE_SIZE):1;
-  const factorY=isCoarseSave?Math.floor(GRID_H/COARSE_SAVE_SIZE):1;
-  const upscaleFactor=(factorCandidate>1&&factorCandidate===factorY)?factorCandidate:1;
-  const expectedLen=upscaleFactor>1?coarseLen:fullLen;
-  const layerSources=[
-    ['tiles', tileData],
-    ['zone', zoneData],
-    ['trees', treeData],
-    ['rocks', rockData],
-    ['berries', berryData],
-    ['growth', growthData]
-  ];
-  for(const [name, arr] of layerSources){
-    if(arr.length!==0 && arr.length!==expectedLen){
-      console.warn('AIV loadGame: '+name+' layer length '+arr.length+' does not match expected '+expectedLen+' (upscaleFactor='+upscaleFactor+')');
-    }
-  }
-  newWorld(Number.isFinite(d.seed) ? d.seed : undefined);
-  applyArrayScaled(world.tiles, tileData, upscaleFactor, 0);
-  applyArrayScaled(world.zone, zoneData, upscaleFactor, ZONES.NONE);
-  applyArrayScaled(world.trees, treeData, upscaleFactor, 0);
-  applyArrayScaled(world.rocks, rockData, upscaleFactor, 0);
-  applyArrayScaled(world.berries, berryData, upscaleFactor, 0);
-  applyArrayScaled(world.growth, growthData, upscaleFactor, 0);
-  if(typeof d.season==='number') world.season=d.season;
-  if(typeof d.tSeason==='number') world.tSeason=d.tSeason;
-  refreshWaterRowMaskFromTiles();
-  refreshZoneRowMask();
-  markZoneOverlayDirty();
-  buildings.length=0;
-  const buildingScale=upscaleFactor>1?upscaleFactor:1;
-  (d.buildings||[]).forEach(src=>{
-    if(!src) return;
-    const b={...src};
-    if(buildingScale>1){
-      const fp=getFootprint(b.kind);
-      const maxX=Math.max(0, GRID_W - (fp?.w||1));
-      const maxY=Math.max(0, GRID_H - (fp?.h||1));
-      const scaledX=Math.round((typeof b.x==='number'?b.x:0)*buildingScale);
-      const scaledY=Math.round((typeof b.y==='number'?b.y:0)*buildingScale);
-      b.x=clamp(scaledX,0,maxX);
-      b.y=clamp(scaledY,0,maxY);
-    }
-    ensureBuildingData(b);
-    buildings.push(b);
-  });
-  reindexAllBuildings();
-  markEmittersDirty();
-  const loadedTotals = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageTotals||{});
-  storageTotals.food = loadedTotals.food||0;
-  storageTotals.wood = loadedTotals.wood||0;
-  storageTotals.stone = loadedTotals.stone||0;
-  storageTotals.bow = loadedTotals.bow||0;
-  const loadedReserved = Object.assign({food:0,wood:0,stone:0,bow:0}, d.storageReserved||{});
-  storageReserved.food = loadedReserved.food||0;
-  storageReserved.wood = loadedReserved.wood||0;
-  storageReserved.stone = loadedReserved.stone||0;
-  storageReserved.bow = loadedReserved.bow||0;
-  villagers.length=0;
-  (d.villagers||[]).forEach(v=>{
-    if(!v) return;
-    const stage=typeof v.ss==='number'?v.ss:(v.h>STARVE_THRESH.sick?3:v.h>STARVE_THRESH.starving?2:v.h>STARVE_THRESH.hungry?1:0);
-    const cond=v.cond||(stage>=3?'sick':stage===2?'starving':stage===1?'hungry':'normal');
-    let vx=typeof v.x==='number'?v.x:0;
-    let vy=typeof v.y==='number'?v.y:0;
-    if(buildingScale>1){
-      vx=clamp(Math.round(vx*buildingScale),0,GRID_W-1);
-      vy=clamp(Math.round(vy*buildingScale),0,GRID_H-1);
-    }
-    const farmingSkill = Number.isFinite(v.fs) ? clamp(v.fs, 0, 1) : (v.role==='farmer'?0.7:0.5);
-    const constructionSkill = Number.isFinite(v.cs) ? clamp(v.cs, 0, 1) : (v.role==='worker'?0.65:0.5);
-    const lifeStage = v.stage==='child' ? 'child' : 'adult';
-    const childhoodTimer = Number.isFinite(v.ct) ? v.ct : (lifeStage==='child'?CHILDHOOD_TICKS:0);
-    const experience = normalizeExperienceLedger(v.xp || v.experience);
-    const villagerRecord = { id:v.id,x:vx,y:vy,path:[], hunger:v.h,energy:v.e,happy:v.ha,hydration:Number.isFinite(v.hy)?clamp(v.hy,0,1):0.7,hydrationBuffTicks:Number.isFinite(v.hb)?v.hb:0,nextHydrateTick:Number.isFinite(v.nhy)?v.nhy:0,role:lifeStage==='child'?'child':v.role,speed:2,inv:null,state:'idle',thought:'Resuming', _nextPathTick:0, _wanderFailures:new Map(), _forageFailures:new Map(), condition:cond, starveStage:stage, nextStarveWarning:v.ns||0, sickTimer:v.sk||0, recoveryTimer:v.rc||0, farmingSkill, constructionSkill, ageTicks:Number.isFinite(v.age)?v.age:0, lifeStage, pregnancyTimer:Number.isFinite(v.preg)?v.preg:0, pregnancyMateId:v.mate||null, childhoodTimer, parents:Array.isArray(v.par)?v.par.slice(0,2):[], socialTimer:Number.isFinite(v.hs)?v.hs:0, nextSocialTick:Number.isFinite(v.nso)?v.nso:0, storageIdleTimer:Number.isFinite(v.sit)?v.sit:0, nextStorageIdleTick:Number.isFinite(v.nsi)?v.nsi:0, hydrationTimer:0, activeBuildingId:v.ab||null, equippedBow:v.bw===1 || v.bw===true, experience };
-    ensureVillagerNumber(villagerRecord, v.num);
-    villagers.push(villagerRecord);
-  });
-  const animalScale=upscaleFactor>1?upscaleFactor:1;
-  animals.length=0;
-  (d.animals||[]).forEach(a=>{
-    if(!a || !ANIMAL_TYPES[a.type]) return;
-    let ax=typeof a.x==='number'?a.x:0;
-    let ay=typeof a.y==='number'?a.y:0;
-    if(animalScale>1){
-      ax=clamp(Math.round(ax*animalScale),0,GRID_W-1);
-      ay=clamp(Math.round(ay*animalScale),0,GRID_H-1);
-    }
-    const state=typeof a.state==='string'?a.state:'idle';
-    const nextActionTick=Number.isFinite(a.na)?a.na:tick+irnd(12,60);
-    const idlePhase=Number.isFinite(a.phase)?a.phase:irnd(0,900);
-    const nextVillageTick=Number.isFinite(a.nv)?a.nv:0;
-    const nextGrazeTick=Number.isFinite(a.ng)?a.ng:0;
-    const fleeTicks=Number.isFinite(a.flee)?a.flee:0;
-    animals.push({ id:a.id||uid(), type:a.type, x:ax, y:ay, dir:a.dir==='left'?'left':'right', state, nextActionTick, idlePhase, nextVillageTick, nextGrazeTick, fleeTicks });
-  });
-  Toast.show('Loaded.'); markStaticDirty(); return true; } catch(e){ console.error(e); return false; } }
-
 /* ==================== Rendering ==================== */
 let staticAlbedoCanvas=null, staticAlbedoCtx=null, staticDirty=true;
 function markStaticDirty(){ staticDirty=true; }
+
+const _saveSystem = createSaveSystem({
+  getWorld: () => world,
+  getBuildings: () => buildings,
+  getVillagers: () => villagers,
+  getAnimals: () => animals,
+  getStorageTotals: () => storageTotals,
+  getStorageReserved: () => storageReserved,
+  getTick: () => tick,
+  starveThresh: STARVE_THRESH,
+  childhoodTicks: CHILDHOOD_TICKS,
+  ensureVillagerNumber,
+  normalizeExperienceLedger,
+  normalizeArraySource,
+  applyArrayScaled,
+  newWorld,
+  getFootprint,
+  ensureBuildingData,
+  reindexAllBuildings,
+  markEmittersDirty,
+  refreshWaterRowMaskFromTiles,
+  refreshZoneRowMask,
+  markZoneOverlayDirty,
+  markStaticDirty,
+  toast: Toast
+});
+const saveGame = _saveSystem.saveGame;
+const loadGame = _saveSystem.loadGame;
+
+const _renderSystem = createRenderSystem({
+  getCam: () => cam,
+  getViewportW: () => W,
+  getViewportH: () => H
+});
+const setCurrentAmbient = _renderSystem.setCurrentAmbient;
+const resetLightmapCache = _renderSystem.resetLightmapCache;
+const shadeFillColorLit = _renderSystem.shadeFillColorLit;
+const applySpriteShadeLit = _renderSystem.applySpriteShadeLit;
+const entityDrawRect = _renderSystem.entityDrawRect;
+const visibleTileBounds = _renderSystem.visibleTileBounds;
+const buildHillshadeQ = _renderSystem.buildHillshadeQ;
+const buildLightmap = _renderSystem.buildLightmap;
+const sampleLightAt = _renderSystem.sampleLightAt;
+
 function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCanvas(GRID_W*TILE, GRID_H*TILE); staticAlbedoCtx=context2d(staticAlbedoCanvas); } if(!world) return; const g=staticAlbedoCtx; if(!g) return; ensureRowMasksSize();
   for(let y=0;y<GRID_H;y++){
     let rowHasWater=0;
@@ -4729,14 +3973,6 @@ function drawStaticAlbedo(){ if(!staticAlbedoCanvas){ staticAlbedoCanvas=makeCan
   world.staticAlbedoCtx = staticAlbedoCtx;
   staticDirty=false; }
 
-
-function entityDrawRect(tileX, tileY, cam){
-  const baseX = tileToPxX(tileX, cam);
-  const baseY = tileToPxY(tileY, cam);
-  const offset = Math.floor((ENTITY_TILE_PX - TILE) * cam.z * 0.5);
-  const size = ENTITY_TILE_PX * cam.z;
-  return { x: baseX - offset, y: baseY - offset, size };
-}
 
 function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
   if (!ctx || !world || !world.tiles) return;
@@ -4810,56 +4046,8 @@ function drawShadow(tileX, tileY, footprintW=1, footprintH=1, screenRect=null){
   ctx.imageSmoothingEnabled = prevSmoothing;
 }
 
-function visibleTileBounds(){
-  const raw = baseVisibleTileBounds(W, H, cam);
-  const x0 = Math.max(0, raw.x0);
-  const y0 = Math.max(0, raw.y0);
-  const x1 = Math.min(GRID_W-1, raw.x1);
-  const y1 = Math.min(GRID_H-1, raw.y1);
-  return {x0, y0, x1, y1};
-}
-
-function emittersSignature(list){
-  if (!Array.isArray(list) || list.length === 0) return 'none';
-  const round = (v, places=3) => {
-    const factor = Math.pow(10, places);
-    return Math.round((Number.isFinite(v) ? v : 0) * factor) / factor;
-  };
-  return list.map(e => {
-    if (!e) return 'x';
-    return [round(e.x,2), round(e.y,2), round(e.radius,2), round(e.intensity,3), round(e.falloff,2)].join(':');
-  }).join('|');
-}
-
-function ensureLightmapBuffers(targetWorld){
-  if (!targetWorld) return false;
-  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
-  const expectedW = Math.max(1, Math.floor(((targetWorld.width||GRID_W)) * scale));
-  const expectedH = Math.max(1, Math.floor(((targetWorld.height||GRID_H)) * scale));
-  const missingQ = !targetWorld.lightmapQ || (!targetWorld.hillshadeQ && LIGHTING.mode === 'hillshade');
-  if (!targetWorld.lightmapCanvas || targetWorld.lightmapCanvas.width !== expectedW || targetWorld.lightmapCanvas.height !== expectedH || missingQ){
-    buildHillshadeQ(targetWorld);
-  }
-  return Boolean(targetWorld.lightmapCanvas && targetWorld.lightmapQ);
-}
-
 function maybeBuildLightmap(targetWorld, ambient){
-  if (!ensureLightmapBuffers(targetWorld)) return false;
-  const mode = normalizeShadingMode(LIGHTING.mode);
-  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
-  const ambientKey = Math.round(Math.max(0, Math.min(1, ambient || 0)) * 1000) / 1000;
-  const emitterSignature = emittersSignature(targetWorld.emitters);
-  const needsBuild = lightmapCacheState.ambient !== ambientKey
-    || lightmapCacheState.mode !== mode
-    || lightmapCacheState.scale !== scale
-    || lightmapCacheState.emitterSignature !== emitterSignature;
-  if (!needsBuild) return false;
-  buildLightmap(targetWorld, ambient);
-  lightmapCacheState.ambient = ambientKey;
-  lightmapCacheState.mode = mode;
-  lightmapCacheState.scale = scale;
-  lightmapCacheState.emitterSignature = emitterSignature;
-  return true;
+  return _renderSystem.maybeBuildLightmap(targetWorld, ambient, normalizeShadingMode);
 }
 
 function ensureZoneOverlayCanvas(){
@@ -4981,265 +4169,6 @@ function drawWaterOverlay(frames, frameIndex, vis){
   ctx.drawImage(waterOverlayCache.canvas, 0, 0);
 }
 
-function buildHillshadeQ(targetWorld){
-  if (!targetWorld) return;
-  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
-  const width = Math.max(1, (targetWorld.width|0) || GRID_W);
-  const height = Math.max(1, (targetWorld.height|0) || GRID_H);
-  const qw = Math.max(1, Math.floor(width * scale));
-  const qh = Math.max(1, Math.floor(height * scale));
-  const source = targetWorld.hillshade;
-  if (source && source.length === width * height){
-    const downsampled = new Float32Array(qw * qh);
-    for (let qy = 0; qy < qh; qy++){
-      const y = Math.min(height - 1, Math.floor(qy / scale));
-      const srcRow = y * width;
-      const row = qy * qw;
-      for (let qx = 0; qx < qw; qx++){
-        const x = Math.min(width - 1, Math.floor(qx / scale));
-        downsampled[row + qx] = source[srcRow + x];
-      }
-    }
-    targetWorld.hillshadeQ = downsampled;
-  } else {
-    targetWorld.hillshadeQ = null;
-  }
-
-  targetWorld.lightmapQ = new Float32Array(qw * qh);
-
-  let canvas = targetWorld.lightmapCanvas;
-  if (!canvas || canvas.width !== qw || canvas.height !== qh){
-    if (typeof OffscreenCanvas !== 'undefined'){
-      canvas = new OffscreenCanvas(qw, qh);
-    } else {
-      canvas = makeCanvas(qw, qh);
-    }
-  }
-  canvas.width = qw;
-  canvas.height = qh;
-  targetWorld.lightmapCanvas = canvas;
-
-  let ctx = targetWorld.lightmapCtx;
-  if (!ctx || ctx.canvas !== canvas){
-    ctx = context2d(canvas, { alpha:false });
-  }
-  targetWorld.lightmapCtx = ctx || null;
-  if (ctx){
-    if (!targetWorld.lightmapImageData || targetWorld.lightmapImageData.width !== qw || targetWorld.lightmapImageData.height !== qh){
-      targetWorld.lightmapImageData = ctx.createImageData(qw, qh);
-    }
-  } else {
-    targetWorld.lightmapImageData = null;
-  }
-  resetLightmapCache();
-}
-
-function buildLightmap(targetWorld, ambient){
-  if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return;
-  const Lq = targetWorld.lightmapQ;
-  const Hq = (LIGHTING.mode === 'hillshade') ? targetWorld.hillshadeQ : null;
-  const length = Lq.length;
-  const cap = Number.isFinite(LIGHTING.lightCap) ? LIGHTING.lightCap : 1.0;
-  for (let i = 0; i < length; i++){
-    const base = ambient * (Hq ? Hq[i] : 1);
-    Lq[i] = base > cap ? cap : base;
-  }
-
-  const emitters = Array.isArray(targetWorld.emitters) ? targetWorld.emitters : [];
-  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
-  const qw = targetWorld.lightmapCanvas.width|0;
-  const qh = targetWorld.lightmapCanvas.height|0;
-
-  const addLight = (cx, cy, radiusTiles, intensity, falloff) => {
-    if (!Number.isFinite(intensity) || intensity === 0) return;
-    const r = Math.max(1, Math.floor(radiusTiles * scale));
-    const r2 = r * r;
-    const exponent = Math.max(0.1, Number.isFinite(falloff) ? falloff : 2);
-    for (let dy = -r; dy <= r; dy++){
-      const y = cy + dy;
-      if (y < 0 || y >= qh) continue;
-      for (let dx = -r; dx <= r; dx++){
-        const x = cx + dx;
-        if (x < 0 || x >= qw) continue;
-        const d2 = dx*dx + dy*dy;
-        if (d2 > r2) continue;
-        const ratio = r === 0 ? 0 : Math.sqrt(d2) / r;
-        const fall = Math.max(0, 1 - Math.pow(ratio, exponent));
-        if (fall <= 0) continue;
-        const idx = y * qw + x;
-        const sum = Lq[idx] + intensity * fall;
-        Lq[idx] = sum > cap ? cap : sum;
-      }
-    }
-  };
-
-  for (const emitter of emitters){
-    if (!emitter) continue;
-    const cx = Math.round((Number.isFinite(emitter.x) ? emitter.x : 0) * scale);
-    const cy = Math.round((Number.isFinite(emitter.y) ? emitter.y : 0) * scale);
-    const radius = Number.isFinite(emitter.radius) ? emitter.radius : 0;
-    if (!(radius > 0)) continue;
-    let intensity = Number.isFinite(emitter.intensity) ? emitter.intensity : 0;
-    if (emitter.flicker){
-      intensity *= (1 + 0.05 * Math.sin(targetWorld.dayTime || 0) + (Math.random() * 0.03));
-    }
-    addLight(cx, cy, radius, intensity, emitter.falloff);
-  }
-
-  if (LIGHTING.softLights){
-    for (let y = 1; y < qh - 1; y++){
-      const row = y * qw;
-      for (let x = 1; x < qw - 1; x++){
-        const i = row + x;
-        Lq[i] = (Lq[i] + Lq[i-1] + Lq[i+1] + Lq[i-qw] + Lq[i+qw]) / 5;
-      }
-    }
-  }
-
-  const ctx = targetWorld.lightmapCtx;
-  if (!ctx) return;
-  let img = targetWorld.lightmapImageData;
-  if (!img || img.width !== qw || img.height !== qh){
-    img = ctx.createImageData(qw, qh);
-    targetWorld.lightmapImageData = img;
-  }
-  const data = img.data;
-  for (let i = 0, p = 0; i < length; i++, p += 4){
-    const v = Math.max(0, Math.min(1, Lq[i]));
-    const b = Math.round(v * 255);
-    data[p] = data[p+1] = data[p+2] = b;
-    data[p+3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
-function sampleLightAt(targetWorld, wx, wy){
-  if (!targetWorld || !targetWorld.lightmapQ || !targetWorld.lightmapCanvas) return 1.0;
-  const scale = Math.max(0.01, Number.isFinite(LIGHTING.lightmapScale) ? LIGHTING.lightmapScale : 0.25);
-  const x = wx * scale;
-  const y = wy * scale;
-  const qw = targetWorld.lightmapCanvas.width|0;
-  const qh = targetWorld.lightmapCanvas.height|0;
-  const Lq = targetWorld.lightmapQ;
-  if (!qw || !qh || !Lq || Lq.length === 0) return 1.0;
-
-  const x0 = Math.max(0, Math.min(qw - 1, Math.floor(x)));
-  const y0 = Math.max(0, Math.min(qh - 1, Math.floor(y)));
-  const x1 = Math.min(qw - 1, x0 + 1);
-  const y1 = Math.min(qh - 1, y0 + 1);
-  const tx = x - x0;
-  const ty = y - y0;
-  const i00 = y0 * qw + x0;
-  const i10 = y0 * qw + x1;
-  const i01 = y1 * qw + x0;
-  const i11 = y1 * qw + x1;
-
-  const a = Lq[i00] * (1 - tx) + Lq[i10] * tx;
-  const b = Lq[i01] * (1 - tx) + Lq[i11] * tx;
-  const value = a * (1 - ty) + b * ty;
-  return Math.max(0, Math.min(LIGHTING.lightCap, value));
-}
-
-function shadeFillColorLit(rgbaString, light){
-  const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
-  const normalized = L >= 1 ? 1 : L;
-  return shadeFillColor(rgbaString, normalized);
-}
-
-function applySpriteShadeLit(context, x, y, w, h, light){
-  const L = Math.max(0, Math.min(LIGHTING.lightCap, light));
-  const normalized = L >= 1 ? 1 : L;
-  return applySpriteShade(context, x, y, w, h, normalized);
-}
-
-  function sampleShade(tx, ty){
-    if (!world || LIGHTING.mode === 'off') return 1;
-    if (LIGHTING.useMultiplyComposite) return 1;
-    return sampleLightAt(world, tx, ty);
-  }
-
-  let currentAmbient = 1;
-
-  function applyNightColorShift(r, g, b, normalized){
-    const nightStrength = clamp01(1 - currentAmbient);
-    if (nightStrength <= 0) return [r, g, b];
-
-  const desaturate = 0.18 * nightStrength;
-  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  r = r * (1 - desaturate) + luma * desaturate;
-  g = g * (1 - desaturate) + luma * desaturate;
-  b = b * (1 - desaturate) + luma * desaturate;
-
-  const blueLift = 1 + 0.10 * nightStrength;
-  const redDampen = 1 - 0.06 * nightStrength;
-  const greenDampen = 1 - 0.03 * nightStrength;
-  r *= redDampen;
-  g *= greenDampen;
-  b *= blueLift;
-
-  const visibilityLift = 8 * nightStrength * (1 - normalized);
-  r += visibilityLift;
-  g += visibilityLift;
-  b += visibilityLift;
-
-  return [
-    clamp(Math.round(r), 0, 255),
-    clamp(Math.round(g), 0, 255),
-    clamp(Math.round(b), 0, 255)
-  ];
-}
-
-function shadeFillColor(color, shade){
-  const normalized = clamp01(shade);
-  if (normalized >= 0.999 || typeof color !== 'string') return color;
-  if (color[0] === '#'){
-    let r, g, b;
-    if (color.length === 4){
-      r = parseInt(color[1] + color[1], 16);
-      g = parseInt(color[2] + color[2], 16);
-      b = parseInt(color[3] + color[3], 16);
-    } else if (color.length === 7){
-      r = parseInt(color.slice(1, 3), 16);
-      g = parseInt(color.slice(3, 5), 16);
-      b = parseInt(color.slice(5, 7), 16);
-    } else {
-      return color;
-    }
-    const scale = (component) => clamp(Math.round(component * normalized), 0, 255);
-    [r, g, b] = applyNightColorShift(scale(r), scale(g), scale(b), normalized);
-    return `rgb(${r},${g},${b})`;
-  }
-  const rgbaMatch = color.match(/^rgba?\(([^)]+)\)$/i);
-  if (rgbaMatch){
-    const parts = rgbaMatch[1].split(',').map(part => part.trim());
-    if (parts.length < 3) return color;
-    const parseComponent = (value) => {
-      const num = Number.parseFloat(value);
-      return Number.isFinite(num) ? num : 0;
-    };
-    const baseR = parseComponent(parts[0]);
-    const baseG = parseComponent(parts[1]);
-    const baseB = parseComponent(parts[2]);
-    const alpha = parts.length >= 4 ? clamp(parseComponent(parts[3]), 0, 1) : 1;
-    const scale = (component) => clamp(Math.round(clamp(component, 0, 255) * normalized), 0, 255);
-    let [r, g, b] = [scale(baseR), scale(baseG), scale(baseB)];
-    [r, g, b] = applyNightColorShift(r, g, b, normalized);
-    return `rgba(${r},${g},${b},${alpha})`;
-  }
-  return color;
-}
-
-function applySpriteShade(context, x, y, w, h, shade){
-  const normalized = clamp01(shade);
-  const overlay = 1 - normalized;
-  if (overlay <= 0) return;
-  context.save();
-  context.globalCompositeOperation='multiply';
-  context.fillStyle=`rgba(0,0,0,${overlay})`;
-  context.fillRect(x, y, w, h);
-  context.restore();
-}
-
 function render(){
   if (world && world.__debug != null) {
     world.__debug.pipeline = [];
@@ -5269,7 +4198,7 @@ function render(){
   if (LIGHTING.mode !== shadingMode) LIGHTING.mode = shadingMode;
   const ambient = shadingMode === 'off' ? 1 : ambientAt(dayTime);
   const nightActive = isNightAmbient(ambient);
-  currentAmbient = ambient;
+  setCurrentAmbient(ambient);
 
   villagerLabels.length = 0;
 
