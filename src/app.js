@@ -47,6 +47,7 @@ import { Storage, describeError, reportFatal, setUpdateCallback, showFatalOverla
 import { MAX_Z, MIN_Z, DPR, H, W, cam, canvas, clampCam, context2d, ctx, resize } from './app/canvas.js';
 import { R, clamp, irnd, mulberry32, rnd, setRandomSource, uid } from './app/rng.js';
 import { Tileset, SHADOW_TEXTURE, buildTileset, makeCanvas } from './app/tileset.js';
+import { createPathfinder } from './app/pathfinding.js';
 
 console.log("AIV Phase1 perf build"); // shows up so we know this file ran
 const PERF = { log:false }; // flip to true to log basic timings
@@ -2589,6 +2590,15 @@ function cancelHaulJobsForBuilding(b){
 }
 function idx(x,y){ if(x<0||y<0||x>=GRID_W||y>=GRID_H) return -1; return baseIdx(x,y); }
 function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
+const _pathfinder = createPathfinder({
+  idx,
+  tileOccupiedByBuilding,
+  getWorld: () => world,
+  getTick: () => tick,
+  perf: PERF
+});
+const passable = _pathfinder.passable;
+const pathfind = _pathfinder.pathfind;
 function centerCamera(x,y){
   cam.z = 2.2;
   cam.x = x - W / (TILE * cam.z) * 0.5;
@@ -4479,72 +4489,6 @@ else if(v.state==='storage_idle'){
   v.state='storage_linger';
   v.thought=moodThought(v,'Tidying storage');
 } }
-
-  /* ==================== Pathfinding ==================== */
-  const PF = {
-    qx: new Int16Array(GRID_SIZE),
-    qy: new Int16Array(GRID_SIZE),
-    came: new Int32Array(GRID_SIZE)
-  };
-  function passable(x,y){ const i=idx(x,y); if(i<0) return false; if(tileOccupiedByBuilding(x,y)) return false; return WALKABLE.has(world.tiles[i]); }
-  function pathfind(sx,sy,tx,ty,limit=400){
-  // Normalize coordinates to integer tile indices so the path reconstruction loop
-  // always terminates, even if callers accidentally pass fractional values.
-  sx = Math.round(clamp(sx, 0, GRID_W - 1));
-  sy = Math.round(clamp(sy, 0, GRID_H - 1));
-  tx = Math.round(clamp(tx, 0, GRID_W - 1));
-  ty = Math.round(clamp(ty, 0, GRID_H - 1));
-  const tStart = PERF.log ? performance.now() : 0;
-  if(sx===tx&&sy===ty){
-    if(PERF.log && (tick % 60) === 0) console.log(`pathfind 0.00ms`);
-    return [{x:tx,y:ty}];
-  }
-  const Wm=GRID_W,Hm=GRID_H;
-  const qx=PF.qx, qy=PF.qy, came=PF.came;
-  came.fill(-1);
-  let qs=0,qe=0;
-  qx[qe]=sx; qy[qe]=sy; qe++;
-  came[sy*Wm+sx]=sx+sy*Wm;
-  let found=false,steps=0;
-  while(qs<qe && steps<limit){
-    const x=qx[qs], y=qy[qs]; qs++; steps++;
-    for(const d of DIR4){
-      const nx=x+d[0], ny=y+d[1];
-      if(nx<0||ny<0||nx>=Wm||ny>=Hm) continue;
-      const ni=ny*Wm+nx;
-      if(came[ni]!==-1) continue;
-      if(!passable(nx,ny)) continue;
-      came[ni]=y*Wm+x;
-      qx[qe]=nx; qy[qe]=ny; qe++;
-      if(nx===tx&&ny===ty){ found=true; qs=qe; break; }
-    }
-  }
-  if(!found){
-    if(PERF.log && (tick % 60) === 0){
-      const tEnd = performance.now();
-      console.log(`pathfind ${(tEnd - tStart).toFixed(2)}ms`);
-    }
-    return null;
-  }
-  const path=[];
-  let cx=tx,cy=ty,ci=cy*Wm+cx;
-  while(!(cx===sx&&cy===sy)){
-    path.push({x:cx+0.0001,y:cy+0.0001});
-    const pi=came[ci];
-    // If we somehow lost the predecessor chain, bail out to avoid infinite loops
-    // and signal that the path is unusable.
-    if(pi===-1 || !Number.isFinite(pi)){
-      return null;
-    }
-    cy=(pi/Wm)|0; cx=pi%Wm; ci=cy*Wm+cx;
-  }
-  path.reverse();
-  if(PERF.log && (tick % 60) === 0){
-    const tEnd = performance.now();
-    console.log(`pathfind ${(tEnd - tStart).toFixed(2)}ms`);
-  }
-  return path;
-}
 
 /* ==================== Seasons/Growth ==================== */
 function seasonTick(){
