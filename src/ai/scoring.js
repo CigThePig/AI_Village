@@ -230,14 +230,11 @@ export function score(job, villager, policy, blackboard) {
       }
     }
 
-    if (famineUrgencyWeight !== 0) {
-      const famineSeverity = computeFamineSeverity(blackboard);
-      if (famineSeverity > 0) {
-        if (FARM_JOB_TYPES.has(job.type) || job.type === 'harvest') {
-          value += famineSeverity * famineUrgencyWeight;
-        } else {
-          value -= famineSeverity * (famineUrgencyWeight * 0.5);
-        }
+    if (famineUrgencyWeight !== 0 && famineSeverity > 0) {
+      if (FARM_JOB_TYPES.has(job.type) || job.type === 'harvest') {
+        value += famineSeverity * famineUrgencyWeight;
+      } else {
+        value -= famineSeverity * (famineUrgencyWeight * 0.5);
       }
     }
 

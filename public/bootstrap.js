@@ -1,4 +1,32 @@
+// Loaded as a classic deferred <script> from index.html. Must not use
+// module-relative URLs (no `import`, no `fetch('./foo')`, no
+// `<img src='./foo'>`) — Vite does not rewrite paths in this file for the
+// `base=/AI_Village/` production deployment.
 console.log('AIV: HTML parsed v3.1');
+
+// Set up the worldgen-ready promise BEFORE any deferred worldgen script
+// evaluates. `<script defer>` preserves document order, and bootstrap.js is
+// listed first in index.html, so this runs first.
+(function () {
+  if (typeof window === 'undefined' || window.AIV_WORLDGEN_READY) return;
+  let resolveFn;
+  let rejectFn;
+  window.AIV_WORLDGEN_READY = new Promise(function (resolve, reject) {
+    resolveFn = resolve;
+    rejectFn = reject;
+  });
+  window.__AIV_WORLDGEN_RESOLVE__ = function () { if (resolveFn) resolveFn(); };
+  window.__AIV_WORLDGEN_REJECT__ = function (err) { if (rejectFn) rejectFn(err); };
+  // Fallback timeout: if terrain.js never resolves the promise (e.g. one of
+  // the deferred scripts threw at parse time), reject after 5 s so callers
+  // surface a clear error instead of hanging.
+  setTimeout(function () {
+    if (window.__AIV_WORLDGEN_RESOLVE__) {
+      try { window.__AIV_WORLDGEN_REJECT__(new Error('AI Village terrain dependencies failed to load before timeout.')); }
+      catch (err) { /* noop */ }
+    }
+  }, 5000);
+})();
 
 (function () {
   'use strict';
@@ -82,13 +110,13 @@ console.log('AIV: HTML parsed v3.1');
 
 // Wait a bit longer than the dependency bootstrap timeout so we don't
 // surface a false negative on slower devices or when the terrain bundle
-// takes a moment to attach globals.
+// takes a moment to attach globals. Skip if main.js already recorded a
+// boot failure — that path shows its own fatal overlay via reportFatal.
 setTimeout(function () {
-  if (!window.__AIV_BOOT__) {
-    const versionEl = document.getElementById('version');
-    if (versionEl) {
-      versionEl.textContent += ' — JS NOT RUNNING (CSP or cache)';
-    }
-    console.error('AIV: JS did not run — likely CSP or stale cache');
+  if (window.__AIV_BOOT__ || window.__AIV_BOOT_FAILED__) return;
+  const versionEl = document.getElementById('version');
+  if (versionEl) {
+    versionEl.textContent += ' — JS NOT RUNNING (CSP or cache)';
   }
-}, 4000);
+  console.error('AIV: JS did not run — likely CSP or stale cache');
+}, 6000);

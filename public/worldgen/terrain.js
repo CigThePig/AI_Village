@@ -1,3 +1,7 @@
+// Loaded as a classic deferred <script> from index.html. Must not use
+// module-relative URLs (no `import`, no `fetch('./foo')`, no
+// `<img src='./foo'>`) — Vite does not rewrite paths in this file for the
+// `base=/AI_Village/` production deployment.
 ;(function (global) {
   'use strict';
 
@@ -1296,5 +1300,9 @@ function logGenerationStats(ctx) {
 
   if (global && typeof global === 'object') {
     global.AIV_TERRAIN = terrainAPI;
+    if (typeof global.__AIV_WORLDGEN_RESOLVE__ === 'function') {
+      try { global.__AIV_WORLDGEN_RESOLVE__(); }
+      catch (err) { /* noop */ }
+    }
   }
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
