@@ -137,11 +137,11 @@ export const policy = {
   attach(state) {
     this.state = state || null;
     const fromState = state?.population?.priorities;
-    if (fromState && typeof fromState === 'object') {
+    if (fromState && typeof fromState === 'object' && !Array.isArray(fromState)) {
       this.sliders = fromState;
     } else {
       if (state && fromState !== undefined) {
-        console.warn('policy.attach: state.population.priorities is not an object; falling back to defaults', fromState);
+        console.warn('policy.attach: state.population.priorities is not a plain object; falling back to defaults', fromState);
       }
       this.sliders = { ...DEFAULT_SLIDERS };
     }

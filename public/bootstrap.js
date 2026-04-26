@@ -15,13 +15,29 @@ console.log('AIV: HTML parsed v3.1');
     resolveFn = resolve;
     rejectFn = reject;
   });
-  window.__AIV_WORLDGEN_RESOLVE__ = function () { if (resolveFn) resolveFn(); };
-  window.__AIV_WORLDGEN_REJECT__ = function (err) { if (rejectFn) rejectFn(err); };
+  function settle() {
+    resolveFn = null;
+    rejectFn = null;
+    window.__AIV_WORLDGEN_RESOLVE__ = null;
+    window.__AIV_WORLDGEN_REJECT__ = null;
+  }
+  window.__AIV_WORLDGEN_RESOLVE__ = function () {
+    if (!resolveFn) return;
+    const fn = resolveFn;
+    settle();
+    fn();
+  };
+  window.__AIV_WORLDGEN_REJECT__ = function (err) {
+    if (!rejectFn) return;
+    const fn = rejectFn;
+    settle();
+    fn(err);
+  };
   // Fallback timeout: if terrain.js never resolves the promise (e.g. one of
   // the deferred scripts threw at parse time), reject after 5 s so callers
   // surface a clear error instead of hanging.
   setTimeout(function () {
-    if (window.__AIV_WORLDGEN_RESOLVE__) {
+    if (typeof window.__AIV_WORLDGEN_REJECT__ === 'function') {
       try { window.__AIV_WORLDGEN_REJECT__(new Error('AI Village terrain dependencies failed to load before timeout.')); }
       catch (err) { /* noop */ }
     }
