@@ -1,228 +1,202 @@
-# AI_Village Repo Audit — Deferred Work
+# AI_Village Repo Audit
 
-This document captures issues identified during a repository-wide audit (April 2026)
-that were **not** fixed in the same change. Each entry has a file:line pointer and
-a brief description of the problem and a suggested fix direction.
+A snapshot of the codebase's known issues and their current status. Items are
+grouped by remaining severity. Resolved entries are listed at the bottom for
+historical reference. Severity is the auditor's estimate of impact, not a
+user-reported priority.
 
-The companion change in this commit landed targeted, surgical fixes for the highest-
-impact, lowest-risk items: the jsdelivr CDN fallback in `public/bootstrap.js`,
-a `clamp()` correctness bug in `src/ai/scoring.js`, a `FARM_JOB_TYPES` mismatch
-between `src/ai/blackboard.js` and `src/ai/scoring.js`, a signature mismatch in
-`policy.caps.buildWaiting`, hardening of `loadGame()` array normalization in
-`src/app.js`, and a strict-equality cleanup in `public/debugkit.js`.
-
-Severity is the auditor's estimate of impact, not user-reported priority.
+This document supersedes the April 2026 audit; most entries from that pass
+have since been merged.
 
 ---
 
-## Critical — boot, runtime, lifecycle
+## Open — High
 
-### `src/app.js` is a 5,840-line monolith
-- **Where**: `src/app.js` (entire file)
-- **Problem**: One module contains terrain rendering, simulation, pathfinding,
-  AI tick, job system, save/load, UI event handlers, lighting, and boot. ~220
-  function definitions inline; module-local convenience bindings (`buildings`,
-  `villagers`, `jobs`, `animals`, `world`, …) at lines 185–252 lock a particular
-  layout in place.
-- **Why it matters**: Almost every other item in this document (lifecycle,
-  state sync, listener leaks) is a symptom of this. Until the file is split,
-  every change risks unintended cross-cutting effects.
-- **Suggested**: Carve out `src/app/render.js`, `src/app/simulation.js`,
-  `src/app/save.js`, `src/app/ui.js`, `src/app/pathfinding.js` first — each
-  with explicit imports/exports against `gameState`. No behavior change in the
-  first pass; just relocations and module boundaries.
+### `src/app.js` is still a single ~4,900-line module
+- **Where**: `src/app.js`
+- **Status**: Significant progress. Pathfinding, save/load, UI/pointer input,
+  rendering helpers, world/building data, and time-of-day/experience helpers
+  have been carved out into `src/app/{pathfinding,save,ui,render,world,simulation}.js`.
+  What remains is the AI tick, job system, planner glue, building-specific
+  behavior, and boot wiring.
+- **Why it matters**: The remaining file still owns module-local mirrors of
+  `gameState` arrays (`buildings`, `villagers`, `jobs`, `animals`,
+  `itemsOnGround`) and a property-getter/setter for `world`. Most of the
+  trickier remaining items below trace back to that coupling.
+- **Suggested next pass**: Extract the planner (`planZones` /
+  `planBuildings` / `generateJobs`) and the AI tick (`villagerTick`) into
+  their own modules, taking explicit `gameState`/`policy` parameters rather
+  than closing over module-locals.
 
-### No teardown for `newWorld()` — listener leak
-- **Where**:
-  - `src/app.js:1634-1761` (UI buttons, document-level click, canvas pointer/wheel,
-    window keydown, slider inputs)
-  - `src/app/canvas.js:79` (`window.addEventListener('resize', resize)`)
-  - `src/app/storage.js:178,182` (`window` `error` and `unhandledrejection`)
-- **Problem**: Listeners are registered at module-load time and never removed.
-  `newWorld()` (`src/app.js:1061`) replaces world state but does not unsubscribe
-  anything; repeated `🗺️ New` clicks accumulate references through closures over
-  the previous world.
-- **Suggested**: Centralize listener registration in a `bind()` / `unbind()` pair;
-  call `unbind()` at the start of `newWorld()`. For listeners that are truly
-  module-lifetime (e.g. `resize`), keep them but document the intent.
-
-### State mutation interleaved with render
-- **Where**: `update()` in `src/app.js` (around line 5733) calls
-  `villagerTick()`, which mutates `storageTotals`, `storageReserved`,
-  `villagers`, etc., during the same RAF callback that calls `render()`.
-  `saveGame()` (`src/app.js:4475`) reads these fields without any
-  synchronization.
-- **Problem**: A save triggered mid-tick (button or auto-save) snapshots
-  inconsistent state — e.g. resource debited from `storageReserved` but the
-  receiving job not yet updated. Subtle, intermittent corruption on reload.
-- **Suggested**: Split simulation tick from render. Either run simulation in a
-  fixed-timestep loop with a frozen snapshot for save, or queue saves to fire
-  between ticks.
-
-### Stale module-local bindings after `newWorld()`
-- **Where**: `src/app.js:185-252`. Lines 186-189 capture references to
-  `units.buildings`, `units.villagers`, etc. Line 252 captures `world`.
-- **Problem**: `newWorld()` reassigns `gameState.world` (around line 1110 the
-  audit traced) and rebuilds the `units.*` arrays, but the module-local `let`s
-  go on referencing the prior objects. Anything outside `newWorld()` that uses
-  these locals is operating on stale data after the swap.
-- **Suggested**: Either freeze these as `gameState.world.tiles` accessors at
-  call sites, or have `newWorld()` mutate the existing arrays in place
-  (`array.length = 0; array.push(...newItems)`) instead of replacing them.
-  Auditing every callsite is a prerequisite to either path.
+### Simulation tick interleaved with render
+- **Where**: `src/app.js:4816` (`update()`) calls `villagerTick()`,
+  `updateAnimals()`, `seasonTick()`, etc. inside the same RAF callback that
+  ends with `render()`. `saveGame()` (now in `src/app/save.js:41`) reads
+  `gameState` directly when invoked.
+- **Why it matters**: Today the manual save button is the only save path so
+  the practical risk is bounded — JS is single-threaded and save fires
+  between RAF frames. But anything we add that triggers saves from a hook,
+  timer, or event listener could observe partial state (e.g. resource
+  debited from `storageReserved` before the receiving job updates).
+- **Suggested**: Split simulation tick from render with a fixed-timestep
+  loop and a frozen snapshot for save, or queue saves to fire between
+  ticks. Either path becomes easier once the planner/tick extraction
+  above lands.
 
 ---
 
-## High — data integrity
+## Open — Medium
 
-### Save schema migration framework absent
-- **Where**: `src/app.js:4476` (`SAVE_VERSION` exists; only one branch:
-  coarse-vs-full tile data)
-- **Problem**: When saved fields are added, removed, or renamed, the load path
-  silently degrades — added fields default to `0`/`''`, removed fields are
-  dropped, renames lose data entirely.
-- **Suggested**: Introduce a `migrations: Map<number, (data)=>data>` table; run
-  migrations sequentially when `data.saveVersion < SAVE_VERSION`. Even an empty
-  table establishes the pattern.
+### `inspectJobs` in `src/ai/blackboard.js` overlaps with `policy.caps.buildWaiting`
+- **Where**: `src/ai/blackboard.js:85-99` checks
+  `job.waitingForMaterials !== true` to set `buildPush`; the same concept is
+  encoded in `policy.caps.buildWaiting` (`src/policy/policy.js:151`).
+- **Suggested**: Pick one source of truth — either feed `buildPush` from
+  `caps.buildWaiting`, or remove the cap and rely on the blackboard signal.
 
-### Lazy villager Maps not hydrated on load
-- **Where**: `src/app.js` references `v._wanderFailures` and `v._forageFailures`
-  (created on demand around lines 3616 and 3702). `loadGame()` (line 4516)
-  rebuilds villagers without these fields.
-- **Problem**: First access path checks `if (!v._wanderFailures) v._wanderFailures = new Map()`,
-  so it works — but if a future code path does `v._wanderFailures.get(...)`
-  without the guard, loaded villagers throw.
-- **Suggested**: Initialize both as `new Map()` in the load path and at villager
-  spawn, then drop the lazy-init guards.
+### Duplicated experience constants
+- **Where**: `JOB_EXPERIENCE_MAP` and `EXPERIENCE_THRESHOLDS` are defined in
+  both `src/ai/scoring.js:6-18` and `src/app/simulation.js:9-22`. The
+  `simulation.js` copy includes `socialize: 'social'`; the `scoring.js`
+  copy does not.
+- **Why it matters**: Adding a new job type means editing both. The
+  divergence (`socialize`) is currently benign because it's tracked as a
+  villager state, not a scored job, but a future change could drift them
+  silently.
+- **Suggested**: Hoist both constants to a shared module (probably
+  `src/app/simulation.js`) and import from `scoring.js`.
 
-### Item tile index rebuild gated incorrectly
-- **Where**: `src/app.js:208` (`itemTileIndexDirty`); rebuild gate inside
-  `villagerTick()` near line 5781.
-- **Problem**: The audit observed the rebuild only triggers when a villager has
-  no inventory. Items dropped or picked up by a villager *with* inventory leave
-  the index stale until somebody else hits the empty-inventory branch.
-- **Suggested**: Move the rebuild check to the beginning of the tick loop and
-  trigger it whenever `itemTileIndexDirty` is true, independent of villager
-  inventory state. Verify no callers rely on the current ordering.
-
----
-
-## High — boot / integration
-
-### Race between `<script defer>` worldgen and ES-module boot
-- **Where**: `index.html:9-12` loads `bootstrap.js` and `worldgen/*.js` as
-  classic deferred scripts; line 63 loads `./src/main.js` as a module.
-  `src/main.js:25-46` polls every 10 ms for up to 3 s for
-  `window.AIV_TERRAIN`/`AIV_CONFIG` to appear.
-- **Problem**: Polling masks the fact that there is no causal ordering guarantee
-  between deferred scripts and module evaluation. On slow devices the timeout
-  fires and boot dies silently.
-- **Suggested**: Have `worldgen/terrain.js` resolve a `window.AIV_TERRAIN_READY`
-  promise (created up-front in `bootstrap.js`); have `main.js` `await` that
-  promise rather than polling.
-
-### Two independent boot timeouts
-- **Where**: `public/bootstrap.js:87-95` (4 s "JS NOT RUNNING" timer) and
-  `src/main.js:25-46` (3 s dependency timeout).
-- **Problem**: The 3 s timeout in `main.js` can reject before the 4 s message in
-  `bootstrap.js` fires; the user sees nothing for 3 s, then "JS NOT RUNNING"
-  one second later — confusing if the actual failure was a missed module load.
-- **Suggested**: Single source of truth: have `main.js` flip a flag; the
-  bootstrap timer should only show its message if neither boot success nor
-  boot failure has been recorded.
+### Canvas/lightmap context release on world swap
+- **Where**: `src/app.js` `newWorld()` reassigns `world.lightmapCanvas`/
+  `world.lightmapCtx`. `src/app/canvas.js:63` keeps a module-level `ctx`
+  singleton for the main canvas (correct — the main canvas is module-lifetime).
+- **Why it matters**: The world's offscreen lightmap canvas/context can
+  only be GCed once every closure that captured them releases. With the
+  bind/unbind UI listener lifecycle now landed, the practical leak is
+  small, but anything that captures `world.lightmapCtx` directly (rather
+  than re-reading `gameState.world.lightmapCtx`) will keep the prior swap
+  alive.
+- **Suggested**: Audit closures over `world.lightmap*`; prefer reading
+  through `gameState.world` at call time.
 
 ### `index.html` `<script>` tags depend on Vite `base` accidentally
-- **Where**: `index.html:9-12` references `bootstrap.js` and `worldgen/*.js`
-  with relative URLs that happen to resolve correctly in both `dev` (`base=/`)
-  and prod (`base=/AI_Village/`).
-- **Problem**: This works today because the scripts have no internal asset
-  references. As soon as one tries to `fetch()` or `<img src="">` something
-  relative, the path breaks in one of the two contexts.
-- **Suggested**: Document the constraint at the top of each `public/`
-  script, or move the bootstrap into a module so Vite handles base rewrites.
+- **Where**: `index.html:8-12` references `bootstrap.js` and `worldgen/*.js`
+  with relative URLs that resolve correctly in both `dev` (`base=/`) and
+  prod (`base=/AI_Village/`) because none of those scripts have internal
+  asset references.
+- **Status**: Documented via a header comment at the top of each `public/`
+  script. If any of those scripts ever needs `fetch(...)` or `<img src=...>`
+  against a relative URL, the constraint will need to be revisited
+  (probably by moving the bootstrap into a module).
 
 ---
 
-## Medium
+## Open — Low
 
-### Pointer state race in `endPointer()`
-- **Where**: `src/app.js:1735-1738` (approx). `endPointer` clears
-  `primaryPointer` without verifying `activePointers.size` first; a
-  `pointerleave` followed by `pointerup` for the same pointer can desync state.
-- **Suggested**: Only clear `primaryPointer` when the leaving pointer matches.
+### `src/app.js:70` ships a diagnostic `console.log`
+- `console.log("AIV Phase1 perf build")` runs on every page load.
+  Intentional — it confirms the bundle ran — but it's noise in prod
+  consoles. Consider gating on `import.meta.env.DEV` or removing.
 
-### Canvas / lightmap context leak on world swap
-- **Where**: `src/app/canvas.js:63` (`ctx` is a module-level singleton);
-  `src/app.js:632` reassigns `world.lightmapCtx` on `newWorld()`.
-- **Problem**: The previous offscreen canvas + context can be GCed only after
-  every closure that captured them releases its reference. Listener leaks
-  (above) keep them pinned.
-- **Suggested**: Tied to the `newWorld()` teardown work above; explicitly
-  detach old contexts and release sources.
+### Unused exports retained as a debug surface
+- **Where**: `src/app.js:4924` exports `setShadingMode`,
+  `setShadingParams`, `makeAltitudeShade`, `ambientAt`,
+  `buildHillshadeQ`, `buildLightmap`, `sampleLightAt`,
+  `shadeFillColorLit`, `applySpriteShadeLit`. No internal module imports
+  them; they're also installed onto `AIV_APP` for DebugKit (`src/app.js:4900`).
+- **Suggested**: The intent is documented in a code comment but the
+  contract isn't pinned anywhere user-facing. Either drop the ES exports
+  (leaving only the `AIV_APP` global) or document them in a public-API
+  README so external tools know what they can rely on.
 
-### `dayTime` shadowed
-- **Where**: `src/app.js:264-267` extracts `dayTime` from `time.dayTime`; line
-  ~451 overwrites it without ever reading the prior value.
-- **Suggested**: Drop the line 264-267 extraction.
+### No automated tests
+- The repo has lint and build but no test runner. A smoke test (e.g.
+  `vitest` plus a single "boot the world headless" assertion) would
+  catch a lot of the closure-over-stale-state regressions the items
+  above worry about.
 
-### `policy.attach()` fails silently
-- **Where**: `src/policy/policy.js:137-144`.
-- **Problem**: When `state.population.priorities` is malformed (non-object), it
-  silently falls back to `DEFAULT_SLIDERS` — debugging a missing slider becomes
-  a guessing game.
-- **Suggested**: `console.warn` on the fallback.
-
-### Redundant `computeFamineSeverity()`
-- **Where**: `src/ai/scoring.js:208,236` (computes the same value twice within
-  the same `score()` call).
-- **Suggested**: Compute once and reuse.
-
-### `inspectJobs` overlaps with policy
-- **Where**: `src/ai/blackboard.js:85-99` checks `job.waitingForMaterials`,
-  duplicating logic that `policy.caps.buildWaiting` exists to encode.
-- **Suggested**: Unify the two; either feed `buildPush` from the cap or remove
-  the cap.
-
-### Unused exports in `src/app.js`
-- **Where**: Trailing exports `shadeFillColorLit`, `applySpriteShadeLit`,
-  `ambientAt`, `buildHillshadeQ`, `buildLightmap`, `sampleLightAt` (around
-  line 5840).
-- **Problem**: No internal caller; only `AIV_APP` global exposes them.
-- **Suggested**: Either drop the exports or document they are part of an
-  intended public debug surface.
+### Lint not gated in CI
+- `npm run lint` is wired in `package.json`, but the `deploy-pages`
+  workflow only runs `npm ci && npm run build`. Lint regressions can
+  land on `main` undetected. Add a `lint` step to the workflow (or a
+  separate `ci.yml`).
 
 ---
 
-## Low
+## Resolved (since the April 2026 audit)
 
-### No lint / format / typecheck pipeline
-- `package.json` has only `dev`, `build`, `preview`. No `eslint`, `prettier`,
-  `tsc --noEmit`. Many of the issues above (loose equality, dead variables,
-  unused exports) would have been caught.
-- **Suggested**: Add `eslint` with the recommended JS config and a `lint`
-  script.
+For historical reference. Each item below was an open finding in the
+prior audit; the linked file/line is where the fix lives.
 
-### `.gpagesignore` is unused
-- The deploy workflow uploads `dist/`, not the repo root, so `.gpagesignore`
-  has no consumer. The file lists `node_modules/`, `.gitignore`, `.github/`,
-  `README.md`.
-- **Suggested**: Delete the file, or rewrite the workflow to use it
-  (probably not worth it given Vite already produces `dist/`).
-
-### `README.md` describes the deploy inaccurately
-- The README says the workflow "uploads the repository contents (excluding
-  files listed in `.gpagesignore`)" — but the workflow runs `npm run build` and
-  uploads `dist/`. Update the README to match reality.
-
-### Loose typing of seed in `loadGame`
-- `newWorld(d.seed)` is called without validating `d.seed` is a finite number;
-  a corrupt save with `seed: "abc"` would propagate. Worth a `Number.isFinite`
-  guard.
-
----
-
-## Notes
-
-The audit did not run automated tests because none exist. Adding even a
-smoke-test (`vitest` + a single "boot the world headless" assertion) would
-remove a lot of risk from the deferred items above.
+- **CDN fallback in `public/bootstrap.js`** — restructured into a
+  promise + 5 s reject + `terrain.js` resolves
+  `__AIV_WORLDGEN_RESOLVE__`; both helpers null themselves after the
+  first call.
+- **`clamp()` correctness in `src/ai/scoring.js:20`** — non-finite
+  inputs return `min`.
+- **`FARM_JOB_TYPES` mismatch** — `src/ai/blackboard.js:10` and
+  `src/ai/scoring.js:3` both include `'forage'`.
+- **`policy.caps.buildWaiting` signature** —
+  `src/policy/policy.js:151` accepts the four positional args its call
+  site passes.
+- **`loadGame()` array normalization** — every layer is normalized
+  upfront with length validation in `src/app/save.js:107-132`.
+- **`policy.attach()` silent fallback** — now warns when
+  `state.population.priorities` is malformed and additionally rejects
+  arrays (`src/policy/policy.js:140-147`).
+- **Storage load type validation** — `storageTotals` /
+  `storageReserved` use `Number.isFinite` per field
+  (`src/app/save.js:170-179`), consistent with the rest of the file.
+- **Listener lifecycle on `newWorld()`** — UI buttons / document /
+  canvas / window listeners are unbound at the start of `newWorld()`
+  and rebound at the end (`src/app.js:1011-1012, 1170-1171` calling
+  the bind/unbind pair in `src/app/ui.js:152-298`). `resize` and the
+  global `error`/`unhandledrejection` listeners are intentionally
+  module-lifetime and are documented as such at their declaration site.
+- **Stale module-local arrays after `newWorld()`** —
+  `jobs.length=0; buildings.length=0; itemsOnGround.length=0;
+  animals.length=0;` mutate in place (`src/app.js:1016`); `world` is
+  fronted by a getter/setter on `gameState`.
+- **Save schema migration framework** — `SAVE_MIGRATIONS` map in
+  `src/app/constants.js:74` plus the sequential migration loop at
+  `src/app/save.js:99-105`. The map is empty today; adding an entry
+  for `v -> v+1` is sufficient to handle a future schema bump.
+- **Lazy villager Maps hydrated on load** — `_wanderFailures` and
+  `_forageFailures` are seeded as `new Map()` in the load path
+  (`src/app/save.js:208`).
+- **Item tile index rebuild gating** — `if(itemTileIndexDirty)
+  rebuildItemTileIndex();` runs at the top of the per-villager loop in
+  `update()` (`src/app.js:4861`), independent of villager inventory.
+- **Worldgen ↔ ES module boot race** — `bootstrap.js` installs
+  `AIV_WORLDGEN_READY` before any `<script defer>` evaluates;
+  `terrain.js` resolves it; `src/main.js:34` `await`s the promise
+  instead of polling.
+- **Two boot timeouts** — coordinated. The `AIV_WORLDGEN_READY`
+  promise rejects at 5 s; the "JS NOT RUNNING" message in `bootstrap.js`
+  fires at 6 s and is suppressed if `__AIV_BOOT__` or
+  `__AIV_BOOT_FAILED__` is set, so the user no longer sees a stale
+  message after a clean failure.
+- **Pointer state race in `endPointer()`** — `endPointer` checks
+  `activePointers.has(e.pointerId)` and only clears `primaryPointer`
+  when the leaving pointer matches (`src/app/ui.js:262-267`).
+- **`dayTime` "shadowed"** — the variable was misread as redundant in
+  the prior audit; it's actually the backing storage for the
+  `time.dayTime` getter/setter pair (`src/app.js:307-348`).
+- **Redundant `computeFamineSeverity()`** — computed once and reused
+  (`src/ai/scoring.js:206`).
+- **Redundant `|| job.type === 'harvest'`** — dropped;
+  `FARM_JOB_TYPES` already contains `'harvest'`
+  (`src/ai/scoring.js:234`).
+- **Loose-equality cleanup in `public/debugkit.js`** — landed earlier.
+- **No lint pipeline** — `eslint.config.js` plus `npm run lint`
+  (`package.json:9`).
+- **`.gpagesignore`** — deleted; the deploy workflow
+  (`.github/workflows/deploy-pages.yml`) uploads `dist/` directly.
+- **README inaccuracy about the deploy workflow** — `README.md:10-18`
+  now correctly describes `npm run build` + `dist/` upload.
+- **Loose typing of seed in `loadGame`** —
+  `newWorld(Number.isFinite(d.seed) ? d.seed : undefined)`
+  (`src/app/save.js:133`).
+- **Bootstrap helper cleanup** — `__AIV_WORLDGEN_RESOLVE__`/`REJECT__`
+  null themselves after the first call so the closure can GC and
+  double-calls are no-ops (`public/bootstrap.js:14-39`).

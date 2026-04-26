@@ -167,16 +167,16 @@ export function createSaveSystem(deps) {
       });
       reindexAllBuildings();
       markEmittersDirty();
-      const loadedTotals = Object.assign({ food: 0, wood: 0, stone: 0, bow: 0 }, d.storageTotals || {});
-      storageTotals.food = loadedTotals.food || 0;
-      storageTotals.wood = loadedTotals.wood || 0;
-      storageTotals.stone = loadedTotals.stone || 0;
-      storageTotals.bow = loadedTotals.bow || 0;
-      const loadedReserved = Object.assign({ food: 0, wood: 0, stone: 0, bow: 0 }, d.storageReserved || {});
-      storageReserved.food = loadedReserved.food || 0;
-      storageReserved.wood = loadedReserved.wood || 0;
-      storageReserved.stone = loadedReserved.stone || 0;
-      storageReserved.bow = loadedReserved.bow || 0;
+      const savedTotals = d.storageTotals || {};
+      storageTotals.food = Number.isFinite(savedTotals.food) ? savedTotals.food : 0;
+      storageTotals.wood = Number.isFinite(savedTotals.wood) ? savedTotals.wood : 0;
+      storageTotals.stone = Number.isFinite(savedTotals.stone) ? savedTotals.stone : 0;
+      storageTotals.bow = Number.isFinite(savedTotals.bow) ? savedTotals.bow : 0;
+      const savedReserved = d.storageReserved || {};
+      storageReserved.food = Number.isFinite(savedReserved.food) ? savedReserved.food : 0;
+      storageReserved.wood = Number.isFinite(savedReserved.wood) ? savedReserved.wood : 0;
+      storageReserved.stone = Number.isFinite(savedReserved.stone) ? savedReserved.stone : 0;
+      storageReserved.bow = Number.isFinite(savedReserved.bow) ? savedReserved.bow : 0;
       villagers.length = 0;
       const tickNow = getTick();
       (d.villagers || []).forEach(v => {

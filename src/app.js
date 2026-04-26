@@ -355,19 +355,19 @@ let lastZonePlanTick = tick - PLANNER_INTERVAL.zones;
 let lastBuildPlanTick = tick - PLANNER_INTERVAL.build;
 const progressionMemory = new Map();
 
-  setRandomSource(typeof rng.generator === 'function' ? rng.generator : Math.random);
-  Object.defineProperty(rng, 'generator', {
-    configurable: true,
-    enumerable: true,
-    get() {
-      return R;
-    },
-    set(value) {
-      if (typeof value === 'function') {
-        setRandomSource(value);
-      }
+setRandomSource(typeof rng.generator === 'function' ? rng.generator : Math.random);
+Object.defineProperty(rng, 'generator', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    return R;
+  },
+  set(value) {
+    if (typeof value === 'function') {
+      setRandomSource(value);
     }
-  });
+  }
+});
 rng.seed = Number.isFinite(rng.seed) ? rng.seed >>> 0 : (Date.now() | 0);
 
 let debugKitInstance = null;
