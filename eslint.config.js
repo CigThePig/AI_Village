@@ -34,7 +34,7 @@ export default [
       }
     },
     rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
       'no-empty': ['warn', { allowEmptyCatch: true }],
       'no-prototype-builtins': 'off',
       'no-constant-condition': ['warn', { checkLoops: false }],

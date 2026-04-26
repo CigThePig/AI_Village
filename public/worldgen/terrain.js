@@ -38,10 +38,8 @@
   let GH = 0;
   let GS = 0;
   let baseSeed = 0;
-  let RNG_RIVER = null;
   let RNG_RESOURCE = null;
   let heightField = null;
-  let moistureField = null;
   let riverMeta = [];
   let riverConfig = null;
 
@@ -72,7 +70,6 @@ function generateTerrain(seed, cfg, dims) {
   GW = dims.w | 0;
   GH = dims.h | 0;
   GS = GW * GH;
-  RNG_RIVER = mulberry32((baseSeed ^ 0xA341316C) >>> 0);
   RNG_RESOURCE = mulberry32((baseSeed ^ 0xAD90777D) >>> 0);
   riverConfig = cfg.rivers;
   riverMeta = [];
@@ -87,7 +84,6 @@ function generateTerrain(seed, cfg, dims) {
 
   const { height, moisture } = makeHeightMoisture(baseSeed, GW, GH, cfg);
   heightField = height;
-  moistureField = moisture;
 
   const lakeMask = floodFillBasins(height, cfg.water.level, cfg.water.minLakeSize, cfg.water.maxLakeSize, GW, GH);
   boostMoistureRing(moisture, lakeMask, GW, GH, 0.07);
@@ -538,7 +534,7 @@ function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
   const riverMask = new Uint8Array(w * h);
   const widthCache = new Uint8Array(w * h);
 
-  const paint = (x, y, idx) => {
+  const paint = (x, y) => {
     if (x < 0 || y < 0 || x >= w || y >= h) return;
     const centerIdx = y * w + x;
     const width = getWidth(centerIdx, accum, cfg, widthCache);
@@ -564,7 +560,7 @@ function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
   for (const poly of polylines) {
     if (!poly || poly.length === 0) continue;
     let prev = poly[0];
-    paint(Math.round(prev[0]), Math.round(prev[1]), idx(Math.round(prev[0]), Math.round(prev[1])));
+    paint(Math.round(prev[0]), Math.round(prev[1]));
     for (let i = 1; i < poly.length; i++) {
       const cur = poly[i];
       const dx = cur[0] - prev[0];
@@ -574,7 +570,7 @@ function rasterizeRivers(polylines, accum, tiles, cfg, w, h) {
         const t = s / steps;
         const sx = prev[0] + dx * t;
         const sy = prev[1] + dy * t;
-        paint(Math.round(sx), Math.round(sy), idx(Math.round(sx), Math.round(sy)));
+        paint(Math.round(sx), Math.round(sy));
       }
       prev = cur;
     }
@@ -1143,12 +1139,6 @@ function largestClearingArea(tiles, w, h) {
   return best;
 }
 
-function countOnes(mask) {
-  let total = 0;
-  for (let i = 0; i < mask.length; i++) if (mask[i]) total++;
-  return total;
-}
-
 function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
   const size = w * h;
   const shade = new Float32Array(size);
@@ -1233,7 +1223,7 @@ function makeHillshade(height, w, h, cfg = SHADING_DEFAULTS) {
 }
 
 function logGenerationStats(ctx) {
-  const { tiles, rocks, berries, masks, stoneDeposits, berryTiles, fertileStats, duration, config } = ctx;
+  const { tiles, stoneDeposits, berryTiles, fertileStats, duration, config } = ctx;
   const size = tiles.length;
   const counts = new Array(10).fill(0);
   for (let i = 0; i < size; i++) counts[tiles[i]]++;

@@ -882,12 +882,12 @@
     if (!shadingHooksInstalled) {
       const originalMode = win.setShadingMode;
       const originalParams = win.setShadingParams;
-      win.setShadingMode = function (mode) {
+      win.setShadingMode = function () {
         const result = originalMode.apply(this, arguments);
         syncShadingControls();
         return result;
       };
-      win.setShadingParams = function (params) {
+      win.setShadingParams = function () {
         const result = originalParams.apply(this, arguments);
         syncShadingControls();
         return result;

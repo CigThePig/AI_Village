@@ -844,7 +844,7 @@ function removeAnimal(animal){
   return false;
 }
 
-function resolveHuntYield({ animal, lodge }){
+function resolveHuntYield({ animal: _animal, lodge }){
   const effects=lodge?.effects || {};
   const gameBonus=Number.isFinite(effects.gameYieldBonus)?effects.gameYieldBonus:0;
   const hideBonus=Number.isFinite(effects.hideYieldBonus)?effects.hideYieldBonus:0;
@@ -1028,8 +1028,6 @@ function newWorld(seed=Date.now()|0){
   storageReserved.bow = 0;
   time.tick = 0;
   time.dayTime = 0;
-  tick = time.tick;
-  dayTime = time.dayTime;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
   const aux = terrain.aux || {};
   const mode = normalizeShadingMode(SHADING_DEFAULTS.mode);
@@ -2068,7 +2066,6 @@ function cancelHaulJobsForBuilding(b){
   }
 }
 function idx(x,y){ if(x<0||y<0||x>=GRID_W||y>=GRID_H) return -1; return baseIdx(x,y); }
-function getTile(x,y){ const i=idx(x,y); if(i<0) return null; return { t:world.tiles[i], i }; }
 const _pathfinder = createPathfinder({
   idx,
   tileOccupiedByBuilding,
@@ -3874,7 +3871,7 @@ function seasonTick(){
   }
   const hasFarmBoosters=buildings.some(b=>b.built>=1 && (b.kind==='farmplot'||b.kind==='well'));
   const creationCfg = getJobCreationConfig();
-  const bb = ensureBlackboardSnapshot();
+  ensureBlackboardSnapshot();
   for(let i=0;i<world.growth.length;i++){
     if(world.tiles[i]!==TILES.FARMLAND) continue;
     const prev=world.growth[i];
