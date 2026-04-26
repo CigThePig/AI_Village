@@ -1676,16 +1676,29 @@ function zoneHasWorkNow(z, i){
 
 function toggleSheet(id, open){ const el=document.getElementById(id); if(!el) return; el.setAttribute('data-open', open?'true':'false'); }
 
-const btnSave=el('btnSave');
+const uiRefs = {
+  btnPause: el('btnPause'),
+  btnSpeed: el('btnSpeed'),
+  btnPrior: el('btnPrior'),
+  btnSave: el('btnSave'),
+  btnNew: el('btnNew'),
+  btnHelpClose: el('btnHelpClose'),
+  help: el('help'),
+  sheetPrior: el('sheetPrior'),
+  prioFood: el('prioFood'),
+  prioBuild: el('prioBuild'),
+  prioExplore: el('prioExplore')
+};
+const btnSave = uiRefs.btnSave;
 if(!Storage.available){ btnSave.disabled=true; btnSave.title='Saving unavailable in this context'; }
 
 /* Named handlers — required so removeEventListener can match the same reference */
-function onPauseClick(){ paused=!paused; el('btnPause').textContent=paused?'▶️':'⏸'; }
-function onSpeedClick(){ speedIdx=(speedIdx+1)%SPEEDS.length; el('btnSpeed').textContent=SPEEDS[speedIdx]+'×'; }
-function onPriorClick(){ const sheet=document.getElementById('sheetPrior'); const open=sheet.getAttribute('data-open')==='true'; toggleSheet('sheetPrior',!open); }
+function onPauseClick(){ paused=!paused; uiRefs.btnPause.textContent=paused?'▶️':'⏸'; }
+function onSpeedClick(){ speedIdx=(speedIdx+1)%SPEEDS.length; uiRefs.btnSpeed.textContent=SPEEDS[speedIdx]+'×'; }
+function onPriorClick(){ const open=uiRefs.sheetPrior.getAttribute('data-open')==='true'; toggleSheet('sheetPrior',!open); }
 function onSaveClick(){ if(!Storage.available){ Toast.show('Saving disabled in this context'); return; } saveGame(); Toast.show('Saved.'); }
 function onNewClick(){ newWorld(); }
-function onHelpCloseClick(){ el('help').style.display='none'; Storage.set('aiv_help_px3','1'); }
+function onHelpCloseClick(){ uiRefs.help.style.display='none'; Storage.set('aiv_help_px3','1'); }
 function onSheetPriorClick(e){ if(e.target.closest('.sheet-close')) toggleSheet('sheetPrior',false); }
 function onDocumentClick(e){
   const modeBtn = e.target.closest('[data-mode]');
@@ -1701,34 +1714,34 @@ function onPrioExploreInput(e){ policy.sliders.explore=(parseInt(e.target.value,
 let uiListenersBound = false;
 function bindUIListeners(){
   if(uiListenersBound) return;
-  el('btnPause').addEventListener('click', onPauseClick);
-  el('btnSpeed').addEventListener('click', onSpeedClick);
-  el('btnPrior').addEventListener('click', onPriorClick);
-  btnSave.addEventListener('click', onSaveClick);
-  el('btnNew').addEventListener('click', onNewClick);
-  el('btnHelpClose').addEventListener('click', onHelpCloseClick);
-  document.getElementById('sheetPrior').addEventListener('click', onSheetPriorClick);
+  uiRefs.btnPause.addEventListener('click', onPauseClick);
+  uiRefs.btnSpeed.addEventListener('click', onSpeedClick);
+  uiRefs.btnPrior.addEventListener('click', onPriorClick);
+  uiRefs.btnSave.addEventListener('click', onSaveClick);
+  uiRefs.btnNew.addEventListener('click', onNewClick);
+  uiRefs.btnHelpClose.addEventListener('click', onHelpCloseClick);
+  uiRefs.sheetPrior.addEventListener('click', onSheetPriorClick);
   document.addEventListener('click', onDocumentClick);
   window.addEventListener('keydown', onKeyDown);
-  document.getElementById('prioFood').addEventListener('input', onPrioFoodInput);
-  document.getElementById('prioBuild').addEventListener('input', onPrioBuildInput);
-  document.getElementById('prioExplore').addEventListener('input', onPrioExploreInput);
+  uiRefs.prioFood.addEventListener('input', onPrioFoodInput);
+  uiRefs.prioBuild.addEventListener('input', onPrioBuildInput);
+  uiRefs.prioExplore.addEventListener('input', onPrioExploreInput);
   uiListenersBound = true;
 }
 function unbindUIListeners(){
   if(!uiListenersBound) return;
-  el('btnPause').removeEventListener('click', onPauseClick);
-  el('btnSpeed').removeEventListener('click', onSpeedClick);
-  el('btnPrior').removeEventListener('click', onPriorClick);
-  btnSave.removeEventListener('click', onSaveClick);
-  el('btnNew').removeEventListener('click', onNewClick);
-  el('btnHelpClose').removeEventListener('click', onHelpCloseClick);
-  document.getElementById('sheetPrior').removeEventListener('click', onSheetPriorClick);
+  uiRefs.btnPause.removeEventListener('click', onPauseClick);
+  uiRefs.btnSpeed.removeEventListener('click', onSpeedClick);
+  uiRefs.btnPrior.removeEventListener('click', onPriorClick);
+  uiRefs.btnSave.removeEventListener('click', onSaveClick);
+  uiRefs.btnNew.removeEventListener('click', onNewClick);
+  uiRefs.btnHelpClose.removeEventListener('click', onHelpCloseClick);
+  uiRefs.sheetPrior.removeEventListener('click', onSheetPriorClick);
   document.removeEventListener('click', onDocumentClick);
   window.removeEventListener('keydown', onKeyDown);
-  document.getElementById('prioFood').removeEventListener('input', onPrioFoodInput);
-  document.getElementById('prioBuild').removeEventListener('input', onPrioBuildInput);
-  document.getElementById('prioExplore').removeEventListener('input', onPrioExploreInput);
+  uiRefs.prioFood.removeEventListener('input', onPrioFoodInput);
+  uiRefs.prioBuild.removeEventListener('input', onPrioBuildInput);
+  uiRefs.prioExplore.removeEventListener('input', onPrioExploreInput);
   uiListenersBound = false;
 }
 bindUIListeners();
