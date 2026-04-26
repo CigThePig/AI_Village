@@ -5,7 +5,7 @@ This repository hosts the static build of the AI Village pixel edition experienc
 ## DebugKit overlay
 
 * Visit the site with `?debug=1` appended to the URL (for example, <https://cigthepig.github.io/AI_Village/?debug=1>) or set `localStorage.debug` to `true` to enable the DebugKit overlay.
-* The overlay loads the `debugkit.js` script directly from the repository root. Any changes merged into `main` are automatically deployed with the workflow below, so the latest script is always available at <https://cigthepig.github.io/AI_Village/debugkit.js>.
+* The overlay loads the `debugkit.js` script from the deployed site. The source lives at `public/debugkit.js`; Vite copies it verbatim into `dist/debugkit.js` at build time, so any changes merged into `main` are automatically deployed and the latest script is always available at <https://cigthepig.github.io/AI_Village/debugkit.js>.
 
 ## GitHub Pages deployment
 
