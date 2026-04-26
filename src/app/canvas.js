@@ -76,6 +76,7 @@ function resize(){
   canvas.height = H;
 }
 resize();
+// Module-lifetime: canvas and DPR must stay in sync for the app's entire lifetime.
 window.addEventListener('resize', resize);
 
 function clampCam(){
