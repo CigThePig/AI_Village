@@ -14,6 +14,13 @@ export function createUISystem(deps) {
 
   const el = (id) => document.getElementById(id);
 
+  function safeOn(node, event, fn, opts) {
+    if (node && typeof node.addEventListener === 'function') node.addEventListener(event, fn, opts);
+  }
+  function safeOff(node, event, fn, opts) {
+    if (node && typeof node.removeEventListener === 'function') node.removeEventListener(event, fn, opts);
+  }
+
   const host = document.createElement('div');
   host.id = 'toastHost';
   host.style.cssText = `
@@ -108,15 +115,20 @@ export function createUISystem(deps) {
     btnSave.title = 'Saving unavailable in this context';
   }
 
+  function syncTimeButtons() {
+    if (uiRefs.btnPause) uiRefs.btnPause.textContent = time.paused ? '▶️' : '⏸';
+    if (uiRefs.btnSpeed) uiRefs.btnSpeed.textContent = SPEEDS[time.speedIdx] + '×';
+  }
   function onPauseClick() {
     time.paused = !time.paused;
-    uiRefs.btnPause.textContent = time.paused ? '▶️' : '⏸';
+    syncTimeButtons();
   }
   function onSpeedClick() {
     time.speedIdx = (time.speedIdx + 1) % SPEEDS.length;
-    uiRefs.btnSpeed.textContent = SPEEDS[time.speedIdx] + '×';
+    syncTimeButtons();
   }
   function onPriorClick() {
+    if (!uiRefs.sheetPrior) return;
     const open = uiRefs.sheetPrior.getAttribute('data-open') === 'true';
     toggleSheet('sheetPrior', !open);
   }
@@ -127,6 +139,7 @@ export function createUISystem(deps) {
   }
   function onNewClick() { newWorld(); }
   function onHelpCloseClick() {
+    if (!uiRefs.help) return;
     uiRefs.help.style.display = 'none';
     Storage.set('aiv_help_px3', '1');
   }
@@ -152,34 +165,34 @@ export function createUISystem(deps) {
   let uiListenersBound = false;
   function bindUIListeners() {
     if (uiListenersBound) return;
-    uiRefs.btnPause.addEventListener('click', onPauseClick);
-    uiRefs.btnSpeed.addEventListener('click', onSpeedClick);
-    uiRefs.btnPrior.addEventListener('click', onPriorClick);
-    uiRefs.btnSave.addEventListener('click', onSaveClick);
-    uiRefs.btnNew.addEventListener('click', onNewClick);
-    uiRefs.btnHelpClose.addEventListener('click', onHelpCloseClick);
-    uiRefs.sheetPrior.addEventListener('click', onSheetPriorClick);
+    safeOn(uiRefs.btnPause, 'click', onPauseClick);
+    safeOn(uiRefs.btnSpeed, 'click', onSpeedClick);
+    safeOn(uiRefs.btnPrior, 'click', onPriorClick);
+    safeOn(uiRefs.btnSave, 'click', onSaveClick);
+    safeOn(uiRefs.btnNew, 'click', onNewClick);
+    safeOn(uiRefs.btnHelpClose, 'click', onHelpCloseClick);
+    safeOn(uiRefs.sheetPrior, 'click', onSheetPriorClick);
     document.addEventListener('click', onDocumentClick);
     window.addEventListener('keydown', onKeyDown);
-    uiRefs.prioFood.addEventListener('input', onPrioFoodInput);
-    uiRefs.prioBuild.addEventListener('input', onPrioBuildInput);
-    uiRefs.prioExplore.addEventListener('input', onPrioExploreInput);
+    safeOn(uiRefs.prioFood, 'input', onPrioFoodInput);
+    safeOn(uiRefs.prioBuild, 'input', onPrioBuildInput);
+    safeOn(uiRefs.prioExplore, 'input', onPrioExploreInput);
     uiListenersBound = true;
   }
   function unbindUIListeners() {
     if (!uiListenersBound) return;
-    uiRefs.btnPause.removeEventListener('click', onPauseClick);
-    uiRefs.btnSpeed.removeEventListener('click', onSpeedClick);
-    uiRefs.btnPrior.removeEventListener('click', onPriorClick);
-    uiRefs.btnSave.removeEventListener('click', onSaveClick);
-    uiRefs.btnNew.removeEventListener('click', onNewClick);
-    uiRefs.btnHelpClose.removeEventListener('click', onHelpCloseClick);
-    uiRefs.sheetPrior.removeEventListener('click', onSheetPriorClick);
+    safeOff(uiRefs.btnPause, 'click', onPauseClick);
+    safeOff(uiRefs.btnSpeed, 'click', onSpeedClick);
+    safeOff(uiRefs.btnPrior, 'click', onPriorClick);
+    safeOff(uiRefs.btnSave, 'click', onSaveClick);
+    safeOff(uiRefs.btnNew, 'click', onNewClick);
+    safeOff(uiRefs.btnHelpClose, 'click', onHelpCloseClick);
+    safeOff(uiRefs.sheetPrior, 'click', onSheetPriorClick);
     document.removeEventListener('click', onDocumentClick);
     window.removeEventListener('keydown', onKeyDown);
-    uiRefs.prioFood.removeEventListener('input', onPrioFoodInput);
-    uiRefs.prioBuild.removeEventListener('input', onPrioBuildInput);
-    uiRefs.prioExplore.removeEventListener('input', onPrioExploreInput);
+    safeOff(uiRefs.prioFood, 'input', onPrioFoodInput);
+    safeOff(uiRefs.prioBuild, 'input', onPrioBuildInput);
+    safeOff(uiRefs.prioExplore, 'input', onPrioExploreInput);
     uiListenersBound = false;
   }
 
@@ -306,6 +319,7 @@ export function createUISystem(deps) {
     unbindUIListeners,
     bindCanvasInputs,
     unbindCanvasInputs,
+    syncTimeButtons,
     toTile,
     screenToWorld,
     pointerScale

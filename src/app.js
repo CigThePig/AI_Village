@@ -315,27 +315,12 @@ function applyShadingParams({ ambient, intensity, slopeScale } = {}) {
 registerShadingHandlers({ setMode: applyShadingMode, setParams: applyShadingParams });
 
 
-function newWorld(seed=Date.now()|0){
-  if(typeof unbindUIListeners === 'function') unbindUIListeners();
-  if(typeof unbindCanvasInputs === 'function') unbindCanvasInputs();
+// audit #21: pure terrain + world struct setup. Callable from loadGame
+// without spawning campfire/storage/villagers/animals.
+function generateWorldBase(seed){
   const normalizedSeed = seed >>> 0;
   rng.seed = normalizedSeed;
   rng.generator = mulberry32(normalizedSeed);
-  jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
-  buildingsByKind.clear();
-  clearActiveZoneJobs();
-  if(typeof tickRunner !== 'undefined') tickRunner.reset();
-  markEmittersDirty();
-  villagerNumberCounter = 1;
-  // audit #38: starting stocks duplicated with state.js — defer consolidation.
-  for (const r of RESOURCE_TYPES) {
-    storageTotals[r] = 0;
-    storageReserved[r] = 0;
-  }
-  storageTotals.food = 24;
-  storageTotals.wood = 12;
-  time.tick = 0;
-  time.dayTime = 0;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
   const aux = terrain.aux || {};
   const mode = normalizeShadingMode(SHADING_DEFAULTS.mode);
@@ -374,6 +359,37 @@ function newWorld(seed=Date.now()|0){
   world.growth.fill(0);
   refreshWaterRowMaskFromTiles();
   markZoneOverlayDirty();
+  return world;
+}
+
+// audit #21: extracted so loadGame can clear volatile state without
+// going through newWorld (which would spawn fresh villagers/animals).
+function resetVolatileState(){
+  jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
+  buildingsByKind.clear();
+  clearActiveZoneJobs();
+  if(typeof tickRunner !== 'undefined') tickRunner.reset();
+  markEmittersDirty();
+  villagerNumberCounter = 1;
+}
+
+function newWorld(seed=Date.now()|0, opts={}){
+  if(typeof unbindUIListeners === 'function') unbindUIListeners();
+  if(typeof unbindCanvasInputs === 'function') unbindCanvasInputs();
+  resetVolatileState();
+  // audit #38: starting stocks duplicated with state.js — defer consolidation.
+  for (const r of RESOURCE_TYPES) {
+    storageTotals[r] = 0;
+    storageReserved[r] = 0;
+  }
+  storageTotals.food = 24;
+  storageTotals.wood = 12;
+  time.tick = 0;
+  time.dayTime = 0;
+  // audit #18: reset pause/speed so a new world starts at defaults.
+  time.paused = false;
+  time.speedIdx = 1;
+  generateWorldBase(seed);
   function idc(x,y){ return y*GRID_W+x; }
   const startFootprintClear=(kind, tx, ty)=>validateFootprintPlacement(kind, tx, ty)===null;
 
@@ -471,11 +487,15 @@ function newWorld(seed=Date.now()|0){
 
   ensureDebugKitConfigured();
 
-  Toast.show('New pixel map created.');
-  Toast.show('Villagers will choose buildings and resource zones automatically.');
+  // audit #20: silent mode skips new-world toasts (used by loadGame).
+  if (!opts.silent) {
+    Toast.show('New pixel map created.');
+    Toast.show('Villagers will choose buildings and resource zones automatically.');
+  }
   centerCamera(campfire.x,campfire.y); markStaticDirty();
   if(typeof bindCanvasInputs === 'function') bindCanvasInputs();
   if(typeof bindUIListeners === 'function') bindUIListeners();
+  if(typeof syncTimeButtons === 'function') syncTimeButtons();
 }
 function addBuilding(kind,x,y,opts={}){
   const def=BUILDINGS[kind]||{};
@@ -618,9 +638,11 @@ const bindUIListeners = _uiSystem.bindUIListeners;
 const unbindUIListeners = _uiSystem.unbindUIListeners;
 const bindCanvasInputs = _uiSystem.bindCanvasInputs;
 const unbindCanvasInputs = _uiSystem.unbindCanvasInputs;
+const syncTimeButtons = _uiSystem.syncTimeButtons;
 const toTile = _uiSystem.toTile;
 bindUIListeners();
 bindCanvasInputs();
+if (typeof syncTimeButtons === 'function') syncTimeButtons();
 
 /* ==================== Automation Helpers ==================== */
 
@@ -759,7 +781,9 @@ const _saveSystem = createSaveSystem({
   normalizeExperienceLedger,
   normalizeArraySource,
   applyArrayScaled,
-  newWorld,
+  generateWorldBase,
+  resetVolatileState,
+  syncTimeButtons,
   getFootprint,
   ensureBuildingData,
   reindexAllBuildings,
@@ -1068,7 +1092,8 @@ function boot(){
     if(!loaded) newWorld();         // always create a world
     openMode('inspect');            // UI init
     if(!Storage.get('aiv_help_px3')){
-      el('help').style.display='block';
+      const helpEl = el('help');
+      if (helpEl) helpEl.style.display='block';
     }
   } catch (e){
     reportFatal(e);

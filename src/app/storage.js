@@ -188,6 +188,7 @@ if (typeof window !== 'undefined') {
 
 if (AIV_SCOPE && typeof AIV_SCOPE === 'object') {
   AIV_SCOPE.AIV_STORAGE = Storage;
+  AIV_SCOPE.reportFatal = reportFatal;
 }
 
 export {
