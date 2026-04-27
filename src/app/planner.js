@@ -976,7 +976,7 @@ export function createPlanner(opts) {
         status = buildingSupplyStatus(b);
       }
       let job = jobs.find(j => j.type === 'build' && j.bid === b.id);
-      if (!status.hasAnySupply) {
+      if (!status.fullyDelivered) {
         if (job) {
           const ji = jobs.indexOf(job);
           if (ji !== -1) {
@@ -988,14 +988,11 @@ export function createPlanner(opts) {
       }
       const buildSlider = policy.sliders.build || 0;
       const readyPrio = 0.6 + buildSlider * 0.6;
-      const waitingPrio = 0.5 + buildSlider * 0.35;
       if (!job) {
-        job = addJob({ type: 'build', bid: b.id, x: b.x, y: b.y, prio: status.fullyDelivered ? readyPrio : waitingPrio });
+        job = addJob({ type: 'build', bid: b.id, x: b.x, y: b.y, prio: readyPrio });
       } else {
-        job.prio = status.fullyDelivered ? readyPrio : waitingPrio;
+        job.prio = readyPrio;
       }
-      job.waitingForMaterials = !status.fullyDelivered;
-      job.hasAllReserved = status.hasAllReserved;
     }
   }
 

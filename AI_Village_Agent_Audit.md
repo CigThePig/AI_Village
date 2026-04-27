@@ -422,6 +422,16 @@ Clear label queue after drawing, not before. Or split labels into update-generat
 
 ## 11. Build jobs are created before buildings are fully supplied
 
+**Resolved (Phase 4).** `generateJobs()` in `src/app/planner.js` now gates
+`build` job creation on `status.fullyDelivered`. Partially-supplied
+blueprints have their build job removed instead of created with reduced
+priority. `placeBlueprint` keeps its single `requestBuildHauls(b)` call
+at placement (this is a planner action, not job evaluation), so haulers
+start moving wood/stone immediately, but builders only see work once
+`b.store` covers cost. The `waitingForMaterials` flag and dual
+`readyPrio`/`waitingPrio` priorities are gone — a build job is, by
+construction, always ready.
+
 **Files/lines**
 
 - `src/app/planner.js:973-998`
@@ -529,6 +539,17 @@ Use reservation-aware helpers only for transactions that actually reserved resou
 ---
 
 ## 14. `pickJobFor()` mutates world state while evaluating jobs
+
+**Resolved (Phase 4).** Job evaluation is now a pure read.
+`pickJobFor()` no longer calls `requestBuildHauls(buildTarget)` mid-loop
+and the "assist haul" branch (which let an evaluating villager grab a
+random open haul as a side effect) is removed — supply scheduling lives
+entirely in the planner. `scoreExistingJobForVillager()` and
+`pickJobFor()` both stop writing `j.waitingForMaterials` during scoring.
+The `requestBuildHauls` dependency was dropped from `createVillagerAI`
+and from its wiring in `src/app.js`. Build jobs that aren't fully
+delivered are skipped defensively (the planner shouldn't emit them, but
+load-time races could).
 
 **Files/lines**
 
@@ -870,6 +891,16 @@ Implement `getJobIdentity(job)` and use it everywhere jobs are deduped or suppre
 ---
 
 ## 28. Build completion can leave delivered but unused resources in `b.store`
+
+**Resolved (Phase 4).** When `b.built` flips to `1` in `onArrive.js`, any
+remaining `b.store.{wood,stone,food}` is returned to `storageTotals` and
+the per-building stores are zeroed. With supply-first this should rarely
+fire, but it closes the trap and makes the system tolerant to
+reservation drift and load-time discrepancies. The intermediate
+`requestBuildHauls(b)` call in the partial-consumption branch
+(`onArrive.js:314`) and on every successful delivery
+(`onArrive.js:403`) was removed; the planner is now the single owner of
+haul scheduling.
 
 **Files/lines**
 
@@ -1269,11 +1300,41 @@ Tasks:
 
 ## Phase 4: Clarify construction lifecycle
 
-Goal: builders should not repeatedly poke half-supplied blueprints unless that is intended.
+**Status: Done.** The user picked **supply-first** as the construction model.
+Build jobs are now gated on `buildingSupplyStatus(b).fullyDelivered` in
+`src/app/planner.js:973-998`. `pickJobFor()` and
+`scoreExistingJobForVillager()` in `src/app/villagerAI.js` are pure
+reads — neither calls `requestBuildHauls()` and neither writes
+`j.waitingForMaterials` while scoring. The "assist haul" branch that
+let a villager evaluating a build job grab an unrelated haul was
+removed. On build completion in `src/app/onArrive.js`, leftover
+`b.store.{wood,stone,food}` is returned to `storageTotals`, closing
+issue #28. Reactive `requestBuildHauls(b)` calls inside `onArrive.js`
+(both the partial-consumption branch and the post-delivery branch) were
+removed; the planner's own `generateJobs()` re-requests hauls each tick
+when a building still lacks reservation. `requestBuildHauls` is no
+longer wired into `createVillagerAI` or `createOnArrive` in
+`src/app.js`. Resolves critical issues **#11**, **#14**, and **#28**.
 
-Tasks:
+Tests live in `tests/build.supply.test.js` and
+`tests/materials.haul.test.js` and run via `npm test` (Node's built-in
+test runner, no new dependencies). They cover: `buildingSupplyStatus`
+edge cases (mixed pending vs store, zero-cost campfire, mid-build
+state), `requestBuildHauls` shortfall accounting against `b.store +
+b.pending`, the no-op cases (already-reserved, already-built), and the
+`availableToReserve` cap on haul `qty`.
 
-1. Choose supply-first or staged-construction model.
+**Deferred:** Issue **#9** (`reservedWoodForPlans` double-count in
+`ensureStarterBuildings()`) is tangential to supply-first and not yet
+addressed. Issue **#29** (deliver-stage haul tombstones lingering after
+`cancelHaulJobsForBuilding`) is partially mitigated by Phase 3 already
+skipping cancelled jobs in `hasSimilarJob`, but the full lifecycle
+redesign — converting carrying-villager tombstones into return-supplies
+behavior and aging out unassigned tombstones — remains open.
+
+Tasks (completed):
+
+1. Choose supply-first or staged-construction model. **Supply-first.**
 2. Recommended first implementation:
    - haulers fully supply building
    - build job appears only when fully supplied

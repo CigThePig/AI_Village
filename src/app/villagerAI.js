@@ -42,7 +42,6 @@ export function createVillagerAI(opts) {
     availableToReserve: _availableToReserve,
     reserveMaterials,
     releaseReservedMaterials,
-    requestBuildHauls,
     findAnimalById,
     findEntryTileNear,
     getBuildingById: _getBuildingById,
@@ -532,10 +531,7 @@ export function createVillagerAI(opts) {
       buildTarget = buildings.find(bb => bb.id === j.bid);
       if (!buildTarget || buildTarget.built >= 1) return -Infinity;
       supplyStatus = buildingSupplyStatus(buildTarget);
-      if (!supplyStatus.hasAnySupply) {
-        j.waitingForMaterials = true;
-        return -Infinity;
-      }
+      if (!supplyStatus.fullyDelivered) return -Infinity;
     }
     const i = idx(j.x, j.y);
     if (j.type === 'chop' && world.trees[i] === 0) return -Infinity;
@@ -554,9 +550,6 @@ export function createVillagerAI(opts) {
       distance,
       supply: supplyStatus,
     };
-    if (j.type === 'build' && supplyStatus) {
-      j.waitingForMaterials = !supplyStatus.fullyDelivered;
-    }
     return scoreJob(jobView, v, policy, blackboard);
   }
 
@@ -611,39 +604,18 @@ export function createVillagerAI(opts) {
     const minScore = typeof policy?.style?.jobScoring?.minPickScore === 'number'
       ? policy.style.jobScoring.minPickScore
       : 0;
-    const jobStyle = policy?.style?.jobScoring || {};
     for (const j of jobs) {
       let supplyStatus = null;
       let buildTarget = null;
       if (j.type === 'hunt' && !v.equippedBow) continue;
+      if (j.assigned >= 1) continue;
       if (j.type === 'build') {
         buildTarget = buildings.find(bb => bb.id === j.bid);
         if (!buildTarget || buildTarget.built >= 1) continue;
         supplyStatus = buildingSupplyStatus(buildTarget);
-        if (!supplyStatus.hasAnySupply) {
-          j.waitingForMaterials = true;
-          requestBuildHauls(buildTarget);
-          const assistLimit = Number.isFinite(jobStyle.builderHaulAssistLimit) ? jobStyle.builderHaulAssistLimit : 1;
-          if (assistLimit > 0) {
-            const haulJobs = jobs.filter(h => h.type === 'haul' && h.bid === buildTarget.id && h.stage !== 'deliver' && !h.cancelled);
-            const activeHaulers = haulJobs.reduce((sum, h) => sum + (h.assigned || 0), 0);
-            if (activeHaulers < assistLimit) {
-              const openHaul = haulJobs.find(h => (h.assigned || 0) === 0);
-              if (openHaul) {
-                const haulDistance = Math.abs((v.x | 0) - openHaul.x) + Math.abs((v.y | 0) - openHaul.y);
-                const haulView = { type: openHaul.type, prio: openHaul.prio, distance: haulDistance };
-                const haulScore = scoreJob(haulView, v, policy, blackboard);
-                if (haulScore > bs) { bs = haulScore; best = openHaul; }
-              }
-            }
-          }
-          continue;
-        }
-        if (j.assigned >= 1 && !supplyStatus.fullyDelivered) {
-          continue;
-        }
-      } else {
-        if (j.assigned >= 1) continue;
+        // Defensive: planner only emits build jobs when fullyDelivered, but
+        // a save/load race or stale job could leave one behind.
+        if (!supplyStatus.fullyDelivered) continue;
       }
       const i = idx(j.x, j.y);
       if (j.type === 'chop' && world.trees[i] === 0) continue;
@@ -668,9 +640,6 @@ export function createVillagerAI(opts) {
         supply: supplyStatus,
       };
       const jobScore = scoreJob(jobView, v, policy, blackboard);
-      if (j.type === 'build' && supplyStatus) {
-        j.waitingForMaterials = !supplyStatus.fullyDelivered;
-      }
       if (jobScore > bs) { bs = jobScore; best = j; }
     }
     return bs > minScore ? best : null;

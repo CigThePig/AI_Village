@@ -37,7 +37,6 @@ export function createOnArrive(opts) {
     suppressJob,
     releaseReservedMaterials,
     spendCraftMaterials,
-    requestBuildHauls,
     cancelHaulJobsForBuilding,
     findAnimalById,
     removeAnimal,
@@ -305,13 +304,25 @@ export function createOnArrive(opts) {
             spent.wood = def.wood || 0;
             spent.stone = def.stone || 0;
             b.progress = cost;
+            // Return any excess back to storage so over-delivered material
+            // does not get trapped inside the building (audit #28).
+            for (const res of ['wood', 'stone', 'food']) {
+              const leftover = store[res] || 0;
+              if (leftover > 0) {
+                storageTotals[res] = (storageTotals[res] || 0) + leftover;
+                store[res] = 0;
+              }
+            }
             if (b.kind === 'campfire') markEmittersDirty();
             cancelHaulJobsForBuilding(b);
             markStaticDirty();
             v.thought = moodThought(v, 'Built');
             remove = true;
           } else {
-            requestBuildHauls(b);
+            // Under supply-first construction the build job only exists once
+            // b.store fully covers the cost, so a single visit completes the
+            // build. Reaching this branch means materials drifted (e.g. a
+            // load-time race); leave the planner to re-request next tick.
             v.thought = moodThought(v, used > 0 ? 'Building' : 'Needs supplies');
           }
         } else {
@@ -400,7 +411,6 @@ export function createOnArrive(opts) {
         if (b) { ensureBuildingData(b); }
         if (b && b.built < 1 && !job?.cancelled) {
           b.store[res] = (b.store[res] || 0) + qty;
-          requestBuildHauls(b);
           v.thought = moodThought(v, 'Delivered supplies');
         } else {
           storageTotals[res] = (storageTotals[res] || 0) + qty;
