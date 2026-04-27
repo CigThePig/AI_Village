@@ -7,16 +7,25 @@ import {
   moodThought
 } from './simulation.js';
 import { DAY_LENGTH, HUNT_RANGE, HUNT_RETRY_COOLDOWN } from './constants.js';
+import { CHILDHOOD_TICKS } from './population.js';
+import {
+  HYDRATION_BUFF_TICKS,
+  REST_BASE_TICKS,
+  REST_EXTRA_PER_ENERGY,
+  SOCIAL_BASE_TICKS,
+  SOCIAL_COOLDOWN_TICKS,
+  STARVE_THRESH,
+  STORAGE_IDLE_BASE,
+  STORAGE_IDLE_COOLDOWN
+} from './villagerAI.js';
 
-const STARVE_THRESH = { hungry: 0.82, starving: 1.08, sick: 1.22 };
-
+// Tick-only knobs (decay rates / per-frame deltas) live next to the function
+// that reads them. The shared villager-tuning constants (STARVE_*, REST_*,
+// HYDRATION_*, SOCIAL_*, STORAGE_IDLE_*, CHILDHOOD_TICKS) are now imported
+// from villagerAI.js / population.js so there's a single source of truth.
 const HUNGER_RATE = 0.00095;
 const ENERGY_DRAIN_BASE = 0.0011;
 
-const CHILDHOOD_TICKS = DAY_LENGTH * 5;
-
-const REST_BASE_TICKS = 90;
-const REST_EXTRA_PER_ENERGY = 110;
 const REST_ENERGY_RECOVERY = 0.0024;
 const REST_MOOD_TICK = 0.0009;
 const REST_FINISH_MOOD = 0.05;
@@ -24,22 +33,16 @@ const REST_HUNGER_MULT = 0.42;
 
 const HYDRATION_DECAY = 0.00018;
 const HYDRATION_LOW = 0.28;
-const HYDRATION_BUFF_TICKS = 320;
 const HYDRATION_HUNGER_MULT = 0.9;
 const HYDRATION_FATIGUE_BONUS = 0.8;
 const HYDRATION_DEHYDRATED_PENALTY = 1.12;
 const HYDRATION_MOOD_TICK = 0.00035;
 
-const SOCIAL_BASE_TICKS = 88;
-const SOCIAL_COOLDOWN_TICKS = DAY_LENGTH * 0.2;
 const SOCIAL_MOOD_TICK = 0.0013;
 const SOCIAL_ENERGY_TICK = 0.00055;
 
 const NIGHT_CAMPFIRE_MOOD_TICK = 0.0012;
 const NIGHT_CAMPFIRE_XP_TICK = 0.15;
-
-const STORAGE_IDLE_BASE = 70;
-const STORAGE_IDLE_COOLDOWN = DAY_LENGTH * 0.12;
 
 export function createVillagerTick(opts) {
   const {
