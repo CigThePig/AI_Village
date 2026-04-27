@@ -12,29 +12,18 @@ have since been merged.
 
 ## Open — High
 
-### `src/app.js` is down to ~1,912 lines
+### `src/app.js` is down to ~1,107 lines
 - **Where**: `src/app.js`
-- **Status**: Eight more bundles extracted in the latest pass — jobs,
-  animals, nocturnal entities, DebugKit bridge, material reservation /
-  haul scheduling, population / birth, the villager-AI helper bundle,
-  and `stepAlong`/`onArrive`. New modules:
-  `src/app/{jobs,animals,nocturnal,debugkit,materials,population,villagerAI,onArrive}.js`.
-  The file went from 3,706 → 1,912 lines (-48%, ~1,794 lines removed).
-  The villager-tuning constants (`STARVE_THRESH`, `REST_BASE_TICKS`,
-  `HYDRATION_BUFF_TICKS`, `SOCIAL_*`, `STORAGE_IDLE_*`, `CHILDHOOD_TICKS`,
-  …) now live in a single source of truth (`villagerAI.js` /
-  `population.js`) and are imported by `villagerTick.js` and
-  `onArrive.js`, closing the cross-cutting duplication.
+- **Status**: With the render body extracted (see Resolved), nine
+  bundles have now been pulled out of `src/app.js`. The file has gone
+  3,706 → 1,912 → **1,107 lines** (-70% from the original audit
+  baseline; -42% in this pass alone, ~805 lines removed). The
+  remaining surface is overwhelmingly boot wiring; this entry stays
+  open only because the in-file `gameState` mirrors and building-
+  query thunks are still close-coupling factories together.
 - **What's left in-file** (in roughly top-to-bottom order):
-  - The render body — `render()` (~300 lines),
-    `drawBuildingAt`/`drawAnimal`/`drawVillager`/`drawQueuedVillagerLabels`
-    (~250 lines), the overlay helpers
-    (`drawStaticAlbedo`/`drawShadow`/`drawZoneOverlay`/`drawWaterOverlay`/
-    the row-mask + cache scaffolding), and `markStaticDirty` /
-    `markZoneOverlayDirty`. Together these are ~700 lines and are the
-    only outstanding extraction target.
-  - Boot wiring: factory instantiation block, `newWorld()`, `update()`,
-    `boot()`, `window.AIV_APP` glue.
+  - Boot wiring: factory instantiation block (~lines 700–1000),
+    `newWorld()`, `update()`, `boot()`, `window.AIV_APP` glue.
   - Module-local mirrors of `gameState` arrays (`buildings`,
     `villagers`, `jobs`, `animals`, `itemsOnGround`), the `world`
     getter/setter, and the `tick`/`dayTime` getter shims.
@@ -49,10 +38,12 @@ have since been merged.
     `centerCamera`, the shading-mode glue
     (`normalizeShadingMode`/`computeShadeForMode`/`applyShadingMode`/
     `applyShadingParams`), and `ensureBlackboardSnapshot`.
-- **Why it matters**: The remaining file still owns module-local mirrors
-  of `gameState` arrays. Once the render body extracts, those mirrors
-  can collapse into a single `createGameStateAccess()` helper and
-  `src/app.js` will be ~1,200 lines of pure boot wiring.
+- **Why it matters**: The remaining file still owns module-local
+  mirrors of `gameState` arrays. With the draw helpers gone, those
+  mirrors can collapse into a single `createGameStateAccess()` helper
+  and `src/app.js` will drop into pure boot wiring (likely under
+  ~900 lines). Tracking this as a follow-on rather than rolling it
+  into the render-body pass kept that pass scoped.
 
 ### Simulation tick interleaved with render
 - **Where**: `src/app.js` `update()` calls `tickRunner.runFrame()`
@@ -72,40 +63,6 @@ have since been merged.
 ---
 
 ## Open — Medium
-
-### Render body still in `src/app.js`
-- **Where**: `src/app.js` (~lines 800–1620 of the current 1,912-line
-  file).
-- **Status**: This is the only follow-on extraction target left in the
-  original "src/app.js follow-on extractions" track-list. The other
-  eight bundles landed in the latest pass; see Resolved.
-- **Functions to move**: `render` (~300 lines), `drawBuildingAt`,
-  `drawAnimal`, `drawVillager`, `drawQueuedVillagerLabels`,
-  `drawStaticAlbedo`, `drawShadow`, `drawZoneOverlay`,
-  `drawWaterOverlay`, `ensureZoneOverlayCanvas`, `activeZoneSignature`,
-  `rebuildZoneOverlay`, `ensureWaterOverlayCanvas`, `maybeBuildLightmap`
-  (the in-file 3-line wrapper), `markStaticDirty`,
-  `markZoneOverlayDirty`, plus the row-mask helpers
-  (`ensureRowMasksSize`, `refreshWaterRowMaskFromTiles`,
-  `refreshZoneRowMask`, `updateZoneRow`) and the cache locals
-  (`waterRowMask`, `zoneRowMask`, `zoneOverlayCache`,
-  `waterOverlayCache`, `staticAlbedoCanvas`, `staticAlbedoCtx`,
-  `staticDirty`).
-- **Suggested target**: extend `src/app/render.js`'s
-  `createRenderSystem(deps)` with these helpers. The factory's deps
-  bag will grow substantially (gameState arrays, `findAnimalById`,
-  `getBuildingById`, `agricultureBonusesAt`, `nearbyWarmth`, etc.) —
-  expect ~25 new dep entries.
-- **Why it's still here**: This bundle has the most module-local
-  coupling of the nine. Each draw helper closes over `world`, `cam`,
-  `ctx`, and one or more `units.*` arrays, plus the overlay caches
-  are themselves stateful. A clean extraction needs careful design
-  of the cache ownership and a thunk strategy for the building-query
-  helpers (which still live in `src/app.js`). It was deferred from
-  the latest pass to keep the extraction safe rather than rushed.
-- **Net once it lands**: `src/app.js` drops to ~1,200 lines (boot
-  wiring + module-local mirrors + a few in-file thunks), at which
-  point the gameState mirrors themselves can collapse.
 
 ### Canvas/lightmap context release on world swap
 - **Where**: `src/app.js` `newWorld()` reassigns `world.lightmapCanvas`/
@@ -342,3 +299,30 @@ prior audit; the linked file/line is where the fix lives.
   `onArrive.js`. `CHILDHOOD_TICKS` similarly lives only in
   `src/app/population.js`. The cross-cutting cleanup tracked under
   the prior follow-on entry is closed.
+- **Render body extracted** — `createRenderSystem(deps)` in
+  `src/app/render.js` now owns `render`, the `draw*` family
+  (`drawStaticAlbedo`, `drawShadow`, `drawBuildingAt`,
+  `drawAnimal`, `drawVillager`, `drawQueuedVillagerLabels`),
+  the zone/water overlay scaffolding
+  (`ensureZoneOverlayCanvas`, `activeZoneSignature`,
+  `rebuildZoneOverlay`, `drawZoneOverlay`,
+  `ensureWaterOverlayCanvas`, `drawWaterOverlay`), the row-mask
+  helpers (`ensureRowMasksSize`, `refreshWaterRowMaskFromTiles`,
+  `refreshZoneRowMask`, `updateZoneRow`, `noteZoneTileSown`,
+  `resetOverlayCaches`), the dirty markers (`markStaticDirty`,
+  `markZoneOverlayDirty`), and all the previously-stranded cache
+  state (`waterRowMask`, `zoneRowMask`, `zoneOverlayCache`,
+  `waterOverlayCache`, `staticAlbedoCanvas`, `staticAlbedoCtx`,
+  `staticDirty`). The factory's dep bag grew from 3 entries
+  (`getCam`/`getViewportW`/`getViewportH`) to ~24, including
+  forward-reference thunks for `getActiveZoneJobs`,
+  `drawNocturnalEntities`, etc., that resolve once the per-frame
+  loop starts. The in-file 3-line `maybeBuildLightmap` wrapper
+  is gone — `render()` now calls the factory's own implementation
+  directly. `src/app.js` line delta: 1,912 → 1,107 (-805 lines,
+  -42%); `src/app/render.js`: 369 → 1,347 (+978 lines). The
+  per-frame loop in `update()` now calls
+  `_renderSystem.render()`. `_saveSystem`, `_planner`,
+  `_onArriveSystem`, and `_debugKitBridge` all receive their
+  former `markStaticDirty` / `markZoneOverlayDirty` / `updateZoneRow`
+  deps from `_renderSystem.*` instead of in-file definitions.
