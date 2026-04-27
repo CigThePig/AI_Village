@@ -64,19 +64,6 @@ have since been merged.
 
 ## Open — Medium
 
-### Canvas/lightmap context release on world swap
-- **Where**: `src/app.js` `newWorld()` reassigns `world.lightmapCanvas`/
-  `world.lightmapCtx`. `src/app/canvas.js:63` keeps a module-level `ctx`
-  singleton for the main canvas (correct — the main canvas is module-lifetime).
-- **Why it matters**: The world's offscreen lightmap canvas/context can
-  only be GCed once every closure that captured them releases. With the
-  bind/unbind UI listener lifecycle now landed, the practical leak is
-  small, but anything that captures `world.lightmapCtx` directly (rather
-  than re-reading `gameState.world.lightmapCtx`) will keep the prior swap
-  alive.
-- **Suggested**: Audit closures over `world.lightmap*`; prefer reading
-  through `gameState.world` at call time.
-
 ### `index.html` `<script>` tags depend on Vite `base` accidentally
 - **Where**: `index.html:8-12` references `bootstrap.js` and `worldgen/*.js`
   with relative URLs that resolve correctly in both `dev` (`base=/`) and
@@ -326,3 +313,18 @@ prior audit; the linked file/line is where the fix lives.
   `_onArriveSystem`, and `_debugKitBridge` all receive their
   former `markStaticDirty` / `markZoneOverlayDirty` / `updateZoneRow`
   deps from `_renderSystem.*` instead of in-file definitions.
+- **Canvas/lightmap context release on world swap** — the closure
+  audit suggested in the prior entry was completed during the render
+  extraction. Every lightmap helper in `src/app/render.js`
+  (`buildHillshadeQ`, `buildLightmap`, `sampleLightAt`,
+  `ensureLightmapBuffers`, `maybeBuildLightmap`) takes `targetWorld`
+  as an explicit parameter, and the render-side public entry points
+  read `world` fresh via `getWorld()` (lines 104, 120, 137, 488, 547,
+  631). The only module-level lightmap state is `lightmapCacheState`
+  (`src/app/render.js:59`), which holds primitive cache keys
+  (`ambient`/`mode`/`scale`/`emitterSignature`), not canvas or
+  context references. In `src/app.js`, `applyShadingMode` /
+  `applyShadingParams` reach `world` through the `gameState.world`
+  getter (`src/app.js:178-188`), so on `newWorld()` the previous
+  world object — and its offscreen lightmap canvas/ctx — has no
+  remaining captor and is free to GC.
