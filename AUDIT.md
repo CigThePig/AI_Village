@@ -12,33 +12,42 @@ have since been merged.
 
 ## Open — High
 
-### `src/app.js` is still a single ~4,000-line module
+### `src/app.js` is still a single ~3,700-line module
 - **Where**: `src/app.js`
 - **Status**: Significant progress. Pathfinding, save/load, UI/pointer input,
   rendering helpers, world/building data, time-of-day/experience helpers,
-  the planner, and per-frame tick orchestration have been carved out into
-  `src/app/{pathfinding,save,ui,render,world,simulation,planner,tick}.js`.
-  What remains is `villagerTick` (still a module-local closure at
-  `src/app.js:1599`), the job system, building-specific behavior, boot
-  wiring, and the module-local `gameState`-array mirrors that those bits
-  still read.
+  the planner, per-frame tick orchestration, and now `villagerTick` have
+  all been carved out into
+  `src/app/{pathfinding,save,ui,render,world,simulation,planner,tick,villagerTick}.js`.
+  The file is down to ~3,706 lines (from ~4,017 before the
+  `villagerTick` extraction). What remains in-file is the job lifecycle,
+  the material-reservation/haul layer, `onArrive` (the per-job arrival
+  branch), the villager-AI helper bundle (`pickJobFor`,
+  `maybeInterruptJob`, `foragingJob`, `goRest`, `seekEmergencyFood`,
+  `consumeFood`, `tryEquipBow`, `tryHydrateAtWell`, `tryCampfireSocial`,
+  `tryStorageIdle`, `handleIdleRoam`, `nearestFoodTarget`,
+  `collectFoodHubs`, `pickWeightedRandom`, `selectReachableWanderTarget`),
+  the animal system (~350 lines), the render body
+  (`render`/`drawBuildingAt`/`drawAnimal`/`drawVillager` plus overlay
+  helpers, ~600 lines), the population/birth helpers, the DebugKit
+  bridge, and boot wiring.
 - **Why it matters**: The remaining file still owns module-local mirrors of
   `gameState` arrays (`buildings`, `villagers`, `jobs`, `animals`,
   `itemsOnGround`) and a property-getter/setter for `world`. Most of the
   trickier remaining items below trace back to that coupling.
-- **Suggested next pass**: Convert `villagerTick` (currently invoked via
-  `tickRunner.runFrame()` in `src/app/tick.js:122`) into an explicit-deps
-  function in `src/app/tick.js`, the way `createPlanner` and
-  `createTickRunner` already work. That removes the last large consumer
-  of the module-local arrays and unblocks the snapshot-for-save work
-  below.
+- **Suggested next pass**: Track follow-on extraction targets under the
+  new "src/app.js follow-on extractions" entry below. The villager-AI
+  helper bundle is the highest-leverage next target because every
+  helper there is also a dep that `createVillagerTick` currently has
+  to be handed via the deps bag — extracting them next will collapse
+  the bag and let `villagerTick` import its callees directly.
 
 ### Simulation tick interleaved with render
-- **Where**: `src/app.js:3963` (`update()`) calls `tickRunner.runFrame()`
-  (from `src/app/tick.js`, which fans out to `villagerTick`,
-  `updateAnimals`, `seasonTick`, etc.) inside the same RAF callback that
-  ends with `render()`. `saveGame()` (in `src/app/save.js:41`) reads
-  `gameState` directly when invoked.
+- **Where**: `src/app.js` `update()` calls `tickRunner.runFrame()`
+  (from `src/app/tick.js`, which fans out to `villagerTick` in
+  `src/app/villagerTick.js`, `updateAnimals`, `seasonTick`, etc.)
+  inside the same RAF callback that ends with `render()`. `saveGame()`
+  (in `src/app/save.js:41`) reads `gameState` directly when invoked.
 - **Why it matters**: Today the manual save button is the only save path so
   the practical risk is bounded — JS is single-threaded and save fires
   between RAF frames. But anything we add that triggers saves from a hook,
@@ -51,6 +60,86 @@ have since been merged.
 ---
 
 ## Open — Medium
+
+### `src/app.js` follow-on extractions
+- **Where**: `src/app.js`
+- **Status**: Track-list of the next-best extraction targets, in priority
+  order, now that `villagerTick` has moved to its own module. Each item
+  is sized so that a single PR can land it without rewriting unrelated
+  systems.
+  1. **Villager-AI helper bundle** — `pickJobFor`, `maybeInterruptJob`,
+     `scoreExistingJobForVillager`, `findPanicHarvestJob`, `foragingJob`,
+     `goRest`, `tryEquipBow`, `tryHydrateAtWell`, `tryCampfireSocial`,
+     `tryStorageIdle`, `consumeFood`, `seekEmergencyFood`,
+     `nearestFoodTarget`, `collectFoodHubs`, `pickWeightedRandom`,
+     `selectReachableWanderTarget`, `handleIdleRoam`, `findNearestBuilding`,
+     plus the starve-cycle trio (`issueStarveToast`, `enterSickState`,
+     `handleVillagerFed`) at `src/app.js:~1596-2538`. Extract into
+     `src/app/villagerAI.js` using the `createVillagerAI(deps)` factory
+     pattern. **High leverage**: `createVillagerTick`'s ~30-entry deps
+     bag mostly points at this bundle, so once it lands the bag
+     collapses to a handful of cross-module entries (`pathfind`,
+     `ambientAt`, building/job helpers).
+  2. **`onArrive`** (`src/app.js:~2540-2950`, ~400 lines branching on
+     every job type — `chop`, `mine`, `sow`, `harvest`, `forage`,
+     `build`, `haul`, `craft_bow`, `hunt`, `rest`, `hydrate`,
+     `socialize`, `storage_*`). Reads `world`, `buildings`, `jobs`,
+     `itemsOnGround`, `storageTotals`, `storageReserved` directly.
+     Extract into `src/app/onArrive.js` (or fold into `villagerAI.js`).
+  3. **Job lifecycle** — `addJob`, `finishJob`, `noteJobAssignmentChanged`,
+     `noteJobRemoved`, `suppressJob`, `isJobSuppressed`, `hasSimilarJob`,
+     `jobKey`, `getJobCreationConfig`, plus the `jobSuppression` /
+     `activeZoneJobs` indices at `src/app.js:~1482-1556`. Extract into
+     `src/app/jobs.js`.
+  4. **Material reservation / haul scheduling** — `availableToReserve`,
+     `canReserveMaterials`, `reserveMaterials`, `releaseReservedMaterials`,
+     `spendCraftMaterials`, `scheduleHaul`, `requestBuildHauls`,
+     `cancelHaulJobsForBuilding` at `src/app.js:~1347-1465`. Extract
+     into `src/app/materials.js`.
+  5. **Render body** — `render` and its draw helpers
+     (`drawBuildingAt`, `drawAnimal`, `drawVillager`,
+     `drawQueuedVillagerLabels`, `drawShadow`, `drawZoneOverlay`,
+     `drawWaterOverlay`, `drawNocturnalEntities`, `drawStaticAlbedo`)
+     at `src/app.js:~3037-3650`. Fattens `src/app/render.js` (which
+     today only owns lower-level helpers).
+  6. **Animal system** — `spawnAnimalsForWorld`, `behaviorForAnimal`,
+     `ensureAnimalDefaults`, `animalTileBlocked`, `pickRoamTarget`,
+     `attemptGraze`, `chooseFleeTarget`, `findAnimalById`,
+     `removeAnimal`, `resolveHuntYield`, `findHuntApproachPath`,
+     `interactWithVillage`, `stepAnimal`, `animalTick`, `updateAnimals`
+     at `src/app.js:~658-1010`. Extract into `src/app/animals.js`.
+  7. **Population/birth helpers** — `housingCapacity`,
+     `populationLimit`, `canSupportBirth`, `findBirthMate`,
+     `tryStartPregnancy`, `spawnChildNearParents`, `flushPendingBirths`,
+     `completePregnancy`, `promoteChildToAdult`, plus
+     `assignAdultTraits`/`rollAdultRole`/`newVillager`/`newChildVillager`
+     at `src/app.js:~1174-2148`. Extract into `src/app/population.js`.
+  8. **DebugKit bridge** — `debugKitGetPipeline`, `describeCanvasContext`,
+     `debugKitGetLightingProbe`, `debugKitEnterSafeMode`,
+     `debugKitGetState`, `configureDebugKitBridge`,
+     `installDebugKitWatcher`, `ensureDebugKitConfigured` at
+     `src/app.js:~373-598`. Extract into `src/app/debugkit.js`.
+  9. **Nocturnal entities** — `nocturnalAmbientStrength`,
+     `spawnNocturnalEntity`, `updateNocturnalEntities`,
+     `drawNocturnalEntities`, plus the `nocturnalEntities` array and
+     `nocturnalSpawnCooldown` at `src/app.js:~235-247, 3807-3900`.
+     Bundle with the render extraction.
+- **Why it matters**: Each leaves `src/app.js` smaller and
+  `gameState`-coupling more localized; combined, they take the file
+  below ~1,000 lines (mostly boot wiring + the module-local mirrors
+  themselves), at which point the mirrors can finally collapse.
+- **Cross-cutting cleanup**: A handful of villager-tuning constants
+  (`STARVE_THRESH`, `CHILDHOOD_TICKS`, `HYDRATION_BUFF_TICKS`,
+  `HYDRATION_DEHYDRATED_PENALTY`, `HYDRATION_MOOD_TICK`,
+  `REST_BASE_TICKS`, `REST_EXTRA_PER_ENERGY`, `SOCIAL_BASE_TICKS`,
+  `SOCIAL_COOLDOWN_TICKS`, `STORAGE_IDLE_BASE`, `STORAGE_IDLE_COOLDOWN`)
+  are duplicated between `src/app.js:1567-1591` and
+  `src/app/villagerTick.js:11-43` because the helpers that read them
+  in `src/app.js` haven't moved yet. The cleanup falls out for free
+  once the villager-AI helper bundle (#1) lands — both files start
+  importing from a single source. Until then, treat the duplication
+  as a bug magnet and keep the two blocks in sync if any value
+  changes.
 
 ### Canvas/lightmap context release on world swap
 - **Where**: `src/app.js` `newWorld()` reassigns `world.lightmapCanvas`/
@@ -180,10 +269,23 @@ prior audit; the linked file/line is where the fix lives.
   than closing over `src/app.js` module-locals (commit `9da2aa4`).
 - **Simulation tick orchestration extracted** — `createTickRunner(deps)`
   in `src/app/tick.js` (line 6) owns the per-frame tick fan-out and is
-  invoked from `update()` at `src/app.js:3963` via
-  `tickRunner.runFrame()` (commit `507b686`). The remaining
-  `villagerTick` closure inside `src/app.js` is tracked under the
-  high-severity `src/app.js` entry above.
+  invoked from `update()` in `src/app.js` via
+  `tickRunner.runFrame()` (commit `507b686`).
+- **`villagerTick` extracted** — `createVillagerTick(deps)` in
+  `src/app/villagerTick.js` (line 47) takes `state`, `policy`,
+  `pathfind`, the building/job helpers, and the per-villager AI
+  callbacks (`pickJobFor`, `goRest`, `consumeFood`, etc.) as explicit
+  dependencies rather than closing over `src/app.js` module-locals.
+  `createTickRunner` still receives the function as a dep at the
+  `src/app.js` wiring site, so the per-frame fan-out is unchanged.
+  The decay/mood/buff knobs that only `villagerTick` reads
+  (`HUNGER_RATE`, `ENERGY_DRAIN_BASE`, the `REST_*` recovery numbers,
+  `HYDRATION_DECAY`/`LOW`/`HUNGER_MULT`/`FATIGUE_BONUS`,
+  `SOCIAL_MOOD_TICK`/`SOCIAL_ENERGY_TICK`, `NIGHT_CAMPFIRE_*`) moved
+  with it; the constants that other still-in-`src/app.js` helpers
+  also read are tracked as a follow-on cleanup under the new
+  "src/app.js follow-on extractions" entry. Net `src/app.js` line
+  delta: -311 (~4,017 → 3,706).
 - **Duplicated experience constants** — `JOB_EXPERIENCE_MAP` and
   `EXPERIENCE_THRESHOLDS` now live only in `src/app/simulation.js:9-22`.
   `src/ai/scoring.js:1` imports them from there, eliminating the
