@@ -806,7 +806,6 @@ const {
   noteJobAssignmentChanged,
   noteJobRemoved,
   getJobCreationConfig,
-  jobKey: _jobKey,
   isJobSuppressed: _isJobSuppressed,
   suppressJob,
   hasSimilarJob,
@@ -815,7 +814,7 @@ const {
   finishJob,
   detachVillagersFromJob
 } = _jobsSystem;
-void _jobKey; void _isJobSuppressed;
+void _isJobSuppressed;
 
 const _animalsSystem = createAnimalsSystem({
   state: gameState,
