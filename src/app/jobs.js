@@ -39,17 +39,35 @@ export function createJobsSystem(opts) {
     return policy?.style?.jobCreation || {};
   }
 
-  function jobKey(job) {
+  // Identity keys must include the fields that distinguish one unit of work
+  // from another. Same tile does not mean same work — wood vs stone hauls
+  // for one building share type/x/y/bid but are different jobs, and a hunt
+  // on a fleeing animal moves but is still the same hunt.
+  function getJobIdentity(job) {
     if (!job || !job.type) return null;
-    const base = `${job.type}:${Number.isFinite(job.x) ? job.x : '?'},${Number.isFinite(job.y) ? job.y : '?'}`;
-    if (job.bid !== undefined) {
-      return `${base}:b${job.bid}`;
+    switch (job.type) {
+      case 'haul':
+        return `haul:b${job.bid}:r${job.resource}`;
+      case 'hunt':
+        return job.targetAid != null
+          ? `hunt:a${job.targetAid}`
+          : `hunt:noaid:${job.x},${job.y}:b${job.bid}`;
+      case 'build':
+        return `build:b${job.bid}`;
+      case 'craft_bow':
+        return `craft_bow:b${job.bid}`;
+      case 'sow':
+      case 'chop':
+      case 'mine':
+      case 'forage':
+        return `${job.type}:${job.x},${job.y}`;
+      default:
+        return null;
     }
-    return base;
   }
 
   function isJobSuppressed(job) {
-    const key = jobKey(job);
+    const key = getJobIdentity(job);
     if (!key) return false;
     const until = jobSuppression.get(key);
     if (until === undefined) return false;
@@ -61,13 +79,15 @@ export function createJobsSystem(opts) {
   }
 
   function suppressJob(job, duration = 0) {
-    const key = jobKey(job);
+    const key = getJobIdentity(job);
     if (!key || duration <= 0) return;
     jobSuppression.set(key, state.time.tick + duration);
   }
 
   function hasSimilarJob(job) {
-    return jobs.some(j => j && j.type === job.type && j.x === job.x && j.y === job.y && (j.bid || null) === (job.bid || null));
+    const id = getJobIdentity(job);
+    if (!id) return false;
+    return jobs.some(j => j && !j.cancelled && getJobIdentity(j) === id);
   }
 
   function violatesSpacing(x, y, type, cfg) {
@@ -122,7 +142,7 @@ export function createJobsSystem(opts) {
     noteJobAssignmentChanged,
     noteJobRemoved,
     getJobCreationConfig,
-    jobKey,
+    getJobIdentity,
     isJobSuppressed,
     suppressJob,
     hasSimilarJob,
