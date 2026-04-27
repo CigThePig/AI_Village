@@ -57,6 +57,7 @@ export function createJobsSystem(opts) {
       case 'craft_bow':
         return `craft_bow:b${job.bid}`;
       case 'sow':
+      case 'harvest':
       case 'chop':
       case 'mine':
       case 'forage':
