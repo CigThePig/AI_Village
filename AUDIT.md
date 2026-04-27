@@ -12,26 +12,32 @@ have since been merged.
 
 ## Open — High
 
-### `src/app.js` is still a single ~4,900-line module
+### `src/app.js` is still a single ~4,000-line module
 - **Where**: `src/app.js`
 - **Status**: Significant progress. Pathfinding, save/load, UI/pointer input,
-  rendering helpers, world/building data, and time-of-day/experience helpers
-  have been carved out into `src/app/{pathfinding,save,ui,render,world,simulation}.js`.
-  What remains is the AI tick, job system, planner glue, building-specific
-  behavior, and boot wiring.
+  rendering helpers, world/building data, time-of-day/experience helpers,
+  the planner, and per-frame tick orchestration have been carved out into
+  `src/app/{pathfinding,save,ui,render,world,simulation,planner,tick}.js`.
+  What remains is `villagerTick` (still a module-local closure at
+  `src/app.js:1599`), the job system, building-specific behavior, boot
+  wiring, and the module-local `gameState`-array mirrors that those bits
+  still read.
 - **Why it matters**: The remaining file still owns module-local mirrors of
   `gameState` arrays (`buildings`, `villagers`, `jobs`, `animals`,
   `itemsOnGround`) and a property-getter/setter for `world`. Most of the
   trickier remaining items below trace back to that coupling.
-- **Suggested next pass**: Extract the planner (`planZones` /
-  `planBuildings` / `generateJobs`) and the AI tick (`villagerTick`) into
-  their own modules, taking explicit `gameState`/`policy` parameters rather
-  than closing over module-locals.
+- **Suggested next pass**: Convert `villagerTick` (currently invoked via
+  `tickRunner.runFrame()` in `src/app/tick.js:122`) into an explicit-deps
+  function in `src/app/tick.js`, the way `createPlanner` and
+  `createTickRunner` already work. That removes the last large consumer
+  of the module-local arrays and unblocks the snapshot-for-save work
+  below.
 
 ### Simulation tick interleaved with render
-- **Where**: `src/app.js:4816` (`update()`) calls `villagerTick()`,
-  `updateAnimals()`, `seasonTick()`, etc. inside the same RAF callback that
-  ends with `render()`. `saveGame()` (now in `src/app/save.js:41`) reads
+- **Where**: `src/app.js:3963` (`update()`) calls `tickRunner.runFrame()`
+  (from `src/app/tick.js`, which fans out to `villagerTick`,
+  `updateAnimals`, `seasonTick`, etc.) inside the same RAF callback that
+  ends with `render()`. `saveGame()` (in `src/app/save.js:41`) reads
   `gameState` directly when invoked.
 - **Why it matters**: Today the manual save button is the only save path so
   the practical risk is bounded — JS is single-threaded and save fires
@@ -40,8 +46,7 @@ have since been merged.
   debited from `storageReserved` before the receiving job updates).
 - **Suggested**: Split simulation tick from render with a fixed-timestep
   loop and a frozen snapshot for save, or queue saves to fire between
-  ticks. Either path becomes easier once the planner/tick extraction
-  above lands.
+  ticks.
 
 ---
 
@@ -194,3 +199,13 @@ prior audit; the linked file/line is where the fix lives.
   `window.AIV_APP` global installed at `src/app.js:3988-4005`, which
   is what DebugKit already uses; the comment at `src/app.js:4012-4017`
   pins that contract.
+- **Planner extracted** — `planZones` / `planBuildings` / `generateJobs`
+  moved to `src/app/planner.js`; `createPlanner(opts)` (line 22) takes
+  `state`, `policy`, `pathfind`, etc. as explicit dependencies rather
+  than closing over `src/app.js` module-locals (commit `9da2aa4`).
+- **Simulation tick orchestration extracted** — `createTickRunner(deps)`
+  in `src/app/tick.js` (line 6) owns the per-frame tick fan-out and is
+  invoked from `update()` at `src/app.js:3963` via
+  `tickRunner.runFrame()` (commit `507b686`). The remaining
+  `villagerTick` closure inside `src/app.js` is tracked under the
+  high-severity `src/app.js` entry above.
