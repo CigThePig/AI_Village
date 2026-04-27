@@ -52,25 +52,6 @@ have since been merged.
 
 ## Open — Medium
 
-### `inspectJobs` in `src/ai/blackboard.js` overlaps with `policy.caps.buildWaiting`
-- **Where**: `src/ai/blackboard.js:85-99` checks
-  `job.waitingForMaterials !== true` to set `buildPush`; the same concept is
-  encoded in `policy.caps.buildWaiting` (`src/policy/policy.js:151`).
-- **Suggested**: Pick one source of truth — either feed `buildPush` from
-  `caps.buildWaiting`, or remove the cap and rely on the blackboard signal.
-
-### Duplicated experience constants
-- **Where**: `JOB_EXPERIENCE_MAP` and `EXPERIENCE_THRESHOLDS` are defined in
-  both `src/ai/scoring.js:6-18` and `src/app/simulation.js:9-22`. The
-  `simulation.js` copy includes `socialize: 'social'`; the `scoring.js`
-  copy does not.
-- **Why it matters**: Adding a new job type means editing both. The
-  divergence (`socialize`) is currently benign because it's tracked as a
-  villager state, not a scored job, but a future change could drift them
-  silently.
-- **Suggested**: Hoist both constants to a shared module (probably
-  `src/app/simulation.js`) and import from `scoring.js`.
-
 ### Canvas/lightmap context release on world swap
 - **Where**: `src/app.js` `newWorld()` reassigns `world.lightmapCanvas`/
   `world.lightmapCtx`. `src/app/canvas.js:63` keeps a module-level `ctx`
@@ -103,12 +84,6 @@ have since been merged.
   `vitest` plus a single "boot the world headless" assertion) would
   catch a lot of the closure-over-stale-state regressions the items
   above worry about.
-
-### Lint not gated in CI
-- `npm run lint` is wired in `package.json`, but the `deploy-pages`
-  workflow only runs `npm ci && npm run build`. Lint regressions can
-  land on `main` undetected. Add a `lint` step to the workflow (or a
-  separate `ci.yml`).
 
 ---
 
@@ -209,3 +184,18 @@ prior audit; the linked file/line is where the fix lives.
   `tickRunner.runFrame()` (commit `507b686`). The remaining
   `villagerTick` closure inside `src/app.js` is tracked under the
   high-severity `src/app.js` entry above.
+- **Duplicated experience constants** — `JOB_EXPERIENCE_MAP` and
+  `EXPERIENCE_THRESHOLDS` now live only in `src/app/simulation.js:9-22`.
+  `src/ai/scoring.js:1` imports them from there, eliminating the
+  `socialize` divergence between the two copies.
+- **`inspectJobs` / `policy.caps.buildWaiting` overlap** — dropped the
+  cap entirely. Both encoded the same formula (`0.5 + buildSlider * 0.35`)
+  that the planner already pre-applies as `waitingPrio` in
+  `src/app/planner.js:991`, so the cap was dead code: it could never
+  fire because `effectivePriority === cap`. Blackboard's `buildPush`
+  bonus continues to drive the "ready vs. waiting" preference.
+  `policy.caps` and the `getCaps()` helper in `scoring.js` were also
+  removed since `buildWaiting` was their only entry.
+- **Lint not gated in CI** — `.github/workflows/deploy-pages.yml` now
+  runs `npm run lint` between `npm ci` and `npm run build`, so lint
+  regressions block the deploy job before it ever uploads `dist/`.

@@ -1,21 +1,9 @@
+import { JOB_EXPERIENCE_MAP, EXPERIENCE_THRESHOLDS } from '../app/simulation.js';
+
 const HEAVY_JOB_TYPES = new Set(['chop', 'mine', 'build', 'haul', 'craft_bow', 'hunt']);
 const NURTURE_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 const FARM_JOB_TYPES = new Set(['sow', 'harvest', 'forage']);
 const ADVANCED_JOB_TYPES = new Set(['build', 'craft_bow']);
-
-const JOB_EXPERIENCE_MAP = Object.freeze({
-  sow: 'farming',
-  harvest: 'farming',
-  forage: 'farming',
-  chop: 'construction',
-  mine: 'construction',
-  build: 'construction',
-  haul: 'hauling',
-  hunt: 'hunting',
-  craft_bow: 'crafting'
-});
-
-const EXPERIENCE_THRESHOLDS = [0, 10, 30, 60];
 
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) return min;
@@ -26,10 +14,6 @@ function clamp(value, min, max) {
 
 function getStyle(policy) {
   return policy?.style?.jobScoring || {};
-}
-
-function getCaps(policy) {
-  return policy?.caps || {};
 }
 
 function resolveSkill(value, fallback = 0.5) {
@@ -78,7 +62,6 @@ export function score(job, villager, policy, blackboard) {
   }
 
   const style = getStyle(policy);
-  const caps = getCaps(policy);
 
   const defaultPriority = Number.isFinite(style.defaultPriority) ? style.defaultPriority : 0.5;
   const distanceFalloff = Number.isFinite(style.distanceFalloff) ? style.distanceFalloff : 0;
@@ -118,17 +101,7 @@ export function score(job, villager, policy, blackboard) {
   const advancedTaskAffinity = Number.isFinite(style.advancedTaskAffinity) ? style.advancedTaskAffinity : 0.12;
   const leveledTaskBias = Number.isFinite(style.leveledTaskBias) ? style.leveledTaskBias : 0.05;
 
-  const rawPriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
-  let effectivePriority = rawPriority;
-
-  if (job.type === 'build' && job.supply && job.supply.fullyDelivered === false) {
-    const cap = typeof caps.buildWaiting === 'function'
-      ? caps.buildWaiting(policy, job, villager, blackboard)
-      : null;
-    if (Number.isFinite(cap) && cap < effectivePriority) {
-      effectivePriority = cap;
-    }
-  }
+  const effectivePriority = Number.isFinite(job.prio) ? job.prio : defaultPriority;
 
   const distance = Number.isFinite(job.distance) ? job.distance : 0;
   let value = effectivePriority - distance * distanceFalloff;
