@@ -93,22 +93,6 @@ have since been merged.
 
 ## Open — Low
 
-### `src/app.js:70` ships a diagnostic `console.log`
-- `console.log("AIV Phase1 perf build")` runs on every page load.
-  Intentional — it confirms the bundle ran — but it's noise in prod
-  consoles. Consider gating on `import.meta.env.DEV` or removing.
-
-### Unused exports retained as a debug surface
-- **Where**: `src/app.js:4924` exports `setShadingMode`,
-  `setShadingParams`, `makeAltitudeShade`, `ambientAt`,
-  `buildHillshadeQ`, `buildLightmap`, `sampleLightAt`,
-  `shadeFillColorLit`, `applySpriteShadeLit`. No internal module imports
-  them; they're also installed onto `AIV_APP` for DebugKit (`src/app.js:4900`).
-- **Suggested**: The intent is documented in a code comment but the
-  contract isn't pinned anywhere user-facing. Either drop the ES exports
-  (leaving only the `AIV_APP` global) or document them in a public-API
-  README so external tools know what they can rely on.
-
 ### No automated tests
 - The repo has lint and build but no test runner. A smoke test (e.g.
   `vitest` plus a single "boot the world headless" assertion) would
@@ -200,3 +184,13 @@ prior audit; the linked file/line is where the fix lives.
 - **Bootstrap helper cleanup** — `__AIV_WORLDGEN_RESOLVE__`/`REJECT__`
   null themselves after the first call so the closure can GC and
   double-calls are no-ops (`public/bootstrap.js:14-39`).
+- **Diagnostic `console.log` on every load** — the
+  `"AIV Phase1 perf build"` log is now gated on
+  `import.meta.env?.DEV` (`src/app.js:72-74`) so prod consoles stay
+  clean while local dev still gets the bundle-ran confirmation.
+- **Unused ES exports retained as a debug surface** — the duplicate
+  `export { setShadingMode, ... }` at the bottom of `src/app.js` has
+  been dropped. The helpers remain reachable through the
+  `window.AIV_APP` global installed at `src/app.js:3988-4005`, which
+  is what DebugKit already uses; the comment at `src/app.js:4012-4017`
+  pins that contract.

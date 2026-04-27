@@ -69,7 +69,9 @@ import {
   normalizeExperienceLedger
 } from './app/simulation.js';
 
-console.log("AIV Phase1 perf build"); // shows up so we know this file ran
+if (import.meta.env?.DEV) {
+  console.log("AIV Phase1 perf build"); // shows up so we know this file ran
+}
 const PERF = { log:false }; // flip to true to log basic timings
 
 let waterRowMask = new Uint8Array(GRID_H);
@@ -4007,7 +4009,9 @@ if (AIV_SCOPE && typeof AIV_SCOPE === 'object') {
 export { boot as bootGame };
 export { gameState as state };
 export { LIGHTING };
-// Public debug surface: also installed onto window.AIV_APP above for DebugKit.
-// No internal modules import these — kept as an ES export so external tools
-// that prefer module imports over globals can still reach them.
-export { setShadingMode, setShadingParams, makeAltitudeShade, ambientAt, buildHillshadeQ, buildLightmap, sampleLightAt, shadeFillColorLit, applySpriteShadeLit };
+// Debug helpers (setShadingMode, setShadingParams, makeAltitudeShade,
+// ambientAt, buildHillshadeQ, buildLightmap, sampleLightAt,
+// shadeFillColorLit, applySpriteShadeLit) are exposed only via the
+// `window.AIV_APP` global installed above. They are not re-exported as
+// ES bindings because no internal module imports them and DebugKit
+// reaches them through `window`.
