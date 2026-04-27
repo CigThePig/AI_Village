@@ -3,7 +3,7 @@ import {
   GRID_H,
   GRID_SIZE,
   GRID_W,
-  ITEM,
+  ITEM_COLORS,
   LAYER_ORDER,
   SHADOW_DIRECTION,
   SHADOW_DIRECTION_ANGLE,
@@ -792,6 +792,8 @@ export function createRenderSystem(deps) {
       g.fillStyle = shadeFillColorLit('#3b2b1a', shade);
       g.fillRect(gx + 6 * s, gy + 10 * s, 20 * s, 1 * s);
       const totals = storageTotals || { food: 0, wood: 0, stone: 0 };
+      // audit Phase 2: pelt intentionally excluded from this fill heuristic
+      // (visualizes building-material/food fullness, not craft-resource stocks).
       const storedLevel = Math.min(1, (totals.food * 0.5 + totals.wood * 0.35 + totals.stone * 0.35) / 40);
       if (storedLevel > 0.02) {
         const fillH = Math.max(2 * s, Math.floor(12 * storedLevel) * s);
@@ -907,13 +909,7 @@ export function createRenderSystem(deps) {
     ctx.drawImage(f, 0, 0, 16, 16, gx, gy, spriteSize, spriteSize);
     applySpriteShadeLit(ctx, gx, gy, spriteSize, spriteSize, light);
     if (v.inv) {
-      const packColor = v.inv.type === ITEM.WOOD
-        ? '#b48a52'
-        : v.inv.type === ITEM.STONE
-          ? '#aeb7c3'
-          : v.inv.type === ITEM.BOW
-            ? '#d4c08a'
-            : '#b6d97a';
+      const packColor = ITEM_COLORS[v.inv.type] || ITEM_COLORS.food;
       ctx.fillStyle = shadeFillColorLit(packColor, light);
       ctx.fillRect(gx + spriteSize - 4 * s, gy + 2 * s, 3 * s, 3 * s);
     }
@@ -1202,13 +1198,7 @@ export function createRenderSystem(deps) {
         const spriteRect = { x: centerX - half, y: centerY - half, w: size, h: size };
         drawShadow(it.x, it.y, 1, 1, spriteRect);
         ctx.save();
-        const baseColor = it.type === ITEM.WOOD
-          ? '#b48a52'
-          : it.type === ITEM.STONE
-            ? '#aeb7c3'
-            : it.type === ITEM.BOW
-              ? '#d4c08a'
-              : '#b6d97a';
+        const baseColor = ITEM_COLORS[it.type] || ITEM_COLORS.food;
         ctx.fillStyle = shadeFillColorLit(baseColor, light);
         ctx.fillRect(spriteRect.x, spriteRect.y, spriteRect.w, spriteRect.h);
         ctx.restore();

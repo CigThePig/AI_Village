@@ -7,6 +7,7 @@ import {
   GRID_H,
   GRID_SIZE,
   GRID_W,
+  RESOURCE_TYPES,
   TILE,
   TILES,
   ZONES,
@@ -326,14 +327,13 @@ function newWorld(seed=Date.now()|0){
   if(typeof tickRunner !== 'undefined') tickRunner.reset();
   markEmittersDirty();
   villagerNumberCounter = 1;
+  // audit #38: starting stocks duplicated with state.js — defer consolidation.
+  for (const r of RESOURCE_TYPES) {
+    storageTotals[r] = 0;
+    storageReserved[r] = 0;
+  }
   storageTotals.food = 24;
   storageTotals.wood = 12;
-  storageTotals.stone = 0;
-  storageTotals.bow = 0;
-  storageReserved.food = 0;
-  storageReserved.wood = 0;
-  storageReserved.stone = 0;
-  storageReserved.bow = 0;
   time.tick = 0;
   time.dayTime = 0;
   const terrain = generateTerrain(seed, WORLDGEN_DEFAULTS, { w: GRID_W, h: GRID_H });
@@ -852,12 +852,14 @@ const {
   reserveMaterials,
   releaseReservedMaterials,
   spendCraftMaterials,
+  takeFromStorage: _takeFromStorage,
   countBuildingsByKind,
   scheduleHaul: _scheduleHaul,
   requestBuildHauls,
   cancelHaulJobsForBuilding
 } = _materialsSystem;
 void _scheduleHaul;
+void _takeFromStorage;
 
 const _populationSystem = createPopulation({
   state: gameState,
@@ -882,6 +884,8 @@ const _villagerAI = createVillagerAI({
   Toast,
   finishJob,
   availableToReserve,
+  reserveMaterials,
+  releaseReservedMaterials,
   requestBuildHauls,
   findAnimalById,
   findEntryTileNear,

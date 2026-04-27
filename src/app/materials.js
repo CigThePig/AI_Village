@@ -20,6 +20,11 @@ export function createMaterials(opts) {
   const storageTotals = state.stocks.totals;
   const storageReserved = state.stocks.reserved;
 
+  // Storage helpers — four roles:
+  //   reserveMaterials(cost)         — claim future use; gates allocation, increments storageReserved.
+  //   releaseReservedMaterials(cost) — undo a reservation; decrements storageReserved.
+  //   spendCraftMaterials(cost)      — close out a held reservation; decrements both totals and reserved.
+  //   takeFromStorage(resource, qty) — direct withdrawal that never touches reservations.
   function availableToReserve(resource) {
     return (storageTotals[resource] || 0) - (storageReserved[resource] || 0);
   }
@@ -62,6 +67,13 @@ export function createMaterials(opts) {
         releaseReservedMaterials({ [key]: qty });
       }
     }
+    return true;
+  }
+
+  function takeFromStorage(resource, qty) {
+    if (qty <= 0) return true;
+    if ((storageTotals[resource] || 0) < qty) return false;
+    storageTotals[resource] = Math.max(0, (storageTotals[resource] || 0) - qty);
     return true;
   }
 
@@ -142,6 +154,7 @@ export function createMaterials(opts) {
     reserveMaterials,
     releaseReservedMaterials,
     spendCraftMaterials,
+    takeFromStorage,
     countBuildingsByKind,
     scheduleHaul,
     requestBuildHauls,

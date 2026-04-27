@@ -1,3 +1,5 @@
+import { RESOURCE_TYPES } from './app/constants.js';
+
 export function createInitialState({ seed, cfg } = {}) {
   const baseSeed = Number.isFinite(seed) ? seed >>> 0 : (Date.now() | 0);
   const config = cfg && typeof cfg === 'object' ? cfg : {};
@@ -28,9 +30,11 @@ export function createInitialState({ seed, cfg } = {}) {
     generator: typeof (config.rng && config.rng.generator) === 'function' ? config.rng.generator : Math.random
   };
 
+  const baseTotals = Object.fromEntries(RESOURCE_TYPES.map(r => [r, 0]));
+  const baseReserved = Object.fromEntries(RESOURCE_TYPES.map(r => [r, 0]));
   const stocks = {
-    totals: Object.assign({ food: 24, wood: 0, stone: 0, bow: 0 }, stocksConfig.totals),
-    reserved: Object.assign({ food: 0, wood: 0, stone: 0, bow: 0 }, stocksConfig.reserved)
+    totals: Object.assign(baseTotals, { food: 24 }, stocksConfig.totals),
+    reserved: Object.assign(baseReserved, stocksConfig.reserved)
   };
 
   const queue = {
