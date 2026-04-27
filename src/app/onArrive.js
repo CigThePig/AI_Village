@@ -1,0 +1,521 @@
+import {
+  ANIMAL_BEHAVIORS,
+  CRAFTING_RECIPES,
+  GRID_W,
+  HUNT_RANGE,
+  HUNT_RETRY_COOLDOWN,
+  ITEM,
+  SPEEDS,
+  TILE,
+  TILES,
+  ZONES,
+} from './constants.js';
+import { BUILDINGS, buildingCenter, ensureBuildingData } from './world.js';
+import { R, clamp } from './rng.js';
+import {
+  addJobExperience,
+  applySkillGain,
+  effectiveSkillFromExperience,
+  moodThought,
+} from './simulation.js';
+import {
+  FOOD_HUNGER_RECOVERY,
+  HYDRATION_BUFF_TICKS,
+  REST_BASE_TICKS,
+  REST_EXTRA_PER_ENERGY,
+  SOCIAL_BASE_TICKS,
+  STORAGE_IDLE_BASE,
+} from './villagerAI.js';
+
+export function createOnArrive(opts) {
+  const {
+    state,
+    pathfind,
+    idx,
+    finishJob,
+    suppressJob,
+    releaseReservedMaterials,
+    spendCraftMaterials,
+    requestBuildHauls,
+    cancelHaulJobsForBuilding,
+    findAnimalById,
+    removeAnimal,
+    resolveHuntYield,
+    chooseFleeTarget,
+    queueAnimalLabel,
+    findHuntApproachPath,
+    consumeFood,
+    handleVillagerFed,
+    findNearestBuilding,
+    agricultureBonusesAt,
+    findEntryTileNear,
+    getBuildingById,
+    setActiveBuilding,
+    noteBuildingActivity,
+    buildingAt,
+    dropItem,
+    removeItemAtIndex,
+    itemTileIndex,
+    markStaticDirty,
+    markEmittersDirty,
+    onZoneTileSown,
+    getSecondsPerTick,
+    getSpeedPxPerSec,
+  } = opts;
+
+  const buildings = state.units.buildings;
+  const itemsOnGround = state.units.itemsOnGround;
+  const storageTotals = state.stocks.totals;
+  const storageReserved = state.stocks.reserved;
+
+  function getWorld() { return state.world; }
+  function getTick() { return state.time.tick; }
+  function getSpeedIdx() { return state.time.speedIdx; }
+
+  function stepAlong(v) {
+    const next = v.path[0];
+    if (!next) return;
+    const condition = v.condition || 'normal';
+    const penalty = condition === 'sick' ? 0.45
+      : condition === 'starving' ? 0.7
+      : condition === 'hungry' ? 0.85
+      : condition === 'recovering' ? 0.95
+      : 1;
+    const moodSpeed = 0.75 + v.happy * 0.5;
+    const speedMultiplier = v.speed * penalty * moodSpeed * SPEEDS[getSpeedIdx()];
+    const stepPx = getSpeedPxPerSec() * speedMultiplier * getSecondsPerTick();
+    const step = stepPx / TILE;
+    const dx = next.x - v.x, dy = next.y - v.y, dist = Math.hypot(dx, dy);
+    if (dist <= step) {
+      v.x = next.x;
+      v.y = next.y;
+      v.path.shift();
+      if (v.path.length === 0) onArrive(v);
+    } else {
+      v.x += (dx / dist) * step;
+      v.y += (dy / dist) * step;
+    }
+  }
+
+  function onArrive(v) {
+    const world = getWorld();
+    const cx = v.x | 0, cy = v.y | 0, i = idx(cx, cy);
+
+    if (v.state === 'chop') {
+      let remove = world.trees[i] <= 0;
+      if (world.trees[i] > 0) {
+        world.trees[i]--;
+        dropItem(cx, cy, ITEM.WOOD, 1);
+        if (world.trees[i] === 0) {
+          world.tiles[i] = TILES.GRASS;
+          markStaticDirty();
+          remove = true;
+        }
+        v.thought = moodThought(v, 'Chopped');
+      } else {
+        v.thought = moodThought(v, 'Nothing to chop');
+      }
+      addJobExperience(v, 'chop', remove ? 2 : 1);
+      v.state = 'idle';
+      finishJob(v, remove);
+    }
+    else if (v.state === 'mine') {
+      let remove = world.rocks[i] <= 0;
+      if (world.rocks[i] > 0) {
+        world.rocks[i]--;
+        dropItem(cx, cy, ITEM.STONE, 1);
+        if (world.rocks[i] === 0) {
+          world.tiles[i] = TILES.GRASS;
+          markStaticDirty();
+          remove = true;
+        }
+        v.thought = moodThought(v, 'Mined');
+      } else {
+        v.thought = moodThought(v, 'Nothing to mine');
+      }
+      v.state = 'idle';
+      applySkillGain(v, 'constructionSkill', 0.016, 0.88, 1);
+      addJobExperience(v, 'mine', remove ? 2 : 1);
+      finishJob(v, remove);
+    }
+    else if (v.state === 'hunt') {
+      const job = v.targetJob;
+      const animal = job ? findAnimalById(job.targetAid) : null;
+      const lodge = job ? buildings.find(bb => bb.id === job.bid && bb.kind === 'hunterLodge') : null;
+      if (!job || !animal || animal.state === 'dead') {
+        v.thought = moodThought(v, 'Lost prey');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      const dist = Math.hypot(animal.x - v.x, animal.y - v.y);
+      if (dist > HUNT_RANGE + 0.2) {
+        const approach = findHuntApproachPath(v, animal, { range: HUNT_RANGE });
+        if (approach?.path) {
+          v.path = approach.path;
+          v.state = 'hunt';
+          v.thought = moodThought(v, 'Stalking');
+          return;
+        }
+        suppressJob(job, HUNT_RETRY_COOLDOWN);
+        v.thought = moodThought(v, 'Prey escaped');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      const behavior = ANIMAL_BEHAVIORS[animal.type] || {};
+      const skill = effectiveSkillFromExperience(v, 'constructionSkill', 0.5, 'hunt');
+      const moodFactor = clamp((v.happy - 0.5) * 0.5, -0.15, 0.2);
+      const lodgeBonus = Number.isFinite(lodge?.effects?.gameYieldBonus) ? lodge.effects.gameYieldBonus * 0.2 : 0;
+      const successChance = clamp(0.55 + skill * 0.25 + moodFactor + lodgeBonus, 0.25, 0.95);
+      if (R() < successChance) {
+        const yieldResult = resolveHuntYield({ animal, lodge });
+        dropItem(animal.x | 0, animal.y | 0, ITEM.FOOD, yieldResult.meat);
+        if (yieldResult.pelts > 0) {
+          dropItem(animal.x | 0, animal.y | 0, 'pelt', yieldResult.pelts);
+        }
+        queueAnimalLabel('Taken', '#ffd27f', animal.x + 0.1, animal.y - 0.1);
+        removeAnimal(animal);
+        v.happy = clamp(v.happy + 0.06, 0, 1);
+        applySkillGain(v, 'constructionSkill', 0.014, 0.9, 1);
+        addJobExperience(v, 'hunt', 2.5);
+        v.thought = moodThought(v, 'Successful hunt');
+      } else {
+        animal.state = 'flee';
+        animal.target = chooseFleeTarget(animal, v, behavior, new Map());
+        animal.fleeTicks = Math.round((behavior.roamTicks?.[0] || 40) * 0.8);
+        v.happy = clamp(v.happy - 0.015, 0, 1);
+        applySkillGain(v, 'constructionSkill', 0.008, 0.9, 1);
+        suppressJob(job, HUNT_RETRY_COOLDOWN);
+        addJobExperience(v, 'hunt', 1);
+        v.thought = moodThought(v, 'Missed the shot');
+      }
+      v.state = 'idle';
+      finishJob(v, true);
+    }
+    else if (v.state === 'forage') {
+      if (Number.isInteger(v.targetI) && world.berries[v.targetI] > 0) {
+        world.berries[v.targetI]--;
+        if ((v.starveStage || 0) >= 2 || v.condition === 'sick') {
+          v.hunger -= FOOD_HUNGER_RECOVERY;
+          if (v.hunger < 0) v.hunger = 0;
+          handleVillagerFed(v, 'berries');
+          v.thought = moodThought(v, 'Ate berries');
+        } else {
+          v.inv = { type: ITEM.FOOD, qty: 1 };
+          v.thought = moodThought(v, 'Got berries');
+        }
+      } else {
+        v.thought = moodThought(v, 'Berries gone');
+      }
+      addJobExperience(v, 'forage', 1);
+      v.state = 'idle';
+      finishJob(v, true);
+    }
+    else if (v.state === 'seek_food') {
+      if (!v.inv) {
+        const itemKey = (cy * GRID_W) + cx;
+        const itemIndex = itemTileIndex.get(itemKey);
+        const it = itemIndex !== undefined ? itemsOnGround[itemIndex] : null;
+        if (it && it.type === ITEM.FOOD) {
+          v.inv = { type: ITEM.FOOD, qty: it.qty };
+          removeItemAtIndex(itemIndex);
+        }
+      }
+      if (consumeFood(v)) {
+        v.thought = moodThought(v, 'Eating');
+      } else if (v.inv && v.inv.type === ITEM.FOOD) {
+        v.thought = moodThought(v, 'Holding food');
+      } else {
+        v.thought = moodThought(v, 'No food found');
+      }
+      v.state = 'idle';
+    }
+    else if (v.state === 'sow') {
+      if (world.tiles[i] !== TILES.WATER) {
+        world.tiles[i] = TILES.FARMLAND;
+        world.growth[i] = 1;
+        world.zone[i] = ZONES.FARM;
+        if (typeof onZoneTileSown === 'function') onZoneTileSown(cx, cy);
+        markStaticDirty();
+        v.thought = moodThought(v, 'Sowed');
+      } else {
+        v.thought = moodThought(v, 'Too wet to sow');
+      }
+      v.state = 'idle';
+      applySkillGain(v, 'farmingSkill', 0.012, 0.9, 1);
+      addJobExperience(v, 'sow', 1);
+      finishJob(v, true);
+    }
+    else if (v.state === 'harvest') {
+      if (world.growth[i] > 0) {
+        let yieldAmount = 2;
+        const { harvestBonus } = agricultureBonusesAt(cx, cy);
+        if (harvestBonus > 0) {
+          const whole = Math.floor(harvestBonus);
+          yieldAmount += whole;
+          const frac = harvestBonus - whole;
+          if (frac > 0 && R() < frac) yieldAmount += 1;
+        }
+        dropItem(cx, cy, ITEM.FOOD, yieldAmount);
+        const harvestThought = yieldAmount > 1 ? 'Bountiful harvest' : 'Harvested';
+        v.thought = moodThought(v, harvestThought);
+      } else {
+        v.thought = moodThought(v, 'Nothing to harvest');
+      }
+      world.growth[i] = 0;
+      v.state = 'idle';
+      applySkillGain(v, 'farmingSkill', 0.018, 0.9, 1);
+      addJobExperience(v, 'harvest', 2);
+      finishJob(v, true);
+    }
+    else if (v.state === 'build') {
+      let remove = false;
+      const b = buildings.find(bb => bb.id === v.targetJob?.bid);
+      if (b) {
+        ensureBuildingData(b);
+        const def = BUILDINGS[b.kind] || {};
+        const cost = def.cost || ((def.wood || 0) + (def.stone || 0));
+        if (b.built < 1) {
+          const store = b.store || {};
+          const spent = b.spent || { wood: 0, stone: 0 };
+          let used = 0;
+          if (def.wood) {
+            const needWood = Math.max(0, (def.wood || 0) - (spent.wood || 0));
+            if (needWood > 0 && (store.wood || 0) > 0) {
+              const take = Math.min(needWood, store.wood);
+              store.wood -= take;
+              spent.wood = (spent.wood || 0) + take;
+              used += take;
+            }
+          }
+          if (def.stone) {
+            const needStone = Math.max(0, (def.stone || 0) - (spent.stone || 0));
+            if (needStone > 0 && (store.stone || 0) > 0) {
+              const take = Math.min(needStone, store.stone);
+              store.stone -= take;
+              spent.stone = (spent.stone || 0) + take;
+              used += take;
+            }
+          }
+          b.progress = (spent.wood || 0) + (spent.stone || 0);
+          if (b.progress >= cost) {
+            b.built = 1;
+            spent.wood = def.wood || 0;
+            spent.stone = def.stone || 0;
+            b.progress = cost;
+            if (b.kind === 'campfire') markEmittersDirty();
+            cancelHaulJobsForBuilding(b);
+            markStaticDirty();
+            v.thought = moodThought(v, 'Built');
+            remove = true;
+          } else {
+            requestBuildHauls(b);
+            v.thought = moodThought(v, used > 0 ? 'Building' : 'Needs supplies');
+          }
+        } else {
+          v.thought = moodThought(v, 'Built');
+          cancelHaulJobsForBuilding(b);
+          remove = true;
+        }
+      } else {
+        const bid = v.targetJob?.bid;
+        if (bid) { cancelHaulJobsForBuilding({ id: bid }); }
+        v.thought = moodThought(v, 'Site missing');
+        remove = true;
+      }
+      applySkillGain(v, 'constructionSkill', remove ? 0.02 : 0.012, 0.9, 1);
+      addJobExperience(v, 'build', remove ? 3 : 1);
+      v.state = 'idle';
+      finishJob(v, remove);
+    }
+    else if (v.state === 'haul_pickup') {
+      const job = v.targetJob;
+      const res = job?.resource;
+      const qty = job?.qty || 0;
+      const b = job ? buildings.find(bb => bb.id === job.bid) : null;
+      if (!job || job.type !== 'haul' || !res || qty <= 0) {
+        if (job && job.type === 'haul' && job.stage === 'pickup') {
+          const r = job.resource;
+          storageReserved[r] = Math.max(0, (storageReserved[r] || 0) - qty);
+          if (b) { ensureBuildingData(b); b.pending[r] = Math.max(0, (b.pending[r] || 0) - qty); }
+        }
+        v.thought = moodThought(v, 'Idle');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      ensureBuildingData(b);
+      if (!b || b.built >= 1) {
+        storageReserved[res] = Math.max(0, (storageReserved[res] || 0) - qty);
+        if (b) { b.pending[res] = Math.max(0, (b.pending[res] || 0) - qty); }
+        v.thought = moodThought(v, 'Site stocked');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      const available = storageTotals[res] || 0;
+      if (available >= qty) {
+        storageTotals[res] -= qty;
+        storageReserved[res] = Math.max(0, (storageReserved[res] || 0) - qty);
+        v.inv = { type: res, qty };
+        job.stage = 'deliver';
+        v.thought = moodThought(v, 'Loaded supplies');
+        let dest = job.dest || { x: b.x, y: b.y };
+        const targetBuilding = job.dest ? buildingAt(dest.x, dest.y) : b;
+        if (targetBuilding) {
+          const entry = findEntryTileNear(targetBuilding, cx, cy) || { x: Math.round(buildingCenter(targetBuilding).x), y: Math.round(buildingCenter(targetBuilding).y) };
+          dest = entry;
+        }
+        const p = pathfind(cx, cy, dest.x, dest.y);
+        if (p) {
+          v.path = p;
+          v.state = 'haul_deliver';
+          return;
+        }
+        storageTotals[res] += qty;
+        v.inv = null;
+        b.pending[res] = Math.max(0, (b.pending[res] || 0) - qty);
+        v.thought = moodThought(v, 'Path blocked');
+        v.state = 'idle';
+        finishJob(v, true);
+      } else {
+        storageReserved[res] = Math.max(0, (storageReserved[res] || 0) - qty);
+        b.pending[res] = Math.max(0, (b.pending[res] || 0) - qty);
+        v.thought = moodThought(v, 'Needs supplies');
+        v.state = 'idle';
+        finishJob(v, true);
+      }
+    }
+    else if (v.state === 'haul_deliver') {
+      const job = v.targetJob;
+      const res = job?.resource;
+      const carrying = v.inv;
+      const b = job ? buildings.find(bb => bb.id === job.bid) : null;
+      v.thought = moodThought(v, 'Idle');
+      if (job && job.type === 'haul' && carrying && carrying.type === res) {
+        const qty = carrying.qty || 0;
+        v.inv = null;
+        if (b) { ensureBuildingData(b); }
+        if (b && b.built < 1 && !job?.cancelled) {
+          b.store[res] = (b.store[res] || 0) + qty;
+          requestBuildHauls(b);
+          v.thought = moodThought(v, 'Delivered supplies');
+        } else {
+          storageTotals[res] = (storageTotals[res] || 0) + qty;
+          v.thought = moodThought(v, 'Returned supplies');
+        }
+        if (b) { b.pending[res] = Math.max(0, (b.pending[res] || 0) - qty); }
+        applySkillGain(v, 'constructionSkill', 0.01, 0.9, 1);
+        addJobExperience(v, 'haul', 1);
+      } else if (job && job.type === 'haul' && job.stage === 'pickup') {
+        const qty = job.qty || 0;
+        if (res) {
+          storageReserved[res] = Math.max(0, (storageReserved[res] || 0) - qty);
+          if (b) { ensureBuildingData(b); b.pending[res] = Math.max(0, (b.pending[res] || 0) - qty); }
+        }
+      }
+      v.state = 'idle';
+      finishJob(v, true);
+    }
+    else if (v.state === 'craft_bow') {
+      const job = v.targetJob;
+      const recipe = job?.materials || CRAFTING_RECIPES.bow;
+      const lodge = job ? buildings.find(bb => bb.id === job.bid && bb.kind === 'hunterLodge') : null;
+      if (!job || !lodge || lodge.built < 1) {
+        releaseReservedMaterials(recipe || {});
+        v.thought = moodThought(v, 'No lodge');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      if (!spendCraftMaterials(recipe || {})) {
+        v.thought = moodThought(v, 'Missing supplies');
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      const storage = findNearestBuilding(cx, cy, 'storage');
+      if (storage) {
+        storageTotals.bow = (storageTotals.bow || 0) + 1;
+        v.thought = moodThought(v, 'Crafted bow');
+      } else if (!v.inv) {
+        v.inv = { type: ITEM.BOW, qty: 1 };
+        v.thought = moodThought(v, 'Crafted bow');
+      } else {
+        dropItem(cx, cy, ITEM.BOW, 1);
+        v.thought = moodThought(v, 'Dropped bow');
+      }
+      applySkillGain(v, 'constructionSkill', 0.012, 0.9, 1);
+      addJobExperience(v, 'craft_bow', 2.5);
+      v.state = 'idle';
+      finishJob(v, true);
+    }
+    else if (v.state === 'equip_bow') {
+      const storage = v.targetBuilding || findNearestBuilding(cx, cy, 'storage');
+      if (storage && spendCraftMaterials({ bow: 1 })) {
+        v.equippedBow = true;
+        v.thought = moodThought(v, 'Equipped bow');
+      } else {
+        v.thought = moodThought(v, 'No bow available');
+      }
+      v.state = 'idle';
+      v.targetBuilding = null;
+    }
+    else if (v.state === 'to_storage') {
+      if (v.inv) {
+        if (v.inv.type === ITEM.FOOD && ((v.starveStage || 0) >= 2 || v.condition === 'sick')) {
+          consumeFood(v);
+          v.thought = moodThought(v, 'Ate supplies');
+        } else {
+          if (v.inv.type === ITEM.WOOD) storageTotals.wood += v.inv.qty;
+          if (v.inv.type === ITEM.STONE) storageTotals.stone += v.inv.qty;
+          if (v.inv.type === ITEM.FOOD) storageTotals.food += v.inv.qty;
+          if (v.inv.type === ITEM.BOW) storageTotals.bow += v.inv.qty;
+          v.inv = null;
+          v.thought = moodThought(v, 'Stored');
+        }
+      }
+      v.state = 'idle';
+    }
+    else if (v.state === 'rest') {
+      const baseRest = REST_BASE_TICKS + Math.round(Math.max(0, 1 - v.energy) * REST_EXTRA_PER_ENERGY);
+      const b = v.targetBuilding || getBuildingById(v.activeBuildingId) || buildingAt(cx, cy);
+      if (b) setActiveBuilding(v, b);
+      if (b) noteBuildingActivity(b, 'rest');
+      if (v.restTimer < baseRest) v.restTimer = baseRest;
+      v.state = 'resting';
+      v.thought = moodThought(v, 'Resting');
+    }
+    else if (v.state === 'hydrate') {
+      const b = v.targetBuilding || getBuildingById(v.activeBuildingId) || buildingAt(cx, cy);
+      if (b) setActiveBuilding(v, b);
+      if (b) noteBuildingActivity(b, 'hydrate');
+      v.hydrationTimer = Math.max(v.hydrationTimer || 0, Math.round(HYDRATION_BUFF_TICKS * 0.25));
+      v.hydration = 1;
+      v.hydrationBuffTicks = Math.max(v.hydrationBuffTicks, HYDRATION_BUFF_TICKS);
+      v.state = 'hydrating';
+      v.thought = moodThought(v, 'Drinking');
+    }
+    else if (v.state === 'socialize') {
+      const b = v.targetBuilding || getBuildingById(v.activeBuildingId) || buildingAt(cx, cy);
+      if (b) setActiveBuilding(v, b);
+      if (b) noteBuildingActivity(b, 'social');
+      v.socialTimer = Math.max(v.socialTimer || 0, SOCIAL_BASE_TICKS);
+      v.state = 'socializing';
+      v.thought = moodThought(v, 'Gathering');
+    }
+    else if (v.state === 'storage_idle') {
+      const b = v.targetBuilding || getBuildingById(v.activeBuildingId) || buildingAt(cx, cy);
+      if (b) setActiveBuilding(v, b);
+      if (b) noteBuildingActivity(b, 'use');
+      v.storageIdleTimer = Math.max(v.storageIdleTimer || 0, STORAGE_IDLE_BASE);
+      v.state = 'storage_linger';
+      v.thought = moodThought(v, 'Tidying storage');
+    }
+
+    void getTick;
+  }
+
+  return { stepAlong, onArrive };
+}
