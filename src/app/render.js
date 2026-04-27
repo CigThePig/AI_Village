@@ -1276,6 +1276,7 @@ export function createRenderSystem(deps) {
         const foodEl = el('food'); if (foodEl) foodEl.textContent = storageTotals.food | 0;
         const woodEl = el('wood'); if (woodEl) woodEl.textContent = storageTotals.wood | 0;
         const stoneEl = el('stone'); if (stoneEl) stoneEl.textContent = storageTotals.stone | 0;
+        const peltEl = el('pelt'); if (peltEl) peltEl.textContent = storageTotals.pelt | 0;
         const popEl = el('pop'); if (popEl) popEl.textContent = villagers.length | 0;
       }
       if (perf && perf.log) {

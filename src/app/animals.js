@@ -5,7 +5,6 @@ import {
   GRID_SIZE,
   GRID_W,
   HUNT_RANGE,
-  ITEM,
   TILES,
   WALKABLE,
   tileToPxX,
@@ -35,7 +34,6 @@ export function createAnimalsSystem(opts) {
     pathfind,
     tileOccupiedByBuilding,
     idx,
-    dropItem,
   } = opts;
 
   const animals = state.units.animals;
@@ -263,24 +261,16 @@ export function createAnimalsSystem(opts) {
     return best;
   }
 
-  function interactWithVillage(animal, behavior, occupancy) {
+  // Audit Phase 6: ambient food creation removed. Hungry-villager proximity no
+  // longer drops meat or kills the animal — formal hunting (planner hunt jobs +
+  // onArrive `hunt` arrival) is the only meat producer. This function survives
+  // as a non-food, mood-only wildlife observation interaction.
+  function interactWithVillage(animal, behavior, _occupancy) {
     const tick = getTick();
     if (animal.nextVillageTick > tick) return;
     const radius = Math.max(2, behavior.fearRadius || 3);
     const villager = nearestVillagerWithin(animal.x, animal.y, radius);
     if (!villager) return;
-    const hungry = (villager.starveStage || 0) >= 1 || villager.condition === 'hungry' || villager.condition === 'starving';
-    if (hungry && R() < 0.08) {
-      dropItem(animal.x | 0, animal.y | 0, ITEM.FOOD, 1);
-      villager.hunger = Math.max(0, villager.hunger - 0.12);
-      villager.thought = moodThought(villager, 'Hunted game');
-      queueAnimalLabel('Hunted', '#ffd27f', animal.x + 0.15, animal.y - 0.1);
-      animal.state = 'flee';
-      animal.target = chooseFleeTarget(animal, villager, behavior, occupancy);
-      animal.fleeTicks = Math.round(behavior.roamTicks ? behavior.roamTicks[0] : 40);
-      animal.nextVillageTick = tick + 280;
-      return;
-    }
     if (R() < 0.16) {
       villager.happy = clamp(villager.happy + (behavior.observeMood || 0.003), 0, 1);
       villager.thought = moodThought(villager, 'Watching wildlife');

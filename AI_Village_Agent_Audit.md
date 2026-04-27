@@ -271,10 +271,16 @@ Better long-term: make pickup explicit haul work instead of spontaneous intercep
 
 ## 6. Pelts are generated but cannot be stored or persisted
 
-**Resolved (Phase 2, commit `b3ef1df`).** Added `ITEM.PELT`, `RESOURCE_TYPES`,
-`ITEM_COLORS`. Storage totals/reserved, `newWorld`, save/load, deposit, and
-rendering all flow through the resource list now. Pelts deposit, persist, and
-render with a dedicated color.
+**Resolved (Phase 2, commit `b3ef1df`; Phase 6 finishes the visible loop).**
+Phase 2 added `ITEM.PELT`, `RESOURCE_TYPES`, `ITEM_COLORS`. Storage
+totals/reserved, `newWorld`, save/load, deposit, and rendering all flow
+through the resource list now. Pelts deposit, persist, and render with a
+dedicated color. Phase 6 closes the player-facing gap: a 🦊 pelts slot in
+`index.html` plus a null-safe writeback at `src/app/render.js:1278` make
+the count visible in the HUD, so a hunter can drop a pelt on the ground,
+have it picked up, deposited, and seen by the player end-to-end. No
+crafting/trade recipes for pelts are added — that remains the original
+"future recipe/trade usage" line below.
 
 
 **Files/lines**
@@ -321,11 +327,22 @@ future recipe/trade usage
 
 ## 7. Animal ambient hunting can create food without killing animals
 
+**Resolved (Phase 6).** The hungry/0.08 branch in `interactWithVillage`
+at `src/app/animals.js` is gone — it no longer drops `ITEM.FOOD`,
+modifies hunger, sets the animal to `flee`, or calls `chooseFleeTarget`.
+The function survives as a non-food, mood-only "Watching wildlife"
+observation (the `R() < 0.16` branch the original audit fix direction
+explicitly allowed). With this branch removed, the only meat producer in
+the codebase is the formal hunt arrival at `src/app/onArrive.js:173-178`,
+which still gates on lodge + equipped bow + reachable target + range +
+success roll, and which calls `removeAnimal(animal)` so the kill is
+real. `dropItem` and `ITEM` are no longer imported by `animals.js`.
+
 **Files/lines**
 
-- `src/app/animals.js:273-280`
-- `src/app/planner.js:934-966`
-- `src/app/onArrive.js:141-195`
+- `src/app/animals.js:264-280` (post-change)
+- `src/app/planner.js:968-999` (formal hunt job creation, unchanged)
+- `src/app/onArrive.js:141-195` (formal hunt arrival, unchanged)
 
 The formal hunting pipeline exists, but animals also have ambient villager interaction where hungry villagers can benefit from animals without killing them.
 
@@ -1402,14 +1419,58 @@ Tasks (completed):
 
 ## Phase 6: Remove old hunting shortcuts
 
-Goal: formal hunting should own meat generation.
+**Status: Done.** Resolves critical issues **#7** (ambient hunting
+shortcut) and finishes the player-visible half of **#6** (pelt fully
+wired). Tasks 2 and 3 (formal hunting prerequisites and animal
+death/removal) were already correct in the existing code — Phase 6
+verifies and locks them in with tests rather than rewriting.
 
-Tasks:
+`src/app/animals.js` — the hungry/0.08 branch in `interactWithVillage`
+is removed; the function is now a non-food, mood-only "Watching
+wildlife" observation. `dropItem` and `ITEM` are no longer imported.
+With this change the formal hunt arrival at `src/app/onArrive.js:173-178`
+is the codebase's only meat producer, and it still gates on hunter
+lodge + equipped bow + reachable target + `HUNT_RANGE` + skill-based
+success roll, with `removeAnimal(animal)` on success and
+`suppressJob(job, HUNT_RETRY_COOLDOWN)` on miss. Hunt job emission at
+`src/app/planner.js:968-999` already required `findHunterLodge()`
+(filters `built < 1`) and `countEquippedBows() > 0`, dedup'd targets by
+`targetAid` (Phase 3 identity), and skipped `state === 'dead'` animals.
 
-1. Remove ambient animal-hunting food creation, or make it non-food behavior.
-2. Ensure hunting requires intended conditions such as hunter, bow, job, target animal.
-3. Ensure animal death/removal/yield is consistent.
-4. Fully wire `pelt` or remove it.
+`index.html` — added `<div class="stat">🦊 <span id="pelt">0</span><small>pelts</small></div>`
+in the HUD stat row alongside food/wood/stone, so the pelt loop is
+finally visible to the player. `src/app/render.js:1278` writes
+`storageTotals.pelt` into that slot using the same null-safe `el(...)`
+pattern as the other stats, so an HTML without the slot still boots
+cleanly. The full pelt pipeline now reads end-to-end: hunt drop
+(`onArrive.js:175`) → ground render (`render.js:1200-1206` via
+`ITEM_COLORS.pelt`) → opportunistic pickup (`app.js:783-793`) →
+generic `to_storage` deposit (`onArrive.js:493-494` via
+`RESOURCE_TYPES.includes`) → save/load (whole-object serialize at
+`save.js:49-89`) → HUD readback.
+
+Tests live in `tests/hunting.phase6.test.js` and run via `npm test`
+(Node's built-in test runner; a small DOM/`AIV_TERRAIN`/`AIV_CONFIG`
+stub at the top of the file lets `animals.js` and its transitive
+imports load without a browser, no new dependencies). Coverage:
+`ITEM.PELT` value + `RESOURCE_TYPES`/`ITEM_COLORS` membership guards;
+500 ticks of `interactWithVillage` against a starving villager
+asserting no food is dropped, the animal never enters `flee`, and
+hunger is unchanged; 500 ticks of `interactWithVillage` asserting the
+`👀` label still fires and happiness can still improve; 400 trials of
+`resolveHuntYield` asserting `meat >= 1` and `pelts ∈ {0, 1}` and that
+both pelt-drop and meat-of-2 actually occur over the sample.
+
+**Deferred (and tagged in Issue #6 fix direction):** pelts have no
+crafting/trade recipe yet — they accumulate in storage. That's the
+"future recipe/trade usage" line and is out of Phase 6 scope.
+
+Tasks (completed):
+
+1. Remove ambient animal-hunting food creation, or make it non-food behavior. **Removed; non-food mood branch retained.**
+2. Ensure hunting requires intended conditions such as hunter, bow, job, target animal. **Verified — already enforced by `planner.js:968-999`, `onArrive.js:141-195`.**
+3. Ensure animal death/removal/yield is consistent. **Verified — `removeAnimal` on success, `resolveHuntYield` contract test added.**
+4. Fully wire `pelt` or remove it. **Wired through to the HUD; pickup → deposit → save/load already in place since Phase 2.**
 
 ## Phase 7: UI/runtime robustness
 
