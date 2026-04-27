@@ -131,7 +131,17 @@ const ANIMAL_BEHAVIORS = {
     idleBob: 1.2
   }
 };
-const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone', BOW:'bow' };
+const ITEM = { FOOD:'food', WOOD:'wood', STONE:'stone', BOW:'bow', PELT:'pelt' };
+// Explicit list (not Object.values(ITEM)) so future non-stored ITEM entries
+// don't silently join the storage/save pipeline.
+const RESOURCE_TYPES = Object.freeze(['food', 'wood', 'stone', 'bow', 'pelt']);
+const ITEM_COLORS = Object.freeze({
+  food: '#b6d97a',
+  wood: '#b48a52',
+  stone: '#aeb7c3',
+  bow: '#d4c08a',
+  pelt: '#8a6a3f'
+});
 const CRAFTING_RECIPES = {
   bow: Object.freeze({ wood: 2, stone: 1 })
 };
@@ -169,9 +179,11 @@ export {
   HUNT_RANGE,
   HUNT_RETRY_COOLDOWN,
   ITEM,
+  ITEM_COLORS,
   LIGHT_VECTOR,
   LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
+  RESOURCE_TYPES,
   SAVE_KEY,
   SAVE_MIGRATIONS,
   SAVE_VERSION,

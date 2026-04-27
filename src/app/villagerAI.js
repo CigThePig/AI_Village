@@ -39,7 +39,9 @@ export function createVillagerAI(opts) {
     addJob: _addJob, // unused but kept for symmetry; pickJobFor doesn't add jobs directly
     finishJob,
     noteJobAssignmentChanged: _noteJobAssignmentChanged,
-    availableToReserve,
+    availableToReserve: _availableToReserve,
+    reserveMaterials,
+    releaseReservedMaterials,
     requestBuildHauls,
     findAnimalById,
     findEntryTileNear,
@@ -52,6 +54,7 @@ export function createVillagerAI(opts) {
 
   void _addJob;
   void _noteJobAssignmentChanged;
+  void _availableToReserve;
   void _getBuildingById;
 
   const buildings = state.units.buildings;
@@ -504,15 +507,17 @@ export function createVillagerAI(opts) {
     if (v.inv) return false;
     if (v.state !== 'idle') return false;
     if (tick < v._nextPathTick) return false;
-    if (availableToReserve('bow') <= 0) return false;
+    // Reserve on intent so two villagers can't race for the same bow (audit #12).
+    if (!reserveMaterials({ bow: 1 })) return false;
     const storage = findNearestBuilding(v.x | 0, v.y | 0, 'storage');
-    if (!storage) return false;
+    if (!storage) { releaseReservedMaterials({ bow: 1 }); return false; }
     const entry = findEntryTileNear(storage, v.x | 0, v.y | 0) || { x: Math.round(buildingCenter(storage).x), y: Math.round(buildingCenter(storage).y) };
     const p = pathfind(v.x | 0, v.y | 0, entry.x, entry.y);
-    if (!p) return false;
+    if (!p) { releaseReservedMaterials({ bow: 1 }); return false; }
     v.path = p;
     v.state = 'equip_bow';
     v.targetBuilding = storage;
+    v.reservedPickup = { type: ITEM.BOW, qty: 1 };
     v.thought = moodThought(v, 'Fetching bow');
     v._nextPathTick = tick + 12;
     return true;

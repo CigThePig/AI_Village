@@ -3,6 +3,7 @@ import {
   COARSE_SAVE_SIZE,
   GRID_H,
   GRID_W,
+  RESOURCE_TYPES,
   SAVE_KEY,
   SAVE_MIGRATIONS,
   SAVE_VERSION,
@@ -168,15 +169,11 @@ export function createSaveSystem(deps) {
       reindexAllBuildings();
       markEmittersDirty();
       const savedTotals = d.storageTotals || {};
-      storageTotals.food = Number.isFinite(savedTotals.food) ? savedTotals.food : 0;
-      storageTotals.wood = Number.isFinite(savedTotals.wood) ? savedTotals.wood : 0;
-      storageTotals.stone = Number.isFinite(savedTotals.stone) ? savedTotals.stone : 0;
-      storageTotals.bow = Number.isFinite(savedTotals.bow) ? savedTotals.bow : 0;
       const savedReserved = d.storageReserved || {};
-      storageReserved.food = Number.isFinite(savedReserved.food) ? savedReserved.food : 0;
-      storageReserved.wood = Number.isFinite(savedReserved.wood) ? savedReserved.wood : 0;
-      storageReserved.stone = Number.isFinite(savedReserved.stone) ? savedReserved.stone : 0;
-      storageReserved.bow = Number.isFinite(savedReserved.bow) ? savedReserved.bow : 0;
+      for (const r of RESOURCE_TYPES) {
+        storageTotals[r] = Number.isFinite(savedTotals[r]) ? savedTotals[r] : 0;
+        storageReserved[r] = Number.isFinite(savedReserved[r]) ? savedReserved[r] : 0;
+      }
       villagers.length = 0;
       const tickNow = getTick();
       (d.villagers || []).forEach(v => {

@@ -263,6 +263,12 @@ Better long-term: make pickup explicit haul work instead of spontaneous intercep
 
 ## 6. Pelts are generated but cannot be stored or persisted
 
+**Resolved (Phase 2, commit `b3ef1df`).** Added `ITEM.PELT`, `RESOURCE_TYPES`,
+`ITEM_COLORS`. Storage totals/reserved, `newWorld`, save/load, deposit, and
+rendering all flow through the resource list now. Pelts deposit, persist, and
+render with a dedicated color.
+
+
 **Files/lines**
 
 - `src/app/onArrive.js:173-176`
@@ -445,6 +451,11 @@ Deeper model:
 
 ## 12. Bow pickup is not reserved before villagers travel to storage
 
+**Resolved (Phase 2, commit `b3ef1df`).** `tryEquipBow` now calls
+`reserveMaterials({ bow: 1 })` on intent and releases on every early-return
+(no storage / no path). `v.reservedPickup` tracks the outstanding claim.
+
+
 **Files/lines**
 
 - `src/app/villagerAI.js:500-518`
@@ -470,6 +481,16 @@ Release reservation if cancelled.
 ---
 
 ## 13. `spendCraftMaterials()` is used for unreserved bow pickup, corrupting reservations
+
+**Resolved (Phase 2, commit `b3ef1df`).** Bow pickup now owns its own
+reservation (see #12), so `spendCraftMaterials` is closing a real reservation
+rather than someone else's. A new `takeFromStorage(resource, qty)` helper was
+added to `materials.js` for any future direct-take callers, alongside doc
+comments separating the four helper roles. Also fixed a related double-release:
+`spendCraftMaterials` already releases on insufficient-stock failure, so the
+arrival path only releases explicitly when storage vanished mid-trip and
+`spendCraftMaterials` was never called.
+
 
 **Files/lines**
 
@@ -1159,6 +1180,17 @@ Tasks:
 8. Add save/load smoke tests.
 
 ## Phase 2: Repair resource registry and storage helpers
+
+**Status: Done (commit `b3ef1df`).** Pelt is now a first-class resource;
+`RESOURCE_TYPES` and `ITEM_COLORS` in `constants.js` are the single source of
+truth used by `state.js`, `newWorld()`, save/load, deposit, and rendering.
+`materials.js` exposes the four helpers below. `tryEquipBow` reserves on
+intent, and `onArrive` closes the bow reservation through
+`spendCraftMaterials` (only releases explicitly when storage vanishes
+mid-trip, so it can't double-release another villager's reservation).
+This addresses critical issues **#6**, **#12**, and **#13**. Issue **#38**
+(starting-stock duplication between `state.js` and `newWorld()`) is
+explicitly deferred and tagged with a comment in `app.js`.
 
 Goal: every resource type has one consistent lifecycle.
 

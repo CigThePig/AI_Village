@@ -5,6 +5,7 @@ import {
   HUNT_RANGE,
   HUNT_RETRY_COOLDOWN,
   ITEM,
+  RESOURCE_TYPES,
   SPEEDS,
   TILE,
   TILES,
@@ -172,7 +173,7 @@ export function createOnArrive(opts) {
         const yieldResult = resolveHuntYield({ animal, lodge });
         dropItem(animal.x | 0, animal.y | 0, ITEM.FOOD, yieldResult.meat);
         if (yieldResult.pelts > 0) {
-          dropItem(animal.x | 0, animal.y | 0, 'pelt', yieldResult.pelts);
+          dropItem(animal.x | 0, animal.y | 0, ITEM.PELT, yieldResult.pelts);
         }
         queueAnimalLabel('Taken', '#ffd27f', animal.x + 0.1, animal.y - 0.1);
         removeAnimal(animal);
@@ -452,13 +453,24 @@ export function createOnArrive(opts) {
       finishJob(v, true);
     }
     else if (v.state === 'equip_bow') {
+      // tryEquipBow reserved 1 bow on intent. spendCraftMaterials closes the
+      // reservation on success AND releases it on insufficient-stock failure,
+      // so we only need an explicit release when we never reach that call
+      // (e.g. the storage building disappeared mid-trip). Audit #12, #13.
       const storage = v.targetBuilding || findNearestBuilding(cx, cy, 'storage');
-      if (storage && spendCraftMaterials({ bow: 1 })) {
+      let equipped = false;
+      if (storage) {
+        equipped = spendCraftMaterials({ bow: 1 });
+      } else {
+        releaseReservedMaterials({ bow: 1 });
+      }
+      if (equipped) {
         v.equippedBow = true;
         v.thought = moodThought(v, 'Equipped bow');
       } else {
         v.thought = moodThought(v, 'No bow available');
       }
+      v.reservedPickup = null;
       v.state = 'idle';
       v.targetBuilding = null;
     }
@@ -468,10 +480,9 @@ export function createOnArrive(opts) {
           consumeFood(v);
           v.thought = moodThought(v, 'Ate supplies');
         } else {
-          if (v.inv.type === ITEM.WOOD) storageTotals.wood += v.inv.qty;
-          if (v.inv.type === ITEM.STONE) storageTotals.stone += v.inv.qty;
-          if (v.inv.type === ITEM.FOOD) storageTotals.food += v.inv.qty;
-          if (v.inv.type === ITEM.BOW) storageTotals.bow += v.inv.qty;
+          if (RESOURCE_TYPES.includes(v.inv.type)) {
+            storageTotals[v.inv.type] = (storageTotals[v.inv.type] || 0) + v.inv.qty;
+          }
           v.inv = null;
           v.thought = moodThought(v, 'Stored');
         }
