@@ -811,6 +811,17 @@ export function createPlanner(opts) {
     return false;
   }
 
+  function countPlantedTiles() {
+    const world = state.world;
+    if (!world || !world.growth || !world.tiles) return 0;
+    let count = 0;
+    for (let i = 0; i < world.tiles.length; i++) {
+      if (world.tiles[i] === TILES.FARMLAND
+        && world.growth[i] > 0 && world.growth[i] < 150) count++;
+    }
+    return count;
+  }
+
   function shouldGenerateJobType(type, bb, cfg) {
     if (!bb) return true;
     const villagersCount = Math.max(1, bb.villagers || 0);
@@ -818,10 +829,17 @@ export function createPlanner(opts) {
       if (bb.famine) return true;
       return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager', 'food');
     }
-    if (type === 'sow' || type === 'harvest') {
+    if (type === 'harvest') {
+      // Harvest is always allowed; the FARMLAND scan emits nothing when no tile is ripe.
+      return true;
+    }
+    if (type === 'sow') {
       if (bb.famine) return true;
-      if (hasAnyFarmTiles()) return true;
-      return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager', type);
+      const perVillager = Number.isFinite(cfg?.plantedTilesPerVillager)
+        ? cfg.plantedTilesPerVillager : 1.5;
+      const plantedTarget = Math.ceil(villagersCount * perVillager);
+      if (countPlantedTiles() < plantedTarget) return true;
+      return evaluateResourceNeed('food', bb.availableFood || 0, villagersCount, cfg, 'minFoodPerVillager', 'sow');
     }
     if (type === 'chop') {
       return evaluateResourceNeed('wood', bb.availableWood || 0, villagersCount, cfg, 'minWoodPerVillager');
@@ -845,13 +863,19 @@ export function createPlanner(opts) {
     const creationCfg = getJobCreationConfig();
     const bb = ensureBlackboardSnapshot();
     const allowSow = shouldGenerateJobType('sow', bb, creationCfg);
+    const allowHarvest = shouldGenerateJobType('harvest', bb, creationCfg);
     const allowChop = shouldGenerateJobType('chop', bb, creationCfg);
     const allowMine = shouldGenerateJobType('mine', bb, creationCfg);
     const allowCraftBow = shouldGenerateJobType('craft_bow', bb, creationCfg);
     const villagerCount = Math.max(1, bb?.villagers || villagers.length || 0);
     const famineSeverity = computeFamineSeverity(bb);
     const foodOnHand = bb?.availableFood ?? storageTotals.food ?? 0;
-    const forageNeed = bb?.famine || !hasRipeCrops() || foodOnHand < villagerCount * 2;
+    // Forage as a real food-pressure fallback: famine, food deficit, or
+    // moderate food + no ripe crops to bridge the growing gap. Without the
+    // last clause, forage would dominate whenever crops were still growing.
+    const forageNeed = bb?.famine
+      || foodOnHand < villagerCount * 2
+      || (!hasRipeCrops() && foodOnHand < villagerCount * 3);
     const allowForage = shouldGenerateJobType('forage', bb, creationCfg) && forageNeed;
     for (let y = 0; y < GRID_H; y++) {
       for (let x = 0; x < GRID_W; x++) {
@@ -870,6 +894,16 @@ export function createPlanner(opts) {
           if (allowMine && zoneHasWorkNow(z, i) && !violatesSpacing(x, y, 'mine', creationCfg)) {
             addJob({ type: 'mine', x, y, prio: 0.5 + (policy.sliders.build || 0) * 0.5 });
           }
+        }
+        // Harvest is keyed on FARMLAND, not on FARM zone, because a tile that
+        // was sown can survive a zone clear and still need its crop pulled.
+        // addJob() dedupes via getJobIdentity('harvest:x,y'), so this stays
+        // idempotent each planner pass.
+        if (allowHarvest
+          && world.tiles[i] === TILES.FARMLAND
+          && world.growth[i] >= 150
+          && !violatesSpacing(x, y, 'harvest', creationCfg)) {
+          addJob({ type: 'harvest', x, y, prio: 0.65 + (policy.sliders.food || 0) * 0.6 });
         }
       }
     }

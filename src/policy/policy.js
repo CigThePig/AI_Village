@@ -62,6 +62,7 @@ const DEFAULT_JOB_CREATION = Object.freeze({
   minFoodPerVillager: 0.6,
   minWoodPerVillager: 1.2,
   minStonePerVillager: 0.6,
+  plantedTilesPerVillager: 1.5,
   hysteresis: 0.2,
   minSpacing: {
     sow: 0,

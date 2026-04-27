@@ -571,6 +571,17 @@ Move `requestBuildHauls()` out of `pickJobFor()` into planner/build maintenance 
 
 ## 15. Ripe crops can become permanently stranded with no harvest job
 
+**Resolved (Phase 5).** `generateJobs()` in `src/app/planner.js` now
+emits a harvest job for every FARMLAND tile with `growth >= 150` on
+each pass, gated on `world.tiles[i] === TILES.FARMLAND` rather than
+`z === ZONES.FARM` (so a dezoned-but-sown tile is still harvested).
+`getJobIdentity` in `src/app/jobs.js` was missing a `harvest` case;
+adding it (key `harvest:${x},${y}`) makes the planner emission
+idempotent — a removed/cancelled/suppressed harvest job is recreated
+on the next planner pass. `seasonTick` keeps its threshold-crossing
+emission as the fast-path; the planner is the catch-up.
+
+
 **Files/lines**
 
 - `src/app.js:656-691`
@@ -599,6 +610,18 @@ if (world.tiles[i] === TILES.FARMLAND && world.growth[i] >= 150) {
 ---
 
 ## 16. Farm job logic over-enables sow/harvest work
+
+**Resolved (Phase 5).** `shouldGenerateJobType` in `src/app/planner.js`
+now treats sow and harvest separately. Harvest is always allowed (the
+FARMLAND scan is a no-op when nothing is ripe). Sow gates on a
+planted-tile target driven by `plantedTilesPerVillager` (default `1.5`,
+added to `DEFAULT_JOB_CREATION` in `src/policy/policy.js`); a new
+`countPlantedTiles()` helper counts FARMLAND tiles with `0 < growth <
+150`, so ripe-but-unharvested tiles do not throttle sowing. Forage was
+softened — the old `!hasRipeCrops()` clause is replaced with `(!hasRipeCrops()
+&& foodOnHand < villagerCount * 3)`, so forage stays a real
+food-pressure fallback rather than constant competition with farming.
+
 
 **Files/lines**
 
@@ -1344,9 +1367,33 @@ Tasks (completed):
 
 ## Phase 5: Repair farming lifecycle
 
-Goal: crops should not strand, and farming should not dominate forever.
+**Status: Done.** Resolves critical issues **#15** (ripe crops
+permanently stranded) and **#16** (sow/harvest over-enabled).
 
-Tasks:
+`getJobIdentity` in `src/app/jobs.js` now includes `harvest` (keyed as
+`harvest:${x},${y}`). `src/app/planner.js` adds `countPlantedTiles()`
+alongside `hasRipeCrops`/`hasAnyFarmTiles`; `shouldGenerateJobType`
+splits the sow and harvest cases — harvest is unconditional (the
+FARMLAND scan is the gate), sow gates on a planted-tile target driven
+by `cfg.plantedTilesPerVillager` (default `1.5`, added to
+`DEFAULT_JOB_CREATION` in `src/policy/policy.js`). `generateJobs()`
+emits harvest from the existing tile loop guarded by `world.tiles[i]
+=== TILES.FARMLAND && world.growth[i] >= 150` — keyed on FARMLAND, not
+zone, so a dezoned-but-sown tile is still harvested. `forageNeed` now
+keeps the `!hasRipeCrops()` branch but ANDs it with `foodOnHand <
+villagerCount * 3` so forage is a real food-pressure fallback rather
+than constant competition. `seasonTick` is unchanged: it stays as the
+fast-path emitter (emits exactly at the threshold crossing) while the
+planner catches up idempotently.
+
+Tests live in `tests/farming.lifecycle.test.js` and run via `npm test`
+(Node's built-in test runner, no new dependencies). Coverage:
+harvest dedupe at the same tile, re-emission after removal,
+re-emission after `cancelled = true`, harvest+sow at the same tile
+coexisting (different identity keys), and harvest suppression
+following coordinates with tick-based expiry.
+
+Tasks (completed):
 
 1. Generate harvest jobs idempotently whenever ripe crops exist.
 2. Generate sow jobs only when empty farm tiles should be planted.
