@@ -38,6 +38,7 @@ import { createPathfinder } from './app/pathfinding.js';
 import { createSaveSystem } from './app/save.js';
 import { createUISystem } from './app/ui.js';
 import { createRenderSystem } from './app/render.js';
+import { createTickRunner } from './app/tick.js';
 import {
   BUILDINGS,
   CAMPFIRE_EFFECT_RADIUS,
@@ -348,11 +349,8 @@ Object.defineProperties(time, {
   }
 });
 
-let lastBlackboardTick = tick;
-let lastBlackboardLogTick = tick;
-const PLANNER_INTERVAL = { zones: 90, build: 120 };
-let lastZonePlanTick = tick - PLANNER_INTERVAL.zones;
-let lastBuildPlanTick = tick - PLANNER_INTERVAL.build;
+// Cadence counters (lastBlackboardTick, lastZonePlanTick, lastBuildPlanTick,
+// PLANNER_INTERVAL) live inside src/app/tick.js, which owns the simulation loop.
 const progressionMemory = new Map();
 
 setRandomSource(typeof rng.generator === 'function' ? rng.generator : Math.random);
@@ -1016,6 +1014,7 @@ function newWorld(seed=Date.now()|0){
   jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
   buildingsByKind.clear();
   clearActiveZoneJobs();
+  if(typeof tickRunner !== 'undefined') tickRunner.reset();
   markEmittersDirty();
   villagerNumberCounter = 1;
   storageTotals.food = 24;
@@ -2146,16 +2145,13 @@ function getJobCreationConfig(){
   return policy?.style?.jobCreation || {};
 }
 
-function ensureBlackboardSnapshot(){
-  const cadence = Number.isFinite(policy?.routine?.blackboardCadenceTicks)
-    ? policy.routine.blackboardCadenceTicks
-    : 30;
-  if(!gameState.bb || (tick-lastBlackboardTick)>cadence){
-    gameState.bb = computeBlackboard(gameState, policy);
-    lastBlackboardTick = tick;
-  }
+// ensureBlackboardSnapshot lives on the tick runner (src/app/tick.js); use the
+// thunk below so callers in this file keep a stable call shape until the runner
+// is wired up at boot.
+let ensureBlackboardSnapshot = () => {
+  if(!gameState.bb) gameState.bb = computeBlackboard(gameState, policy);
   return gameState.bb;
-}
+};
 
 function jobKey(job){
   if(!job || !job.type) return null;
@@ -4812,65 +4808,43 @@ function drawNocturnalEntities(ambient){
   ctx.restore();
 }
 
-let last=performance.now(), acc=0; const TICKS_PER_SEC=policy.routine.ticksPerSecond||6; const TICK_MS=1000/TICKS_PER_SEC; const SECONDS_PER_TICK=1/TICKS_PER_SEC; const SPEED_PX_PER_SEC=0.08*32*TICKS_PER_SEC; const MAX_CATCHUP_STEPS=Math.max(1, Number.isFinite(policy.routine.maxCatchupTicksPerFrame)?policy.routine.maxCatchupTicksPerFrame:12);
+// SECONDS_PER_TICK and SPEED_PX_PER_SEC are read by stepAlong() in this file;
+// the rest of the per-frame timing is owned by createTickRunner.
+const TICKS_PER_SEC = policy.routine.ticksPerSecond || 6;
+const SECONDS_PER_TICK = 1 / TICKS_PER_SEC;
+const SPEED_PX_PER_SEC = 0.08 * 32 * TICKS_PER_SEC;
+
+function processVillagerItemPickup(v){
+  if(itemTileIndexDirty) rebuildItemTileIndex();
+  if(v.inv) return;
+  const key = ((v.y|0) * GRID_W) + (v.x|0);
+  const itemIndex = itemTileIndex.get(key);
+  if(itemIndex === undefined) return;
+  const it = itemsOnGround[itemIndex];
+  if(!it) return;
+  v.inv = { type: it.type, qty: it.qty };
+  removeItemAtIndex(itemIndex);
+}
+
+const tickRunner = createTickRunner({
+  state: gameState,
+  policy,
+  planZones,
+  planBuildings,
+  generateJobs,
+  villagerTick,
+  updateAnimals,
+  updateNocturnalEntities,
+  seasonTick,
+  flushPendingBirths,
+  processVillagerItemPickup,
+  ambientAt,
+  perf: PERF
+});
+ensureBlackboardSnapshot = tickRunner.ensureBlackboardSnapshot;
+
 function update(){
-  const now=performance.now();
-  if(paused){ last=now; render(); requestAnimationFrame(update); return; }
-  let dt=now-last; last=now; dt*=SPEEDS[speedIdx]; acc+=dt;
-  let steps=Math.floor(acc/TICK_MS);
-  if(steps>MAX_CATCHUP_STEPS){
-    const allowedAcc=MAX_CATCHUP_STEPS*TICK_MS;
-    const droppedMs=Math.max(0, acc-allowedAcc);
-    acc=allowedAcc;
-    steps=MAX_CATCHUP_STEPS;
-    if(PERF.log){
-      console.warn('AIV loop catch-up capped', { droppedMs, cappedSteps: MAX_CATCHUP_STEPS });
-    }
-  }
-  if(steps>0) acc-=steps*TICK_MS;
-  const jobInterval=policy.routine.jobGenerationTickInterval||20;
-  const seasonInterval=policy.routine.seasonTickInterval||10;
-  const blackboardInterval=policy.routine.blackboardCadenceTicks||30;
-  const logConfig=policy.routine.blackboardLogging||null;
-  const logInterval=logConfig&&Number.isFinite(logConfig.intervalTicks)?Math.max(1,logConfig.intervalTicks):Math.max(1,TICKS_PER_SEC*60);
-  for(let s=0;s<steps;s++){
-    tick++;
-    dayTime=(dayTime+1)%DAY_LEN;
-    const ambientNow = ambientAt(dayTime);
-    if(jobInterval>0 && tick%jobInterval===0) generateJobs();
-    if(seasonInterval>0 && tick%seasonInterval===0) seasonTick();
-    if(blackboardInterval>0 && (tick-lastBlackboardTick)>=blackboardInterval){
-      gameState.bb=computeBlackboard(gameState, policy);
-      lastBlackboardTick=tick;
-      if(logConfig&&logConfig.enabled&& (tick-lastBlackboardLogTick)>=logInterval){
-        console.debug('[blackboard]', gameState.bb);
-        lastBlackboardLogTick=tick;
-      }
-    }
-    if((tick-lastZonePlanTick)>=PLANNER_INTERVAL.zones){
-      planZones(gameState.bb);
-      lastZonePlanTick=tick;
-    }
-    if((tick-lastBuildPlanTick)>=PLANNER_INTERVAL.build){
-      planBuildings(gameState.bb);
-      lastBuildPlanTick=tick;
-    }
-    updateAnimals();
-    updateNocturnalEntities(ambientNow);
-    for(const v of villagers){
-      if(itemTileIndexDirty) rebuildItemTileIndex();
-      if(!v.inv){
-        const key=((v.y|0)*GRID_W)+(v.x|0);
-        const itemIndex=itemTileIndex.get(key);
-        if(itemIndex!==undefined){
-          const it=itemsOnGround[itemIndex];
-          if(it){ v.inv={type:it.type,qty:it.qty}; removeItemAtIndex(itemIndex); }
-        }
-      }
-      villagerTick(v);
-    }
-    flushPendingBirths();
-  }
+  tickRunner.runFrame(performance.now());
   render();
   requestAnimationFrame(update);
 }
