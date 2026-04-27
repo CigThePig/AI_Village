@@ -191,6 +191,14 @@ Restore time before recreating villagers/animals.
 
 ## 4. Haul job duplicate detection ignores resource type and quantity
 
+**Resolved (Phase 3, commit `7d7cc5a`).** `getJobIdentity(job)` in
+`src/app/jobs.js` now keys haul jobs as `haul:b${bid}:r${resource}`, so
+wood and stone hauls for the same building no longer collapse.
+`hasSimilarJob` and the suppression Map both route through the new
+identity. Cancelled tombstones are skipped in `hasSimilarJob` so a
+deliver-stage cancellation cannot block its replacement (touches #29).
+
+
 **Files/lines**
 
 - `src/app/jobs.js:69-70`
@@ -808,6 +816,12 @@ if (!uiRefs.sheetPrior) return;
 
 ## 26. Job suppression keys ignore resource/stage/target identity
 
+**Resolved (Phase 3, commit `7d7cc5a`).** `suppressJob` and
+`isJobSuppressed` now use `getJobIdentity`, so suppression follows the
+work being suppressed. Hunt suppression keys on `targetAid`, so a
+fleeing animal cannot evade `HUNT_RETRY_COOLDOWN` by changing position.
+
+
 **Files/lines**
 
 - `src/app/jobs.js:42-67`
@@ -827,6 +841,15 @@ Use per-job identity keys, same as issue #4.
 ---
 
 ## 27. `hasSimilarJob()` ignores meaningful identity
+
+**Resolved (Phase 3, commit `7d7cc5a`).** `hasSimilarJob` now routes
+through `getJobIdentity` and skips cancelled jobs, so distinct work no
+longer collapses into one slot. Identity per type:
+`haul:b${bid}:r${resource}`, `hunt:a${targetAid}`, `build:b${bid}`,
+`craft_bow:b${bid}`, and `${type}:${x},${y}` for sow/chop/mine/forage.
+Unknown types return `null` so a future job type without identity
+support fails loudly rather than silently aliasing.
+
 
 **Files/lines**
 
@@ -1207,6 +1230,23 @@ Tasks:
 5. Fix bow pickup to reserve or directly take stock safely.
 
 ## Phase 3: Repair job identity, dedupe, and suppression
+
+**Status: Done (commit `7d7cc5a`).** `getJobIdentity(job)` in
+`src/app/jobs.js` is the single source of truth for job identity, used
+by `hasSimilarJob`, `isJobSuppressed`, and `suppressJob`. Identity
+fields are chosen per type: hauls include `bid+resource`, hunts key on
+`targetAid`, build/craft jobs key on `bid`, and zone work keys on
+`x,y`. `hasSimilarJob` skips `cancelled` jobs so deliver-stage
+tombstones no longer block their replacements (partial fix for #29 —
+full lifecycle redesign deferred). The dead `jobKey` export was
+removed from `src/app.js`. Resolves critical issues **#4**, **#26**,
+and **#27**.
+
+Tests live in `tests/jobs.identity.test.js` and run via `npm test`
+(Node's built-in test runner, no new dependencies). Coverage includes
+the wood+stone case the audit explicitly asked for, hunt suppression
+across position changes, cancelled-tombstone replacement, and dedupe
+by bid/coords.
 
 Goal: different jobs should not collapse into the same key.
 
