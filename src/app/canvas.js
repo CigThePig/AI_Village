@@ -2,6 +2,11 @@ import { CAMERA_MAX_Z, CAMERA_MIN_Z, GRID_H, GRID_W, TILE } from './constants.js
 import { reportFatal } from './storage.js';
 
 const canvas = document.getElementById('game');
+if (!canvas) {
+  const err = new Error('Missing #game canvas');
+  reportFatal(err);
+  throw err;
+}
 
 function context2d(canvas, opts){
   if (!canvas || typeof canvas.getContext !== 'function'){

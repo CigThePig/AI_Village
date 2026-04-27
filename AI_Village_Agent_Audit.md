@@ -683,6 +683,12 @@ For stable checkpoint save, do not restore `activeBuildingId`; set it to `null`.
 
 ## 18. `newWorld()` does not reset pause/speed state
 
+**Resolved (Phase 7).** `newWorld` in `src/app.js` now resets
+`time.paused = false; time.speedIdx = 1;` alongside `tick`/`dayTime`,
+matching the `timeDefaults` in `src/state.js:20-25`. The reset pairs
+with the new `syncTimeButtons()` call at the end of `newWorld` (issue
+#19) so the UI never shows stale pause/speed state after a new world.
+
 **Files/lines**
 
 - `src/app.js:317-339`
@@ -708,6 +714,14 @@ or intentionally preserve these and sync UI labels.
 
 ## 19. Pause/speed UI can desync from actual time state
 
+**Resolved (Phase 7).** `createUISystem` in `src/app/ui.js` now exposes
+`syncTimeButtons()` and the click handlers route through it
+(`onPauseClick`/`onSpeedClick` mutate `time.*` then call the shared
+renderer). It is invoked at the end of `newWorld`, after the
+boot-time `bindUIListeners()` in `src/app.js`, and at the end of
+`loadGame` in `src/app/save.js`, so pause/speed buttons stay in sync
+across new-world, load, and click paths.
+
 **Files/lines**
 
 - `src/app/ui.js:111-118`
@@ -727,6 +741,13 @@ Add `syncTimeButtons()` and call after boot, load, new world, pause changes, and
 ---
 
 ## 20. `loadGame()` calls `newWorld()` and shows misleading new-world toasts
+
+**Resolved (Phase 7).** `newWorld` in `src/app.js` now accepts an
+`opts = {}` second argument; the two `Toast.show(...)` calls at
+`src/app.js:474-475` are gated on `!opts.silent`. More importantly,
+`loadGame` in `src/app/save.js` no longer calls `newWorld` at all
+(see #21), so the misleading new-world toasts cannot fire on load —
+the only remaining toast is `Loaded.` at `src/app/save.js:251`.
 
 **Files/lines**
 
@@ -753,6 +774,17 @@ Use silent mode during load.
 ---
 
 ## 21. World reload creates then discards villagers/animals
+
+**Resolved (Phase 7).** `newWorld` in `src/app.js` is now factored
+into `generateWorldBase(seed)` (pure terrain assembly: rng seed,
+`generateTerrain`, hillshade, `nextWorld` struct, `world =
+nextWorld`, `gameState.world = nextWorld`, lightmap/overlay/zone
+resets) and `resetVolatileState()` (jobs/buildings/items/animals
+arrays, `buildingsByKind`, `clearActiveZoneJobs`, `tickRunner.reset`,
+`markEmittersDirty`, `villagerNumberCounter`). Both are passed as
+deps to `createSaveSystem`. `loadGame` calls `resetVolatileState()`
+then `generateWorldBase(seed)` directly — no transient
+campfire/storage/villager/animal spawn happens during load.
 
 **Files/lines**
 
@@ -781,6 +813,13 @@ Load should generate terrain/base state without spawning new simulation entities
 
 ## 22. `main.js` tries to call a global fatal reporter that is not exposed
 
+**Resolved (Phase 7).** `src/app/storage.js` now sets
+`AIV_SCOPE.reportFatal = reportFatal` alongside the existing
+`AIV_SCOPE.AIV_STORAGE = Storage` assignment, so the feature-detect
+in `src/main.js:57-63` (`typeof GLOBAL_SCOPE.reportFatal ===
+'function'`) actually finds the function and the fatal overlay
+appears for early boot failures.
+
 **Files/lines**
 
 - `src/main.js:52-63`
@@ -805,6 +844,12 @@ Or move fatal overlay into a small module imported by `main.js`.
 ---
 
 ## 23. `canvas.js` reports a fatal error then crashes if canvas is missing
+
+**Resolved (Phase 7).** `src/app/canvas.js` now guards immediately
+after `document.getElementById('game')` — if the canvas is missing it
+calls `reportFatal(new Error('Missing #game canvas'))` and `throw`s,
+halting module evaluation before any deref of `canvas.style` /
+`canvas.addEventListener` / `canvas.getBoundingClientRect()`.
 
 **Files/lines**
 
@@ -832,6 +877,16 @@ if (!canvas) {
 
 ## 24. UI binding assumes every DOM node exists
 
+**Resolved (Phase 7).** `createUISystem` in `src/app/ui.js` now defines
+`safeOn(node, event, fn, opts)` and `safeOff(...)` helpers that
+no-op when the node is null or has no `addEventListener`.
+`bindUIListeners` and `unbindUIListeners` route every `uiRefs.*`
+binding through them. `onPauseClick`, `onSpeedClick`, and
+`onHelpCloseClick` short-circuit on null refs. `boot()` in
+`src/app.js` also null-checks `el('help')` before showing the help
+overlay. A renamed/missing button now disables that button without
+breaking boot.
+
 **Files/lines**
 
 - `src/app/ui.js:92-103`
@@ -856,6 +911,12 @@ function on(node, event, fn, opts) {
 ---
 
 ## 25. `onPriorClick()` assumes the priority sheet exists
+
+**Resolved (Phase 7).** `onPriorClick` in `src/app/ui.js` now returns
+early when `uiRefs.sheetPrior` is null, before the
+`getAttribute('data-open')` deref. Combined with #24, the click
+handler stays attached but harmlessly no-ops if the sheet is
+missing.
 
 **Files/lines**
 
@@ -1474,16 +1535,62 @@ Tasks (completed):
 
 ## Phase 7: UI/runtime robustness
 
-Goal: missing DOM elements and boot failures should produce clean errors.
+**Status: Done.** Resolves critical issues **#18**, **#19**, **#20**,
+**#21**, **#22**, **#23**, **#24**, **#25**.
 
-Tasks:
+`src/app/storage.js` now exposes `reportFatal` on `AIV_SCOPE`
+alongside `AIV_STORAGE`, so `src/main.js`'s catch block actually
+reaches the fatal overlay during early boot failures (#22).
+`src/app/canvas.js` throws after `reportFatal(new Error('Missing
+#game canvas'))` if the canvas element is absent, before any
+`canvas.style` deref (#23). `src/app/ui.js` adds `safeOn`/`safeOff`
+helpers and routes every `bindUIListeners`/`unbindUIListeners`
+attachment through them; `onPriorClick`/`onPauseClick`/`onSpeedClick`/
+`onHelpCloseClick` short-circuit on null refs (#24, #25). The new
+`syncTimeButtons()` is exposed from `createUISystem`, called at the
+end of `newWorld`, after the boot-time `bindUIListeners()`, and at
+the end of `loadGame`; click handlers route through it so the click
+path and external sync share one renderer (#19). `newWorld` resets
+`time.paused = false; time.speedIdx = 1;` to match
+`timeDefaults` (#18) and accepts an `opts.silent` flag that gates
+the new-world toasts (#20). `newWorld` is internally factored into
+`generateWorldBase(seed)` (pure terrain) and `resetVolatileState()`
+(jobs/buildings/items/animals/index/zone-jobs/tickRunner/villager
+counter); `createSaveSystem` receives both, and `loadGame` calls
+`resetVolatileState()` then `generateWorldBase(seed)` directly —
+no transient villagers or animals spawn during load (#21).
+`src/app.js`'s `boot()` also null-checks `el('help')` before showing
+the help overlay.
 
-1. Add `requireElement(id)` or safe event binding helpers.
-2. Fix `canvas.js` missing canvas fatal path.
-3. Expose or import `reportFatal` properly for `main.js`.
-4. Add `syncTimeButtons()` and call it after new/load/time changes.
-5. Add `newWorld(seed, { silent })` and use silent mode during load.
-6. Split `generateWorldBase()` from `initializeNewGame()`.
+Tests live in `tests/ui.runtime.phase7.test.js` and run via `npm
+test` (Node's built-in test runner; `ensureBrowserStubs()` at the
+top of the file fakes `document`, `window`, `localStorage`,
+`AIV_TERRAIN`, and `AIV_CONFIG` so `ui.js`'s transitive
+`canvas.js`/`storage.js` imports load under node, no new
+dependencies). Coverage: `syncTimeButtons` reflects state on both
+btnPause and btnSpeed and is null-safe; `bindUIListeners` /
+`unbindUIListeners` do not throw with null refs; `onPriorClick`
+remains attached and no-ops without `sheetPrior`; `onPauseClick`
+mutates `time.paused` and updates `btnPause.textContent` via
+`syncTimeButtons`; `loadGame` invokes `resetVolatileState` +
+`generateWorldBase` (not `newWorld`) once each, returns true, calls
+`syncTimeButtons`, and never emits the misleading "New pixel map
+created." toast.
+
+Tasks (completed):
+
+1. Add `requireElement(id)` or safe event binding helpers. **`safeOn`/`safeOff` added inline in `createUISystem`; null-guards added to `onPriorClick`, `onPauseClick`, `onSpeedClick`, `onHelpCloseClick`, and `boot()`'s `el('help')`.**
+2. Fix `canvas.js` missing canvas fatal path. **Throws after `reportFatal` if `#game` is missing.**
+3. Expose or import `reportFatal` properly for `main.js`. **`AIV_SCOPE.reportFatal = reportFatal` set in `src/app/storage.js`.**
+4. Add `syncTimeButtons()` and call it after new/load/time changes. **Exposed from `createUISystem`; called in `newWorld`, after `bindUIListeners()` at boot, at the end of `loadGame`, and from `onPauseClick`/`onSpeedClick`.**
+5. Add `newWorld(seed, { silent })` and use silent mode during load. **`opts.silent` gates the two new-world toasts; `loadGame` no longer calls `newWorld` at all, so the toasts cannot fire on load.**
+6. Split `generateWorldBase()` from `initializeNewGame()`. **`generateWorldBase(seed)` and `resetVolatileState()` are factored out of `newWorld`; both are deps of `createSaveSystem`. The public `newWorld` name is preserved (called from `boot`, `onNewClick`) — no renames required.**
+
+**Deferred:** `time.paused`/`time.speedIdx` are still not part of the
+save schema, so a saved game's pause/speed state does not survive a
+reload — they reset to defaults instead. This is tracked under
+issue **#3** ("Save/load resets global time but preserves
+tick-relative timers") and is out of Phase 7 scope.
 
 ## Phase 8: Performance and observability
 

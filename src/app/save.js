@@ -27,7 +27,9 @@ export function createSaveSystem(deps) {
     normalizeExperienceLedger,
     normalizeArraySource,
     applyArrayScaled,
-    newWorld,
+    generateWorldBase,
+    resetVolatileState,
+    syncTimeButtons,
     getFootprint,
     ensureBuildingData,
     reindexAllBuildings,
@@ -131,7 +133,12 @@ export function createSaveSystem(deps) {
           console.warn('AIV loadGame: ' + name + ' layer length ' + arr.length + ' does not match expected ' + expectedLen + ' (upscaleFactor=' + upscaleFactor + ')');
         }
       }
-      newWorld(Number.isFinite(d.seed) ? d.seed : undefined);
+      // audit #21: clear volatile state and rebuild base terrain only.
+      // Avoid newWorld() so we don't spawn transient villagers/animals
+      // that the load path immediately discards (and silences the
+      // misleading "New pixel map created." toasts — audit #20).
+      if (typeof resetVolatileState === 'function') resetVolatileState();
+      generateWorldBase(Number.isFinite(d.seed) ? d.seed : undefined);
       const world = getWorld();
       const buildings = getBuildings();
       const villagers = getVillagers();
@@ -247,6 +254,8 @@ export function createSaveSystem(deps) {
       });
       if (toast && typeof toast.show === 'function') toast.show('Loaded.');
       markStaticDirty();
+      // audit #19: refresh pause/speed UI so loaded state is visible.
+      if (typeof syncTimeButtons === 'function') syncTimeButtons();
       return true;
     } catch (e) {
       console.error(e);
