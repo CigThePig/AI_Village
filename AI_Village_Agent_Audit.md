@@ -271,7 +271,7 @@ Better long-term: make pickup explicit haul work instead of spontaneous intercep
 
 ## 6. Pelts are generated but cannot be stored or persisted
 
-**Resolved (Phase 2, commit `b3ef1df`; Phase 6 finishes the visible loop).**
+**Resolved (Phase 2, commit `b3ef1df`; Phase 6, commit `607241f` finishes the visible loop).**
 Phase 2 added `ITEM.PELT`, `RESOURCE_TYPES`, `ITEM_COLORS`. Storage
 totals/reserved, `newWorld`, save/load, deposit, and rendering all flow
 through the resource list now. Pelts deposit, persist, and render with a
@@ -327,7 +327,7 @@ future recipe/trade usage
 
 ## 7. Animal ambient hunting can create food without killing animals
 
-**Resolved (Phase 6).** The hungry/0.08 branch in `interactWithVillage`
+**Resolved (Phase 6, commit `607241f`).** The hungry/0.08 branch in `interactWithVillage`
 at `src/app/animals.js` is gone — it no longer drops `ITEM.FOOD`,
 modifies hunger, sets the animal to `flee`, or calls `chooseFleeTarget`.
 The function survives as a non-food, mood-only "Watching wildlife"
