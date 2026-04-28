@@ -88,7 +88,6 @@ export function score(job, villager, policy, blackboard) {
     : workerRoleBonus * 2;
   const energyFatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
   const energyHeavyJobPenalty = Number.isFinite(style.energyHeavyJobPenalty) ? style.energyHeavyJobPenalty : 0;
-  const energyRestBonus = Number.isFinite(style.energyRestBonus) ? style.energyRestBonus : 0;
   const seasonWinterHarvestLead = Number.isFinite(style.seasonWinterHarvestLead) ? style.seasonWinterHarvestLead : 0.25;
   const seasonHarvestWinterBonus = Number.isFinite(style.seasonHarvestWinterBonus) ? style.seasonHarvestWinterBonus : 0;
   const seasonWinterSowPenalty = Number.isFinite(style.seasonWinterSowPenalty) ? style.seasonWinterSowPenalty : 0;
@@ -164,9 +163,6 @@ export function score(job, villager, policy, blackboard) {
     const penalty = clamp(deficit / Math.max(energyFatigueThreshold, 0.0001), 0, 1) * energyHeavyJobPenalty;
     if (HEAVY_JOB_TYPES.has(job.type)) {
       value -= penalty;
-    }
-    if (job.type === 'rest') {
-      value += penalty * energyRestBonus;
     }
   }
 

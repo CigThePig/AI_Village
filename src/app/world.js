@@ -1,7 +1,7 @@
 import { GRID_W, GRID_H, TILES } from './constants.js';
 
 export const BUILDINGS = {
-  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects: { radius: 4, moodBonus: 0.0011 }, tooltip: 'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
+  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects: { radius: 4 }, tooltip: 'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
   storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
   hut:      { label: 'Hut',      cost: 10, wood: 10, stone: 0, effects: { radius: 3, moodBonus: 0.0008 }, tooltip: 'Shelter that gently lifts moods nearby.' },
   hunterLodge: {
@@ -250,7 +250,6 @@ export function agricultureBonusesAt(buildings, x, y) {
       const influence = influenceFor(radius, dist);
       if (influence <= 0) continue;
       if (eff.hydrationGrowthBonus) { growthBonus += eff.hydrationGrowthBonus * influence; }
-      if (eff.harvestBonus) { harvestBonus += eff.harvestBonus * influence; }
       if (eff.moodBonus) { moodBonus += eff.moodBonus * influence; }
     } else if (eff.moodBonus) {
       const radius = (eff.radius | 0);

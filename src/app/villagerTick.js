@@ -157,7 +157,6 @@ export function createVillagerTick(opts) {
     if (wellFed && wellRested) {
       happyDelta += 0.0008 + Math.max(0, v.energy - 0.55) * 0.0006;
     }
-    energyDelta += moodEnergyBoost;
     if (hydratedBuff) {
       energyDelta *= HYDRATION_FATIGUE_BONUS;
       happyDelta += HYDRATION_MOOD_TICK * 0.5;
@@ -165,6 +164,7 @@ export function createVillagerTick(opts) {
       energyDelta *= HYDRATION_DEHYDRATED_PENALTY;
       happyDelta -= HYDRATION_MOOD_TICK;
     }
+    energyDelta += moodEnergyBoost;
     if (resting) {
       energyDelta += REST_ENERGY_RECOVERY;
       happyDelta += REST_MOOD_TICK;
