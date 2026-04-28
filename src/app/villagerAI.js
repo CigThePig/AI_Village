@@ -15,7 +15,7 @@ import { score as scoreJob, computeFamineSeverity } from '../ai/scoring.js';
 
 // Single source of truth for villager-tuning constants. villagerTick.js,
 // onArrive.js, and this module all read from here.
-export const STARVE_THRESH = { hungry: 0.82, starving: 1.08, sick: 1.22 };
+export const STARVE_THRESH = { hungry: 0.82, starving: 1.08, sick: 1.18 };
 export const STARVE_COLLAPSE_TICKS = 140;
 export const STARVE_RECOVERY_TICKS = 280;
 export const STARVE_TOAST_COOLDOWN = 420;
@@ -113,7 +113,8 @@ export function createVillagerAI(opts) {
       v.recoveryTimer = STARVE_RECOVERY_TICKS;
     } else {
       v.condition = 'normal';
-      v.recoveryTimer = Math.max(v.recoveryTimer, Math.floor(STARVE_RECOVERY_TICKS / 3));
+      // recoveryTimer intentionally untouched (audit B7): healthy meals must
+      // not arm the buff, but a real in-flight recovery must not be shortened.
     }
     v.nextStarveWarning = tick + Math.floor(STARVE_TOAST_COOLDOWN * 0.6);
     if (v.state === 'sick') v.state = 'idle';
