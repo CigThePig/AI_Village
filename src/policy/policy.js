@@ -42,7 +42,6 @@ const DEFAULT_JOB_STYLE = Object.freeze({
   restEnergyThreshold: 0.26,
   restFatigueBoost: 0.04,
   energyHeavyJobPenalty: 0.25,
-  energyRestBonus: 0.15,
   seasonWinterHarvestLead: 0.25,
   seasonHarvestWinterBonus: 0.08,
   seasonWinterSowPenalty: 0.1,
