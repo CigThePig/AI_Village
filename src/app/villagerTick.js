@@ -55,7 +55,6 @@ export function createVillagerTick(opts) {
     getBuildingById,
     noteBuildingActivity,
     endBuildingStay,
-    finishJob,
     issueStarveToast,
     enterSickState,
     suppressJob,
@@ -206,15 +205,20 @@ export function createVillagerTick(opts) {
       v.sickTimer--;
       energyDelta -= 0.0006;
       happyDelta -= 0.0008;
-      if (v.path) v.path.length = 0;
-      finishJob(v);
-      v.state = 'sick';
-      v.thought = moodThought(v, 'Collapsed');
+      // No per-tick path/finishJob wipe (audit B15): sick villagers must be
+      // able to reach the urgentFood block below to consume food, claim a
+      // forage job, or seek emergency food. The one-shot collapse already
+      // happened in enterSickState.
+      if (v.state !== 'sick' && v.state !== 'forage' && v.state !== 'seek_food') {
+        v.state = 'sick';
+      }
+      if (!v.path || v.path.length === 0) {
+        v.thought = moodThought(v, 'Collapsed');
+      }
     }
     v.hunger = clamp(v.hunger, 0, 1.2);
     v.energy = clamp(v.energy + energyDelta, 0, 1);
     v.happy = clamp(v.happy + happyDelta, 0, 1);
-    if (v.condition === 'sick' && v.sickTimer > 0) { return; }
 
     const urgentFood = stage >= 2 || v.condition === 'sick';
     const needsFood = stage >= 1;
@@ -337,12 +341,14 @@ export function createVillagerTick(opts) {
     if (v.state === 'idle' && !urgentFood && !needsFood && !v.targetJob) {
       if (tryEquipBow(v)) return;
     }
-    const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.22;
-    const fatigueThreshold = Number.isFinite(style.energyFatigueThreshold) ? style.energyFatigueThreshold : 0.32;
-    const restFatigueBoost = Number.isFinite(style.restFatigueBoost) ? style.restFatigueBoost : 0.08;
+    // Single source of truth for the rest decision (audit B1). The scoring
+    // knob style.energyFatigueThreshold is intentionally NOT consulted here;
+    // it controls job-scoring penalties and the blackboard fatigue flag.
+    const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.26;
+    const restFatigueBoost = Number.isFinite(style.restFatigueBoost) ? style.restFatigueBoost : 0.04;
     const fatigueFlag = !!blackboard?.energy?.fatigue;
-    const shouldRest = v.energy < restThreshold || (fatigueFlag && v.energy < restThreshold + restFatigueBoost) || v.energy < (fatigueThreshold * 0.8);
-    if (shouldRest) { if (goRest(v)) return; }
+    const effectiveRest = fatigueFlag ? restThreshold + restFatigueBoost : restThreshold;
+    if (v.energy < effectiveRest) { if (goRest(v)) return; }
     if (v.state === 'idle' && !urgentFood) {
       if (tryHydrateAtWell(v)) return;
     }
