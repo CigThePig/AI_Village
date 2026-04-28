@@ -21,6 +21,9 @@ export function createSaveSystem(deps) {
     getStorageTotals,
     getStorageReserved,
     getTick,
+    getDayTime,
+    setTick,
+    setDayTime,
     starveThresh,
     childhoodTicks,
     ensureVillagerNumber,
@@ -51,6 +54,8 @@ export function createSaveSystem(deps) {
     const data = {
       saveVersion: SAVE_VERSION,
       seed: world.seed,
+      tick: getTick() | 0,
+      dayTime: typeof getDayTime === 'function' ? (getDayTime() | 0) : 0,
       tiles: Array.from(world.tiles),
       zone: Array.from(world.zone),
       trees: Array.from(world.trees),
@@ -77,6 +82,8 @@ export function createSaveSystem(deps) {
         mate: v.pregnancyMateId || null,
         sit: v.storageIdleTimer || 0,
         nsi: v.nextStorageIdleTick || 0,
+        np: v.nextPregnancyTick || 0,
+        rt: v.restTimer || 0,
         ab: v.activeBuildingId || null,
         bw: v.equippedBow ? 1 : 0,
         num: ensureVillagerNumber(v),
@@ -106,6 +113,14 @@ export function createSaveSystem(deps) {
           catch (err) { console.warn('AIV loadGame: migration from v' + v + ' failed', err); return false; }
         }
       }
+
+      // Restore tick/dayTime before anything reads getTick() (e.g. animal
+      // nextActionTick defaulting below). Old saves without these fields
+      // load with tick = 0, dayTime = 0.
+      const savedTick = Number.isFinite(d.tick) ? d.tick | 0 : 0;
+      const savedDayTime = Number.isFinite(d.dayTime) ? d.dayTime | 0 : 0;
+      if (typeof setTick === 'function') setTick(savedTick);
+      if (typeof setDayTime === 'function') setDayTime(savedDayTime);
 
       const tileData = normalizeArraySource(d.tiles);
       const zoneData = normalizeArraySource(d.zone);
@@ -221,6 +236,8 @@ export function createSaveSystem(deps) {
           nextSocialTick: Number.isFinite(v.nso) ? v.nso : 0,
           storageIdleTimer: Number.isFinite(v.sit) ? v.sit : 0,
           nextStorageIdleTick: Number.isFinite(v.nsi) ? v.nsi : 0,
+          nextPregnancyTick: Number.isFinite(v.np) ? v.np : 0,
+          restTimer: Number.isFinite(v.rt) ? v.rt : 0,
           hydrationTimer: 0,
           activeBuildingId: v.ab || null,
           equippedBow: v.bw === 1 || v.bw === true,
