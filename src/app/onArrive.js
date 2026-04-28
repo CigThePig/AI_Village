@@ -6,7 +6,6 @@ import {
   HUNT_RETRY_COOLDOWN,
   ITEM,
   RESOURCE_TYPES,
-  SPEEDS,
   TILE,
   TILES,
   ZONES,
@@ -70,7 +69,6 @@ export function createOnArrive(opts) {
 
   function getWorld() { return state.world; }
   function getTick() { return state.time.tick; }
-  function getSpeedIdx() { return state.time.speedIdx; }
 
   function stepAlong(v) {
     const next = v.path[0];
@@ -82,7 +80,7 @@ export function createOnArrive(opts) {
       : condition === 'recovering' ? 0.95
       : 1;
     const moodSpeed = 0.75 + v.happy * 0.5;
-    const speedMultiplier = v.speed * penalty * moodSpeed * SPEEDS[getSpeedIdx()];
+    const speedMultiplier = v.speed * penalty * moodSpeed;
     const stepPx = getSpeedPxPerSec() * speedMultiplier * getSecondsPerTick();
     const step = stepPx / TILE;
     const dx = next.x - v.x, dy = next.y - v.y, dist = Math.hypot(dx, dy);
