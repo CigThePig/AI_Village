@@ -716,6 +716,55 @@ export function createVillagerAI(opts) {
     return bs > minScore ? best : null;
   }
 
+  // Phase 11 (S11): consolidated pre-job idle decision tree. Returns true
+  // when the villager was put on a path; caller should `return` to end the
+  // tick. Branches are evaluated in priority order:
+  //   1. Bow equip — only when fully idle and no food pressure.
+  //   2. Energy-driven rest — fires REGARDLESS of v.state or v.targetJob, so
+  //      a fatigued villager mid-task is sent home (audit B1).
+  //   3. Night-anchored sleep — pulls idle villagers to bed at night (S1).
+  //   4. Hydrate at well — preempts available work; only blocked by urgentFood.
+  //   5. Night campfire social — forced night branch.
+  function chooseIdleBeforeJobs(v, ctx) {
+    const { urgentFood, needsFood, nightNow, deepNight, ambientNow, effectiveRest } = ctx;
+    if (v.state === 'idle' && !urgentFood && !needsFood && !v.targetJob) {
+      if (tryEquipBow(v)) return true;
+    }
+    // audit B1: single source of truth for the rest decision; intentionally
+    // not gated on v.state === 'idle' so mid-task fatigue still routes home.
+    if (v.energy < effectiveRest) {
+      if (goRest(v)) return true;
+    }
+    if (v.state === 'idle' && !v.targetJob
+        && wantsToSleep(v, { nightNow, deepNight, urgentFood })) {
+      v._fellAsleepAtNight = nightNow;
+      if (goRest(v)) return true;
+    }
+    if (v.state === 'idle' && !urgentFood) {
+      if (tryHydrateAtWell(v)) return true;
+    }
+    if (nightNow && v.state === 'idle' && !needsFood && !urgentFood && !v.targetJob) {
+      if (tryCampfireSocial(v, { ambientNow, forceNight: true })) return true;
+    }
+    return false;
+  }
+
+  // Phase 11 (S11): consolidated post-job idle decision tree. Always returns
+  // true (the final handleIdleRoam fallback always acts). Branches:
+  //   1. Storage idle — only when no job was picked and the queue is empty.
+  //   2. Daytime campfire social.
+  //   3. Roam fallback (rally point / wander toward food / random walk).
+  function chooseIdleAfterJobs(v, ctx) {
+    const { urgentFood, needsFood, ambientNow, jobs, hasPickedJob, stage } = ctx;
+    if (!hasPickedJob && v.state === 'idle' && !urgentFood && !v.targetJob && jobs.length === 0) {
+      if (tryStorageIdle(v)) return true;
+    }
+    if (v.state === 'idle' && !needsFood && !urgentFood && !v.targetJob) {
+      if (tryCampfireSocial(v, { ambientNow })) return true;
+    }
+    return handleIdleRoam(v, { stage, needsFood, urgentFood });
+  }
+
   return {
     findNearestBuilding,
     nearbyWarmth,
@@ -737,6 +786,8 @@ export function createVillagerAI(opts) {
     tryCampfireSocial,
     tryStorageIdle,
     tryEquipBow,
+    chooseIdleBeforeJobs,
+    chooseIdleAfterJobs,
     scoreExistingJobForVillager,
     maybeInterruptJob,
     findPanicHarvestJob,

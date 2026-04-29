@@ -20,7 +20,6 @@ import {
   STORAGE_IDLE_BASE,
   STORAGE_IDLE_COOLDOWN,
   restDurationTicks,
-  wantsToSleep,
   workEffortMultiplier
 } from './villagerAI.js';
 
@@ -80,12 +79,9 @@ export function createVillagerTick(opts) {
     findHuntApproachPath,
     findAnimalById,
     buildingAt,
-    tryEquipBow,
-    tryHydrateAtWell,
-    tryCampfireSocial,
-    tryStorageIdle,
+    chooseIdleBeforeJobs,
+    chooseIdleAfterJobs,
     foragingJob,
-    goRest,
     seekEmergencyFood,
     consumeFood,
     findPanicHarvestJob,
@@ -94,7 +90,6 @@ export function createVillagerTick(opts) {
     tryStartPregnancy,
     completePregnancy,
     promoteChildToAdult,
-    handleIdleRoam,
     stepAlong
   } = opts;
 
@@ -422,31 +417,23 @@ export function createVillagerTick(opts) {
     if ((urgentFood || needsFood) && v.state === 'idle' && !v.targetJob) {
       panicHarvestJob = findPanicHarvestJob(v);
     }
-    if (v.state === 'idle' && !urgentFood && !needsFood && !v.targetJob) {
-      if (tryEquipBow(v)) return;
-    }
-    // Single source of truth for the rest decision (audit B1). The scoring
-    // knob style.energyFatigueThreshold is intentionally NOT consulted here;
-    // it controls job-scoring penalties and the blackboard fatigue flag.
+    // audit B1 + S1 + S11: single rest-decision predicate plus the pre-job idle
+    // cascade (bow / energy-rest / night-sleep / hydrate / night-social) live
+    // in chooseIdleBeforeJobs in villagerAI.js. style.energyFatigueThreshold is
+    // intentionally NOT consulted here; it controls job-scoring penalties and
+    // the blackboard fatigue flag, not the rest decision.
     const restThreshold = Number.isFinite(style.restEnergyThreshold) ? style.restEnergyThreshold : 0.26;
     const restFatigueBoost = Number.isFinite(style.restFatigueBoost) ? style.restFatigueBoost : 0.04;
     const fatigueFlag = !!blackboard?.energy?.fatigue;
     const effectiveRest = fatigueFlag ? restThreshold + restFatigueBoost : restThreshold;
-    if (v.energy < effectiveRest) { if (goRest(v)) return; }
-    // Audit S1: night-anchored sleep. Pulls idle villagers to bed at night so
-    // day/night has felt meaning. Sits before hydrate/social so sleep wins
-    // when a villager wants to be in bed.
-    if (v.state === 'idle' && !v.targetJob
-        && wantsToSleep(v, { nightNow, deepNight: isDeepNight(dayTime), urgentFood })) {
-      v._fellAsleepAtNight = nightNow;
-      if (goRest(v)) return;
-    }
-    if (v.state === 'idle' && !urgentFood) {
-      if (tryHydrateAtWell(v)) return;
-    }
-    if (nightNow && v.state === 'idle' && !needsFood && !urgentFood && !v.targetJob) {
-      if (tryCampfireSocial(v, { ambientNow, forceNight: true })) return;
-    }
+    if (chooseIdleBeforeJobs(v, {
+      urgentFood,
+      needsFood,
+      nightNow,
+      deepNight: isDeepNight(dayTime),
+      ambientNow,
+      effectiveRest
+    })) return;
     const reprioritizeMargin = Number.isFinite(style.reprioritizeMargin) ? style.reprioritizeMargin : 0.06;
     if (maybeInterruptJob(v, { blackboard, margin: reprioritizeMargin })) return;
     if (v.path && v.path.length > 0) { stepAlong(v); return; }
@@ -548,13 +535,15 @@ export function createVillagerTick(opts) {
       }
       v._nextPathTick = tick + 12;
     }
-    if (!j && v.state === 'idle' && !urgentFood && !v.targetJob && jobs.length === 0) {
-      if (tryStorageIdle(v)) return;
-    }
-    if (v.state === 'idle' && !needsFood && !urgentFood && !v.targetJob) {
-      if (tryCampfireSocial(v, { ambientNow })) return;
-    }
-    if (handleIdleRoam(v, { stage, needsFood, urgentFood })) return;
+    // S11: post-job idle cascade (storage idle / day social / roam fallback).
+    if (chooseIdleAfterJobs(v, {
+      urgentFood,
+      needsFood,
+      ambientNow,
+      jobs,
+      hasPickedJob: !!j,
+      stage
+    })) return;
   }
 
   return { villagerTick };
