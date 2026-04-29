@@ -7,6 +7,7 @@ export function createDebugKitBridge(opts) {
     ensureVillagerNumber,
     applyShadingMode,
     markStaticDirty,
+    getPerfMetrics,
   } = opts;
 
   let debugKitInstance = null;
@@ -131,6 +132,22 @@ export function createDebugKitBridge(opts) {
     }
   }
 
+  function debugKitGetPerf() {
+    if (typeof getPerfMetrics !== 'function') return null;
+    const m = getPerfMetrics();
+    if (!m) return null;
+    const out = {
+      ticks: m.__ticks || 0,
+      buildings: Array.isArray(state?.units?.buildings) ? state.units.buildings.length : 0,
+      villagers: Array.isArray(state?.units?.villagers) ? state.units.villagers.length : 0,
+    };
+    for (const k of Object.keys(m)) {
+      if (k.startsWith('__')) continue;
+      out[k] = Number.isFinite(m[k]) ? +m[k].toFixed(3) : 0;
+    }
+    return out;
+  }
+
   function debugKitGetState() {
     const world = getWorld();
     const villagers = getVillagers();
@@ -183,6 +200,7 @@ export function createDebugKitBridge(opts) {
         getLightingProbe: debugKitGetLightingProbe,
         onSafeMode: debugKitEnterSafeMode,
         getState: debugKitGetState,
+        getPerf: debugKitGetPerf,
       });
     } catch (err) {
       console.warn('DebugKit configure failed', err);
@@ -250,6 +268,7 @@ export function createDebugKitBridge(opts) {
     debugKitGetLightingProbe,
     debugKitEnterSafeMode,
     debugKitGetState,
+    debugKitGetPerf,
     configureDebugKitBridge,
     installDebugKitWatcher,
     ensureDebugKitConfigured,

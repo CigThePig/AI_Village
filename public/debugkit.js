@@ -44,6 +44,7 @@
   let appGetLightingProbe = null;
   let appGetPipeline = null;
   let appEnterSafeMode = null;
+  let appGetPerf = null;
 
   const doc = document;
   const win = window;
@@ -1297,6 +1298,10 @@
       } else {
         add('WARN', 'No lighting probe from app. Provide getLightingProbe() in DebugKit.configure().');
       }
+      const perfSnap = appGetPerf ? appGetPerf() : null;
+      if (perfSnap) {
+        add('STATE', 'Tick perf (ms, EMA)', perfSnap);
+      }
     } catch (err) {
       add('ERROR', 'Diag failed', fmt(err));
     }
@@ -2057,6 +2062,7 @@
     if (typeof opts.getLightingProbe === 'function') appGetLightingProbe = opts.getLightingProbe;
     if (typeof opts.getPipeline === 'function') appGetPipeline = opts.getPipeline;
     if (typeof opts.onSafeMode === 'function') appEnterSafeMode = opts.onSafeMode;
+    if (typeof opts.getPerf === 'function') appGetPerf = opts.getPerf;
     return state;
   };
 

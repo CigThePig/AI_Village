@@ -92,7 +92,7 @@ function makeOnArrive(state) {
     consumeFood: () => false,
     handleVillagerFed: noop,
     findNearestBuilding: () => null,
-    agricultureBonusesAt: () => ({ growthBonus: 0, harvestBonus: 0, moodBonus: 0 }),
+    agricultureHarvestAt: () => 0,
     findEntryTileNear: () => null,
     getBuildingById: (id) => state.units.buildings.find((b) => b.id === id) || null,
     setActiveBuilding: (v, b) => {
@@ -129,7 +129,7 @@ function makeVillagerTick(state) {
     pathfind: () => null,
     ambientAt: () => 'day',
     nearbyWarmth: () => false,
-    agricultureBonusesAt: () => ({ growthBonus: 0, harvestBonus: 0, moodBonus: 0 }),
+    agricultureMoodAt: () => 0,
     getBuildingById: (id) => state.units.buildings.find((b) => b.id === id) || null,
     noteBuildingActivity: (b) => {
       if (b) {

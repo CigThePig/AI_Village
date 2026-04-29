@@ -197,6 +197,56 @@ export function tileOccupiedByBuildingIn(buildings, x, y, ignoreId = null) {
   return false;
 }
 
+// Phase 12 (S13): per-tile bitmap so pathfinding's per-neighbor passable check
+// runs in O(1) instead of scanning every building. Validation paths that need
+// `ignoreId` semantics keep using `tileOccupiedByBuildingIn`.
+export function paintBuildingFootprint(world, b) {
+  if (!world?.buildingOccupancy || !b) return;
+  const fp = getFootprint(b.kind);
+  const w = world.width || GRID_W;
+  const h = world.height || GRID_H;
+  for (let yy = 0; yy < fp.h; yy++) {
+    const gy = b.y + yy;
+    if (gy < 0 || gy >= h) continue;
+    for (let xx = 0; xx < fp.w; xx++) {
+      const gx = b.x + xx;
+      if (gx < 0 || gx >= w) continue;
+      world.buildingOccupancy[gy * w + gx] = 1;
+    }
+  }
+}
+
+export function clearBuildingFootprint(world, b) {
+  if (!world?.buildingOccupancy || !b) return;
+  const fp = getFootprint(b.kind);
+  const w = world.width || GRID_W;
+  const h = world.height || GRID_H;
+  for (let yy = 0; yy < fp.h; yy++) {
+    const gy = b.y + yy;
+    if (gy < 0 || gy >= h) continue;
+    for (let xx = 0; xx < fp.w; xx++) {
+      const gx = b.x + xx;
+      if (gx < 0 || gx >= w) continue;
+      world.buildingOccupancy[gy * w + gx] = 0;
+    }
+  }
+}
+
+export function tileOccupiedByBuildingFast(world, x, y) {
+  if (!world?.buildingOccupancy) return false;
+  const w = world.width || GRID_W;
+  const h = world.height || GRID_H;
+  if (x < 0 || y < 0 || x >= w || y >= h) return false;
+  return world.buildingOccupancy[y * w + x] !== 0;
+}
+
+export function rebuildBuildingOccupancy(world, buildings) {
+  if (!world?.buildingOccupancy) return;
+  world.buildingOccupancy.fill(0);
+  if (!buildings) return;
+  for (const b of buildings) paintBuildingFootprint(world, b);
+}
+
 export function buildingAtIn(buildings, x, y) {
   for (const b of buildings) {
     const fp = getFootprint(b.kind);
@@ -236,13 +286,14 @@ export function validateFootprintPlacementIn(buildings, world, kind, tx, ty, opt
   return null;
 }
 
+function influenceFor(radius, dist) {
+  if (radius > 0) { return dist > radius ? 0 : Math.max(0, 1 - dist / (radius + 1)); }
+  return dist === 0 ? 1 : 0;
+}
+
 export function agricultureBonusesAt(buildings, x, y) {
   let growthBonus = 0, harvestBonus = 0, moodBonus = 0;
   if (!buildings.length) return { growthBonus, harvestBonus, moodBonus };
-  const influenceFor = (radius, dist) => {
-    if (radius > 0) { return dist > radius ? 0 : Math.max(0, 1 - dist / (radius + 1)); }
-    return dist === 0 ? 1 : 0;
-  };
   for (const b of buildings) {
     if (b.built < 1) continue;
     const def = BUILDINGS[b.kind] || {};
@@ -268,4 +319,61 @@ export function agricultureBonusesAt(buildings, x, y) {
     }
   }
   return { growthBonus, harvestBonus, moodBonus };
+}
+
+// Phase 12 (B25): specialized accessors so the per-tick villager mood path
+// only iterates the kinds that actually contribute. `buildingsByKind` is the
+// existing per-kind index in app.js; pass it directly for O(huts+wells)
+// scans instead of O(all buildings).
+function accumulateBonusFromGroup(group, x, y, fn) {
+  if (!group || !group.length) return 0;
+  let total = 0;
+  for (const b of group) {
+    if (b.built < 1) continue;
+    const def = BUILDINGS[b.kind] || {};
+    const eff = def.effects || {};
+    total += fn(b, def, eff, distanceToFootprint(x, y, b));
+  }
+  return total;
+}
+
+export function agricultureMoodAt(buildingsByKind, x, y) {
+  if (!buildingsByKind) return 0;
+  let total = 0;
+  total += accumulateBonusFromGroup(buildingsByKind.get('hut'), x, y, (_b, _def, eff, dist) => {
+    if (!eff.moodBonus) return 0;
+    const inf = influenceFor(eff.radius | 0, dist);
+    return inf > 0 ? eff.moodBonus * inf : 0;
+  });
+  total += accumulateBonusFromGroup(buildingsByKind.get('well'), x, y, (_b, _def, eff, dist) => {
+    if (!eff.moodBonus) return 0;
+    const inf = influenceFor(eff.hydrationRadius | 0, dist);
+    return inf > 0 ? eff.moodBonus * inf : 0;
+  });
+  return total;
+}
+
+export function agricultureGrowthAt(buildingsByKind, x, y) {
+  if (!buildingsByKind) return 0;
+  let total = 0;
+  total += accumulateBonusFromGroup(buildingsByKind.get('farmplot'), x, y, (_b, _def, eff, dist) => {
+    if (!eff.growthBonus) return 0;
+    const inf = influenceFor(eff.radius | 0, dist);
+    return inf > 0 ? eff.growthBonus * inf : 0;
+  });
+  total += accumulateBonusFromGroup(buildingsByKind.get('well'), x, y, (_b, _def, eff, dist) => {
+    if (!eff.hydrationGrowthBonus) return 0;
+    const inf = influenceFor(eff.hydrationRadius | 0, dist);
+    return inf > 0 ? eff.hydrationGrowthBonus * inf : 0;
+  });
+  return total;
+}
+
+export function agricultureHarvestAt(buildingsByKind, x, y) {
+  if (!buildingsByKind) return 0;
+  return accumulateBonusFromGroup(buildingsByKind.get('farmplot'), x, y, (_b, _def, eff, dist) => {
+    if (!eff.harvestBonus) return 0;
+    const inf = influenceFor(eff.radius | 0, dist);
+    return inf > 0 ? eff.harvestBonus * inf : 0;
+  });
 }

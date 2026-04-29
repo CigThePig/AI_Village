@@ -37,12 +37,17 @@ import { STARVE_THRESH, createVillagerAI } from './app/villagerAI.js';
 import { createOnArrive } from './app/onArrive.js';
 import {
   BUILDINGS,
-  agricultureBonusesAt as _agricultureBonusesAt,
+  agricultureGrowthAt as _agricultureGrowthAt,
+  agricultureHarvestAt as _agricultureHarvestAt,
+  agricultureMoodAt as _agricultureMoodAt,
   buildingAtIn,
   buildingCenter,
   buildingEntryTiles,
   ensureBuildingData,
   getFootprint,
+  paintBuildingFootprint,
+  rebuildBuildingOccupancy,
+  tileOccupiedByBuildingFast,
   tileOccupiedByBuildingIn,
   validateFootprintPlacementIn
 } from './app/world.js';
@@ -125,6 +130,9 @@ function indexBuilding(b){
 function reindexAllBuildings(){
   buildingsByKind.clear();
   for(const b of buildings) indexBuilding(b);
+  // Phase 12 (S13): loadGame replaces the buildings array wholesale; the
+  // bitmap has to be rebuilt to match.
+  rebuildBuildingOccupancy(world, buildings);
 }
 let emittersDirty = true;
 function markEmittersDirty(){ emittersDirty = true; }
@@ -337,6 +345,9 @@ function generateWorldBase(seed){
     rocks:terrain.rocks,
     berries:terrain.berries,
     growth:new Uint8Array(GRID_SIZE),
+    // Phase 12 (S13): per-tile flag, painted by paintBuildingFootprint.
+    // Pathfinder reads this directly so passable() doesn't scan all buildings.
+    buildingOccupancy:new Uint8Array(GRID_SIZE),
     season:0,
     tSeason:0,
     aux,
@@ -369,6 +380,7 @@ function generateWorldBase(seed){
 function resetVolatileState(){
   jobs.length=0; buildings.length=0; itemsOnGround.length=0; animals.length=0; markItemsDirty();
   buildingsByKind.clear();
+  if(world?.buildingOccupancy) world.buildingOccupancy.fill(0);
   clearActiveZoneJobs();
   if(typeof tickRunner !== 'undefined') tickRunner.reset();
   markEmittersDirty();
@@ -514,11 +526,16 @@ function addBuilding(kind,x,y,opts={}){
   };
   buildings.push(b);
   indexBuilding(b);
+  paintBuildingFootprint(world, b);
   if(b.kind==='campfire' && b.built>=1) markEmittersDirty();
   return b;
 }
 
 function tileOccupiedByBuilding(x, y, ignoreId=null){
+  // Pathfinding and animal callers don't pass ignoreId, so the bitmap fast
+  // path covers the hot loops; placement validation that needs ignoreId
+  // falls back to the linear scan.
+  if(ignoreId === null) return tileOccupiedByBuildingFast(world, x, y);
   return tileOccupiedByBuildingIn(buildings, x, y, ignoreId);
 }
 
@@ -581,8 +598,18 @@ function endBuildingStay(v){
   v.targetBuilding=null;
 }
 
-function agricultureBonusesAt(x,y){
-  return _agricultureBonusesAt(buildings, x, y);
+// Phase 12 (B25): specialized accessors that only iterate the building kinds
+// contributing to each bonus, via the existing buildingsByKind index. The
+// combined `agricultureBonusesAt` was dropped in favour of these — tests
+// still import it directly from world.js.
+function agricultureMoodAt(x,y){
+  return _agricultureMoodAt(buildingsByKind, x, y);
+}
+function agricultureGrowthAt(x,y){
+  return _agricultureGrowthAt(buildingsByKind, x, y);
+}
+function agricultureHarvestAt(x,y){
+  return _agricultureHarvestAt(buildingsByKind, x, y);
 }
 
 /* ==================== UI & Sheets ==================== */
@@ -658,6 +685,7 @@ const _pathfinder = createPathfinder({
 });
 const passable = _pathfinder.passable;
 const pathfind = _pathfinder.pathfind;
+const pathfindToRegion = _pathfinder.pathfindToRegion;
 function centerCamera(x,y){
   cam.z = 2.2;
   cam.x = x - W / (TILE * cam.z) * 0.5;
@@ -702,7 +730,7 @@ function seasonTick(){
     // bonuses layer on top so wells/farmplots partially mitigate winter.
     let delta = 1.2 * seasonalGrowthMultiplier(world.season, world.tSeason / SEASON_LEN);
     if(hasFarmBoosters){
-      const { growthBonus } = agricultureBonusesAt(x,y);
+      const growthBonus = agricultureGrowthAt(x,y);
       if(growthBonus>0){
         const whole=Math.floor(growthBonus);
         delta += whole;
@@ -855,6 +883,7 @@ void _isJobSuppressed;
 const _animalsSystem = createAnimalsSystem({
   state: gameState,
   pathfind,
+  pathfindToRegion,
   tileOccupiedByBuilding,
   idx,
   dropItem
@@ -966,7 +995,7 @@ const _onArriveSystem = createOnArrive({
   consumeFood,
   handleVillagerFed,
   findNearestBuilding,
-  agricultureBonusesAt,
+  agricultureHarvestAt,
   findEntryTileNear,
   getBuildingById,
   setActiveBuilding,
@@ -988,7 +1017,8 @@ const _debugKitBridge = createDebugKitBridge({
   state: gameState,
   ensureVillagerNumber,
   applyShadingMode,
-  markStaticDirty
+  markStaticDirty,
+  getPerfMetrics: () => (typeof tickRunner !== 'undefined' && tickRunner ? tickRunner.getMetrics() : null),
 });
 const { ensureDebugKitConfigured } = _debugKitBridge;
 _debugKitBridge.attachToWindow();
@@ -1032,7 +1062,7 @@ const _villagerTick = createVillagerTick({
   pathfind,
   ambientAt,
   nearbyWarmth,
-  agricultureBonusesAt,
+  agricultureMoodAt,
   getBuildingById,
   noteBuildingActivity,
   endBuildingStay,

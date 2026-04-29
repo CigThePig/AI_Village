@@ -46,7 +46,7 @@ export function createOnArrive(opts) {
     consumeFood,
     handleVillagerFed,
     findNearestBuilding,
-    agricultureBonusesAt,
+    agricultureHarvestAt,
     findEntryTileNear,
     getBuildingById,
     setActiveBuilding,
@@ -259,7 +259,7 @@ export function createOnArrive(opts) {
         // harvest would feel buggy and the tile is still consumed below).
         const effort = workEffortMultiplier(v);
         let yieldAmount = Math.max(1, Math.round(2 * effort));
-        const { harvestBonus } = agricultureBonusesAt(cx, cy);
+        const harvestBonus = agricultureHarvestAt(cx, cy);
         if (harvestBonus > 0) {
           const whole = Math.floor(harvestBonus);
           yieldAmount += whole;

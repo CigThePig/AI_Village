@@ -60,7 +60,7 @@ export function createVillagerTick(opts) {
     pathfind,
     ambientAt,
     nearbyWarmth,
-    agricultureBonusesAt,
+    agricultureMoodAt,
     getBuildingById,
     noteBuildingActivity,
     endBuildingStay,
@@ -158,7 +158,7 @@ export function createVillagerTick(opts) {
     let energyDelta = -ENERGY_DRAIN_BASE;
     const moodEnergyBoost = moodMotivation(v) * 0.00045;
     let happyDelta = warm ? 0.001 : -0.0002;
-    const { moodBonus } = agricultureBonusesAt(tileX, tileY);
+    const moodBonus = agricultureMoodAt(tileX, tileY);
     if (moodBonus) { happyDelta += moodBonus; }
     if (warm && nightNow) {
       happyDelta += NIGHT_CAMPFIRE_MOOD_TICK;
