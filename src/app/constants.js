@@ -62,7 +62,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 7;
 const COARSE_SAVE_SIZE = 96;
 
 // Sequential save-format migrations: when loading a save with version `v`,
@@ -79,7 +79,11 @@ const SAVE_MIGRATIONS = new Map([
   // defaults missing fields to 0 (or to the kind's full buildLaborTicks if
   // the building was already built), so old mid-build saves resume from
   // scratch — acceptable per CLAUDE.md save-compat rule.
-  [5, (data) => data]
+  [5, (data) => data],
+  // v6 -> v7: Phase 8 adds per-villager `restStartedAtNight` (saved as `rsn`).
+  // Absent fields coerce to false at load time, matching pre-Phase-8 wake
+  // behavior on the first post-load sleep — no-op migration.
+  [6, (data) => data]
 ]);
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };

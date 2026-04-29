@@ -142,6 +142,17 @@ export function computeDayNightAngle(currentDayTime, dayLen = DAY_LENGTH) {
   return Math.PI / 2 + nightPhase * Math.PI;
 }
 
+// Deep-night window: 20% of the nighttime portion centered on midnight.
+// Used by the night-anchored sleep decision (audit S1) so deep-sleep is a
+// stable window rather than a one-tick event at the midnight cusp.
+export function isDeepNight(currentDayTime, dayLen = DAY_LENGTH) {
+  const phase = ((currentDayTime / dayLen) + (DAYTIME_PORTION / 2)) % 1;
+  const wrappedPhase = phase < 0 ? phase + 1 : phase;
+  if (wrappedPhase < DAYTIME_PORTION) return false;
+  const nightPhase = (wrappedPhase - DAYTIME_PORTION) / NIGHTTIME_PORTION;
+  return Math.abs(nightPhase - 0.5) <= 0.10;
+}
+
 export function createTimeOfDay(deps) {
   const { getTick, getDayTime, dayLen = DAY_LENGTH } = deps;
 
