@@ -807,6 +807,30 @@ function drawSproutOn(g, stage, season = 0) {
   }
 }
 function makeZoneGlyphs(){ const farm=makeCanvas(8,8), f=context2d(farm); rect(f,0,0,8,8,'rgba(0,0,0,0)'); px(f,3,6,'#9dd47a'); px(f,4,6,'#9dd47a'); px(f,3,5,'#73b85d'); px(f,4,5,'#73b85d'); px(f,3,4,'#5aa34b'); const cut=makeCanvas(8,8), c=context2d(cut); rect(c,0,0,8,8,'rgba(0,0,0,0)'); rect(c,2,2,4,1,'#caa56a'); rect(c,3,1,2,1,'#8f6934'); const mine=makeCanvas(8,8), m=context2d(mine); rect(m,0,0,8,8,'rgba(0,0,0,0)'); rect(m,2,2,4,1,'#9aa3ad'); rect(m,3,3,2,1,'#6d7782'); Tileset.zoneGlyphs={farm,cut,mine}; }
+// Symmetric 4-frame walk cycle: (neutral, right-step, neutral, left-step).
+// Even frames are mid-stride / standing-still poses, so a ticking villager
+// passes through a "feet together" pose between each step rather than
+// snapping straight from one extreme swing to the other.
+const VILLAGER_FRAME_COUNT = 4;
+
+function drawRoleSilhouette(g, kind) {
+  if (!g) return;
+  if (kind === 'farmer') {
+    // Hoe handle peeking up over the right shoulder.
+    rect(g, 11, 4, 1, 5, '#7a4d27');
+    px(g, 11, 4, '#3a2218');
+  } else if (kind === 'explorer') {
+    // Bow on back — a thin curved silhouette behind the body.
+    rect(g, 3, 6, 1, 5, '#d4c08a');
+    px(g, 4, 5, '#a08252');
+    px(g, 4, 11, '#a08252');
+  } else if (kind === 'worker') {
+    // Small pack outline behind the right shoulder.
+    rect(g, 12, 8, 2, 3, '#5a3820');
+    px(g, 12, 8, '#2a190e');
+  }
+}
+
 function makeVillagerFrames() {
   function role(options) {
     const {
@@ -815,12 +839,13 @@ function makeVillagerFrames() {
       pants,
       hair,
       hat,
+      kind = null,
       skin = '#f1d4b6'
     } = options;
 
     const frames = [];
 
-    for (let f = 0; f < 3; f++) {
+    for (let f = 0; f < VILLAGER_FRAME_COUNT; f++) {
       const c = makeCanvas(16, 16);
       const g = context2d(c);
       if (!g) {
@@ -828,13 +853,19 @@ function makeVillagerFrames() {
         continue;
       }
 
-      const armSwing = f === 1 ? 1 : f === 2 ? -1 : 0;
+      // f=0 / f=2 are mid-stride neutral poses; f=1 is a right step,
+      // f=3 a left step. Two neutrals per cycle smooth the gait.
+      const isStep = f === 1 || f === 3;
+      const armSwing = isStep ? (f === 1 ? 1 : -1) : 0;
       const legA = f === 1 ? 1 : 0;
-      const legB = f === 2 ? 1 : 0;
+      const legB = f === 3 ? 1 : 0;
 
       g.globalAlpha = 0.2;
       rect(g, 4, 14, 8, 1, '#000000');
       g.globalAlpha = 1;
+
+      // Role accessory sits beneath the body so arms occlude it correctly.
+      drawRoleSilhouette(g, kind);
 
       rect(g, 6, 4, 4, 4, skin);
       rect(g, 6, 3, 4, 2, hair);
@@ -870,7 +901,8 @@ function makeVillagerFrames() {
     shirtDark: '#2b7c42',
     pants: '#4b4631',
     hair: '#7a4d27',
-    hat: '#d6cf74'
+    hat: '#d6cf74',
+    kind: 'farmer'
   });
 
   Tileset.villagerSprites.worker = role({
@@ -878,7 +910,8 @@ function makeVillagerFrames() {
     shirtDark: '#704825',
     pants: '#3f3a32',
     hair: '#5a3820',
-    hat: '#8f7440'
+    hat: '#8f7440',
+    kind: 'worker'
   });
 
   Tileset.villagerSprites.explorer = role({
@@ -886,7 +919,8 @@ function makeVillagerFrames() {
     shirtDark: '#284d7a',
     pants: '#38394a',
     hair: '#3b2a1d',
-    hat: '#5a78a8'
+    hat: '#5a78a8',
+    kind: 'explorer'
   });
 
   Tileset.villagerSprites.sleepy = role({
@@ -894,8 +928,26 @@ function makeVillagerFrames() {
     shirtDark: '#555555',
     pants: '#3f3f4f',
     hair: '#444444',
-    hat: null
+    hat: null,
+    kind: null
   });
+}
+
+// Per-villager accent palette — picked deterministically by villager id so
+// the color stays stable across reloads. Drawn as a 1-px scarf overlay at
+// draw time, leaving the role frame caches shared.
+const ACCENT_PALETTE = Object.freeze([
+  '#c34a4a',
+  '#d68a3a',
+  '#3a8ec3',
+  '#a36ec5',
+  '#3aa37a',
+  '#d4b14a'
+]);
+
+function pickAccentColor(villagerId) {
+  const id = (villagerId | 0) >>> 0;
+  return ACCENT_PALETTE[hash2(id, 7) % ACCENT_PALETTE.length];
 }
 
 function drawDeer(g) {
@@ -1035,8 +1087,10 @@ function buildTileset() {
 export {
   Tileset,
   SHADOW_TEXTURE,
+  VILLAGER_FRAME_COUNT,
   buildTileset,
   makeCanvas,
+  pickAccentColor,
   px,
   rect,
   normalizeSeason,

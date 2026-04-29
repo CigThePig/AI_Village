@@ -18,7 +18,15 @@ import {
 import { LIGHTING, clamp01, gradeLightmap } from './lighting.js';
 import { clamp, hash2 } from './rng.js';
 import { context2d } from './canvas.js';
-import { SHADOW_TEXTURE, Tileset, makeCanvas, normalizeSeason, seasonName } from './tileset.js';
+import {
+  SHADOW_TEXTURE,
+  Tileset,
+  VILLAGER_FRAME_COUNT,
+  makeCanvas,
+  normalizeSeason,
+  pickAccentColor,
+  seasonName
+} from './tileset.js';
 import {
   BUILDINGS,
   buildingCenter,
@@ -1158,17 +1166,34 @@ export function createRenderSystem(deps) {
                  : v.role === 'worker' ? Tileset.villagerSprites.worker
                  : v.role === 'explorer' ? Tileset.villagerSprites.explorer
                  : Tileset.villagerSprites.sleepy;
-    const f = frames[Math.floor((tick / 8) % 3)];
+    const frameCount = frames?.length || VILLAGER_FRAME_COUNT;
+    const isMoving = Array.isArray(v.path) && v.path.length > 0;
+    // Hold the neutral pose when the villager isn't moving so they don't
+    // step in place; otherwise cycle through all 4 frames.
+    const frameIdx = isMoving ? Math.floor((tick / 6) % frameCount) : 0;
+    const f = frames[frameIdx];
     const s = cam.z;
     const rect = entityDrawRect(v.x, v.y, cam);
     const spriteSize = 16 * s;
     const gx = Math.floor(rect.x + (rect.size - spriteSize) * 0.5);
-    const gy = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
+    const gyGround = Math.floor(rect.y + (rect.size - spriteSize) * 0.5);
+    // 1-px head-bob synced to the walk cadence so the body silhouette
+    // breathes in time with the gait. Shadow stays at the ground, sprite
+    // and accent overlay lift together.
+    const bobPx = isMoving && (frameIdx % 2 === 1) ? Math.round(s) : 0;
+    const gy = gyGround - bobPx;
     const light = useMultiply ? 1 : sampleLightAt(world, v.x, v.y);
-    drawShadow(v.x, v.y, 1, 1, { x: gx, y: gy, w: spriteSize, h: spriteSize });
+    drawShadow(v.x, v.y, 1, 1, { x: gx, y: gyGround, w: spriteSize, h: spriteSize });
     ctx.save();
     ctx.drawImage(f, 0, 0, 16, 16, gx, gy, spriteSize, spriteSize);
     applySpriteShadeLit(ctx, gx, gy, spriteSize, spriteSize, light);
+    // 1-px scarf accent at the neckline; deterministic per villager id so a
+    // village reads as a crowd of distinct people instead of clones.
+    if (Number.isFinite(v.id)) {
+      const accent = pickAccentColor(v.id);
+      ctx.fillStyle = shadeFillColorLit(accent, light);
+      ctx.fillRect(gx + 5 * s, gy + 7 * s, 6 * s, Math.max(1, s));
+    }
     if (v.inv) {
       const packColor = ITEM_COLORS[v.inv.type] || ITEM_COLORS.food;
       ctx.fillStyle = shadeFillColorLit(packColor, light);
