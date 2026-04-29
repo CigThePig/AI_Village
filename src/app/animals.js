@@ -31,7 +31,7 @@ const DEFAULT_ANIMAL_BEHAVIOR = {
 export function createAnimalsSystem(opts) {
   const {
     state,
-    pathfind,
+    pathfindToRegion,
     tileOccupiedByBuilding,
     idx,
   } = opts;
@@ -234,31 +234,35 @@ export function createAnimalsSystem(opts) {
     return { meat, pelts: R() < hideChance ? 1 : 0 };
   }
 
-  function findHuntApproachPath(v, animal, { range = HUNT_RANGE, maxPath = 320 } = {}) {
+  // Phase 12 (B23): a single A*-to-region search instead of one pathfind per
+  // candidate tile in the 9×9 box around the animal. The predicate accepts
+  // the first walkable, in-range, unobstructed tile reached from the
+  // villager; the heuristic — Manhattan distance to the animal minus the
+  // hunt range, floored at 0 — is admissible because reaching any in-range
+  // tile takes at least that many steps from the current node.
+  function findHuntApproachPath(v, animal, { range = HUNT_RANGE, maxPath = 2000 } = {}) {
     if (!v || !animal) return null;
+    if (typeof pathfindToRegion !== 'function') return null;
     const world = getWorld();
-    const ax = Math.round(animal.x);
-    const ay = Math.round(animal.y);
-    const radius = Math.max(1, Math.ceil(range));
-    let best = null;
-    for (let dy = -radius; dy <= radius; dy++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const tx = ax + dx, ty = ay + dy;
-        const dist = Math.hypot(tx - animal.x, ty - animal.y);
-        if (dist > range) continue;
-        if (tx < 0 || ty < 0 || tx >= GRID_W || ty >= GRID_H) continue;
-        if (tileOccupiedByBuilding(tx, ty)) continue;
-        const tile = world.tiles[idx(tx, ty)];
-        if (tile === TILES.WATER) continue;
-        if (!WALKABLE.has(tile)) continue;
-        const p = pathfind(v.x | 0, v.y | 0, tx, ty, maxPath);
-        if (!p) continue;
-        if (!best || p.length < best.score) {
-          best = { path: p, score: p.length, dest: { x: tx, y: ty } };
-        }
-      }
-    }
-    return best;
+    const ax = animal.x;
+    const ay = animal.y;
+    const rangeSq = range * range;
+    const axR = Math.round(ax);
+    const ayR = Math.round(ay);
+    const isTarget = (tx, ty) => {
+      if (tx < 0 || ty < 0 || tx >= GRID_W || ty >= GRID_H) return false;
+      const dxr = tx - ax, dyr = ty - ay;
+      if (dxr * dxr + dyr * dyr > rangeSq) return false;
+      if (tileOccupiedByBuilding(tx, ty)) return false;
+      const tile = world.tiles[idx(tx, ty)];
+      if (tile === TILES.WATER) return false;
+      return WALKABLE.has(tile);
+    };
+    const heuristic = (x, y) => {
+      const d = Math.abs(x - axR) + Math.abs(y - ayR) - range;
+      return d > 0 ? d : 0;
+    };
+    return pathfindToRegion(v.x | 0, v.y | 0, isTarget, maxPath, heuristic);
   }
 
   // Audit Phase 6: ambient food creation removed. Hungry-villager proximity no

@@ -81,7 +81,7 @@ function makeSystem(state) {
     consumeFood: noop,
     handleVillagerFed: noop,
     findNearestBuilding: () => null,
-    agricultureBonusesAt: () => ({}),
+    agricultureHarvestAt: () => 0,
     findEntryTileNear: () => null,
     getBuildingById: () => null,
     setActiveBuilding: noop,

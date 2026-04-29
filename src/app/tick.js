@@ -3,6 +3,38 @@ import { computeBlackboard } from '../ai/blackboard.js';
 
 const PLANNER_INTERVAL = { zones: 90, build: 120 };
 
+// Phase 12: per-subsystem timing surfaced via DebugKit. EMA so the displayed
+// numbers don't flicker frame-to-frame.
+const PERF_EMA_ALPHA = 0.05;
+const PERF_KEYS = [
+  'tickTotal',
+  'jobs',
+  'season',
+  'blackboard',
+  'planZones',
+  'planBuildings',
+  'animals',
+  'nocturnal',
+  'villagerTick',
+  'pendingBirths'
+];
+
+function createPerfMetrics() {
+  const metrics = { __ticks: 0 };
+  for (const k of PERF_KEYS) metrics[k] = 0;
+  return metrics;
+}
+
+function emaUpdate(metrics, key, sample) {
+  const prev = metrics[key] || 0;
+  metrics[key] = prev + (sample - prev) * PERF_EMA_ALPHA;
+}
+
+const _hasPerfNow = (typeof performance !== 'undefined' && typeof performance.now === 'function');
+function nowMs() {
+  return _hasPerfNow ? performance.now() : 0;
+}
+
 export function createTickRunner(deps) {
   const {
     state,
@@ -35,6 +67,8 @@ export function createTickRunner(deps) {
   let lastBlackboardLogTick = state.time.tick;
   let lastZonePlanTick = state.time.tick - PLANNER_INTERVAL.zones;
   let lastBuildPlanTick = state.time.tick - PLANNER_INTERVAL.build;
+  const metrics = createPerfMetrics();
+  state.__perf = metrics;
 
   function ensureBlackboardSnapshot() {
     const cadence = Number.isFinite(policy?.routine?.blackboardCadenceTicks)
@@ -90,13 +124,21 @@ export function createTickRunner(deps) {
     const villagers = state.units.villagers;
 
     for (let s = 0; s < steps; s++) {
+      const tickStart = nowMs();
       state.time.tick++;
       state.time.dayTime = (state.time.dayTime + 1) % DAY_LENGTH;
       const tick = state.time.tick;
       const ambientNow = ambientAt(state.time.dayTime);
 
+      let t0 = nowMs();
       if (jobInterval > 0 && tick % jobInterval === 0) generateJobs();
+      emaUpdate(metrics, 'jobs', nowMs() - t0);
+
+      t0 = nowMs();
       if (seasonInterval > 0 && tick % seasonInterval === 0) seasonTick();
+      emaUpdate(metrics, 'season', nowMs() - t0);
+
+      t0 = nowMs();
       if (blackboardInterval > 0 && (tick - lastBlackboardTick) >= blackboardInterval) {
         state.bb = computeBlackboard(state, policy);
         lastBlackboardTick = tick;
@@ -105,25 +147,49 @@ export function createTickRunner(deps) {
           lastBlackboardLogTick = tick;
         }
       }
+      emaUpdate(metrics, 'blackboard', nowMs() - t0);
+
+      t0 = nowMs();
       if ((tick - lastZonePlanTick) >= PLANNER_INTERVAL.zones) {
         planZones(state.bb);
         lastZonePlanTick = tick;
       }
+      emaUpdate(metrics, 'planZones', nowMs() - t0);
+
+      t0 = nowMs();
       if ((tick - lastBuildPlanTick) >= PLANNER_INTERVAL.build) {
         planBuildings(state.bb);
         lastBuildPlanTick = tick;
       }
+      emaUpdate(metrics, 'planBuildings', nowMs() - t0);
 
+      t0 = nowMs();
       updateAnimals();
-      updateNocturnalEntities(ambientNow);
+      emaUpdate(metrics, 'animals', nowMs() - t0);
 
+      t0 = nowMs();
+      updateNocturnalEntities(ambientNow);
+      emaUpdate(metrics, 'nocturnal', nowMs() - t0);
+
+      t0 = nowMs();
       for (const v of villagers) {
         processVillagerItemPickup(v);
         villagerTick(v);
       }
+      emaUpdate(metrics, 'villagerTick', nowMs() - t0);
+
+      t0 = nowMs();
       flushPendingBirths();
+      emaUpdate(metrics, 'pendingBirths', nowMs() - t0);
+
+      emaUpdate(metrics, 'tickTotal', nowMs() - tickStart);
+      metrics.__ticks++;
     }
   }
 
-  return { runFrame, reset, ensureBlackboardSnapshot };
+  function getMetrics() {
+    return metrics;
+  }
+
+  return { runFrame, reset, ensureBlackboardSnapshot, getMetrics };
 }

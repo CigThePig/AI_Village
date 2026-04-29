@@ -106,7 +106,7 @@ function makeVillagerTickSystem(state) {
     pathfind: () => null,
     ambientAt: () => 'day',
     nearbyWarmth: () => false,
-    agricultureBonusesAt: () => ({ growthBonus: 0, harvestBonus: 0, moodBonus: 0 }),
+    agricultureMoodAt: () => 0,
     getBuildingById: (id) => state.units.buildings.find((b) => b.id === id) || null,
     noteBuildingActivity: (b) => {
       if (b) {
@@ -327,7 +327,7 @@ function makeOnArriveForHarvest(state, dropped) {
     handleVillagerFed: noop,
     findNearestBuilding: () => null,
     // No bonus tile so harvest yield is purely the workEffort * 2 base.
-    agricultureBonusesAt: () => ({ growthBonus: 0, harvestBonus: 0, moodBonus: 0 }),
+    agricultureHarvestAt: () => 0,
     findEntryTileNear: () => null,
     getBuildingById: () => null,
     setActiveBuilding: noop,
