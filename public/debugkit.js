@@ -735,6 +735,49 @@
   const filterSection = createSection('dbgFilterSection', 'Network & Filters', narrowLayout);
   filterSection.body.append(netLabel, filterSelect, searchInput);
 
+  // Phase 1 — Settlement Layout section. Toggles the slot/anchor overlay in
+  // the main render pass via window.AIV_DEBUG_SLOTS, and exposes a snapshot of
+  // the active archetype + slot occupancy.
+  const layoutSlotsInput = el('input', { type: 'checkbox' });
+  const layoutSlotsLabel = el('label', { className: 'dbg-shade-label' }, [
+    layoutSlotsInput,
+    el('span', { text: ' Show slots' })
+  ]);
+  const layoutRefreshBtn = el('button', null, 'Refresh');
+  const layoutStateLabel = el('span', { className: 'dbg-shade-state', text: 'Layout: (press Refresh)' });
+  const layoutSection = createSection('dbgLayoutSection', 'Settlement Layout', narrowLayout);
+  layoutSection.body.append(layoutSlotsLabel, layoutRefreshBtn, layoutStateLabel);
+
+  layoutSlotsInput.addEventListener('change', () => {
+    win.AIV_DEBUG_SLOTS = !!layoutSlotsInput.checked;
+  });
+
+  function refreshLayoutState() {
+    if (typeof stateProvider !== 'function') {
+      layoutStateLabel.textContent = 'Layout: stateProvider not configured';
+      return;
+    }
+    try {
+      const snap = stateProvider();
+      const layout = snap && snap.layout ? snap.layout : null;
+      if (!layout) {
+        layoutStateLabel.textContent = 'Layout: not initialized';
+        return;
+      }
+      const slotCount = Array.isArray(layout.slots) ? layout.slots.length : 0;
+      const occ = layout.occupancy || {};
+      const occTotal = Object.keys(occ).reduce((sum, k) => sum + (Number(occ[k]) || 0), 0);
+      const features = layout.features || {};
+      layoutStateLabel.textContent = `Layout: ${layout.archetype || '?'} · slots=${slotCount} (occ=${occTotal})`
+        + ` · water=${features.dominantWaterSide || '-'} slope=${features.slope ?? 0}`;
+    } catch (err) {
+      layoutStateLabel.textContent = 'Layout: refresh failed';
+      add('ERROR', 'Layout refresh failed', fmt(err));
+    }
+  }
+
+  layoutRefreshBtn.addEventListener('click', refreshLayoutState);
+
   copyBtn.classList.add('dbg-aux');
   exportBtn.classList.add('dbg-aux');
   shareBtn.classList.add('dbg-aux');
@@ -759,6 +802,7 @@
     stateBtn,
     shadingSection.section,
     filterSection.section,
+    layoutSection.section,
     fpsLabel
   );
 

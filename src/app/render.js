@@ -676,6 +676,59 @@ export function createRenderSystem(deps) {
     ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, baseDx, baseDy, destW, destH);
   }
 
+  // Phase 1 — debug-only overlay. Each slot family gets a distinct hue so the
+  // archetype is readable at a glance; anchor markers reuse the slot color so
+  // a slot and its anchor read as a pair.
+  const SLOT_FAMILY_COLORS = {
+    hearth: 'rgba(255, 130, 70, 0.5)',
+    storage: 'rgba(180, 140, 80, 0.5)',
+    housing: 'rgba(120, 200, 255, 0.45)',
+    craft: 'rgba(220, 100, 200, 0.45)',
+    fields: 'rgba(150, 220, 120, 0.45)',
+    wells: 'rgba(80, 160, 220, 0.5)'
+  };
+
+  function drawLayoutOverlay(layout, camState) {
+    const ctx = getCtx();
+    if (!ctx || !layout || !Array.isArray(layout.slots)) return;
+    const occ = layout.occupancy;
+    ctx.save();
+    ctx.lineWidth = Math.max(1, camState.z);
+    for (const slot of layout.slots) {
+      if (!slot || !slot.footprint) continue;
+      const fp = slot.footprint;
+      const x = tileToPxX(fp.x, camState);
+      const y = tileToPxY(fp.y, camState);
+      const w = fp.w * TILE * camState.z;
+      const h = fp.h * TILE * camState.z;
+      const color = SLOT_FAMILY_COLORS[slot.family] || 'rgba(220, 220, 220, 0.4)';
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color.replace(/, [\d.]+\)$/, ', 0.10)');
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      const usedRaw = occ instanceof Map ? (occ.get(slot.id) || 0) : (occ?.[slot.id] || 0);
+      ctx.fillStyle = '#0a0c10';
+      ctx.font = `${Math.max(8, Math.round(8 * camState.z))}px system-ui, sans-serif`;
+      ctx.fillText(`${slot.id} ${usedRaw}/${slot.capacity}`, x + 2, y + Math.max(10, 10 * camState.z));
+    }
+    if (layout.anchors) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = Math.max(1, camState.z * 0.6);
+      for (const name of Object.keys(layout.anchors)) {
+        const a = layout.anchors[name];
+        if (!a) continue;
+        const ax = tileToPxX(a.x + 0.5, camState);
+        const ay = tileToPxY(a.y + 0.5, camState);
+        const r = Math.max(2, 3 * camState.z);
+        ctx.beginPath();
+        ctx.moveTo(ax - r, ay); ctx.lineTo(ax + r, ay);
+        ctx.moveTo(ax, ay - r); ctx.lineTo(ax, ay + r);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   function ensureWaterOverlayCanvas() {
     const W = getViewportW();
     const H = getViewportH();
@@ -1608,6 +1661,13 @@ export function createRenderSystem(deps) {
       }
 
       drawFireflies(season, tick, vis, ambient);
+      // Phase 1: optional slot/anchor overlay. Toggled via the DebugKit tray's
+      // "Show slots" checkbox, which sets window.AIV_DEBUG_SLOTS. Draws each
+      // slot footprint as a translucent rectangle and each named anchor as a
+      // small cross — purely additive, no impact when the flag is off.
+      if (typeof window !== 'undefined' && window.AIV_DEBUG_SLOTS && world.layout) {
+        drawLayoutOverlay(world.layout, cam);
+      }
       drawPostFx();
       drawQueuedVillagerLabels(ambient);
 
