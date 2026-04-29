@@ -24,6 +24,7 @@ import {
   SOCIAL_BASE_TICKS,
   STORAGE_IDLE_BASE,
   restDurationTicks,
+  workEffortMultiplier,
 } from './villagerAI.js';
 
 export function createOnArrive(opts) {
@@ -79,7 +80,14 @@ export function createOnArrive(opts) {
       : condition === 'recovering' ? 0.95
       : 1;
     const moodSpeed = 0.75 + v.happy * 0.5;
-    const speedMultiplier = v.speed * penalty * moodSpeed;
+    // Phase 10 (S4): tired villagers move slower. Multiplicative with the
+    // condition penalty so a starving + low-energy villager still moves
+    // slower than a starving but rested one.
+    const energy = Number.isFinite(v.energy) ? v.energy : 1;
+    const energyPenalty = energy < 0.30 ? 0.85
+      : energy < 0.50 ? 0.95
+      : 1;
+    const speedMultiplier = v.speed * penalty * moodSpeed * energyPenalty;
     const stepPx = getSpeedPxPerSec() * speedMultiplier * getSecondsPerTick();
     const step = stepPx / TILE;
     const dx = next.x - v.x, dy = next.y - v.y, dist = Math.hypot(dx, dy);
@@ -246,7 +254,11 @@ export function createOnArrive(opts) {
     }
     else if (v.state === 'harvest') {
       if (world.growth[i] > 0) {
-        let yieldAmount = 2;
+        // Phase 10 (S5): hungry/sick/tired harvesters bring back less. Floor
+        // at 1 so an arrived villager always returns *something* (zero-yield
+        // harvest would feel buggy and the tile is still consumed below).
+        const effort = workEffortMultiplier(v);
+        let yieldAmount = Math.max(1, Math.round(2 * effort));
         const { harvestBonus } = agricultureBonusesAt(cx, cy);
         if (harvestBonus > 0) {
           const whole = Math.floor(harvestBonus);

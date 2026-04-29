@@ -23,7 +23,11 @@ export const FOOD_HUNGER_RECOVERY = 0.65;
 export const REST_BASE_TICKS = 90;
 export const REST_EXTRA_PER_ENERGY = 110;
 export const HYDRATION_VISIT_THRESHOLD = 0.46;
-export const HYDRATION_BUFF_TICKS = 320;
+// Phase 10 (S10): shorter buff window so the energy/hunger/mood bonus is a
+// punctual reward rather than the default state. With Phase 10's faster decay
+// villagers visit wells ~2× per day, but the buff still only covers ~5.5%
+// of the day instead of ~9%.
+export const HYDRATION_BUFF_TICKS = 200;
 export const SOCIAL_BASE_TICKS = 88;
 export const SOCIAL_COOLDOWN_TICKS = DAY_LENGTH * 0.2;
 export const STORAGE_IDLE_BASE = 70;
@@ -35,6 +39,21 @@ export const STORAGE_IDLE_COOLDOWN = DAY_LENGTH * 0.12;
 export function restDurationTicks(energy) {
   const e = Number.isFinite(energy) ? energy : 0;
   return REST_BASE_TICKS + Math.round(Math.max(0, 1 - e) * REST_EXTRA_PER_ENERGY);
+}
+
+// Phase 10 (S5): per-action work efficiency. Building labor (Phase 7)
+// accumulates by this fraction per tick instead of a flat 1, and harvest
+// yield is scaled by the same factor (with a min of 1 food). Single source of
+// truth so villagerTick.js and onArrive.js can't drift.
+export function workEffortMultiplier(v) {
+  const condition = v?.condition || 'normal';
+  const conditionMult = condition === 'sick' ? 0.5
+    : condition === 'starving' ? 0.7
+    : condition === 'hungry' ? 0.9
+    : 1;
+  const energy = Number.isFinite(v?.energy) ? v.energy : 1;
+  const energyMult = energy < 0.30 ? 0.85 : 1;
+  return conditionMult * energyMult;
 }
 
 // Night-anchored sleep predicate (audit S1). Pure function so tests can
