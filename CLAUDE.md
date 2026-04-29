@@ -18,7 +18,7 @@ From `package.json`:
 - `npm run lint` — ESLint across the repo (config: `eslint.config.js`).
 - `npm test` — `node --test tests/**/*.test.js`.
 
-After every change inside a fix-plan phase, run `npm run lint && npm test` (mirrors the `Cross-cutting` requirement in `AI_VILLAGE_FIX_PLAN.md`).
+After every change inside a phase, run `npm run lint && npm test` (mirrors the cross-cutting requirement in `AI_VILLAGE_PLAN.md`).
 
 ## Repo map
 
@@ -34,21 +34,22 @@ After every change inside a fix-plan phase, run `npm run lint && npm test` (mirr
 - `src/main.js`, `src/config.js` — entry / config.
 - `tests/` — Node-runner tests (`*.test.js`). Add new tests here as each phase requires.
 - `public/`, `index.html`, `styles.css`, `vite.config.js` — static assets and build config.
-- `AI_VILLAGE_AUDIT.md` — bug catalogue (B-series and S-series IDs).
-- `AI_VILLAGE_FIX_PLAN.md` — phased fix plan; the **active work plan**.
+- `AI_VILLAGE_PLAN.md` — phased feature plan; the **active work plan**.
 
 ## Working rules
 
 ### Active plan
 
-We are executing `AI_VILLAGE_FIX_PLAN.md`. Default to that document for scope, ordering, and acceptance criteria. Phases are intentionally separate PRs — do not combine phases.
+We are executing `AI_VILLAGE_PLAN.md`. Default to that document for scope, ordering, and acceptance criteria. Phases are intentionally separate PRs — do not combine phases.
+
+The current objective: villagers should feel more intelligent and interesting to watch, with richer environmental interaction; building and crop placement should not feel ugly or random; every settlement should look different but coherent. The plan ships 5 phases that upgrade existing logic, 5 that extend current content, and 2 that introduce new content.
 
 ### Save-format compatibility (project rule)
 
 - **Old save files do not need to be preserved. New save formats are allowed to break old saves.**
 - When the schema changes, bump `SAVE_VERSION` in `src/app/constants.js`. A no-op or coercion entry in `SAVE_MIGRATIONS` is enough; a faithful migration is *not* required. If a save can't be loaded, returning `false` from `loadGame` (so the game starts fresh) is acceptable.
 - **This rule overrides any conflicting guidance in future plans or audit notes.** If a later phase or task asks for backwards-compatible save migrations, treat that requirement as superseded by this rule unless the user explicitly reinstates it.
-- Phase 1 of the fix plan (time persistence) still needs to bump `SAVE_VERSION` and round-trip the new fields — that's consistent with this rule.
+- Most phases in `AI_VILLAGE_PLAN.md` change persisted shape and bump `SAVE_VERSION`; the migration entry can simply drop the affected sub-tree.
 
 ### Code style
 
@@ -58,8 +59,8 @@ We are executing `AI_VILLAGE_FIX_PLAN.md`. Default to that document for scope, o
 
 ### Scope discipline
 
-- Each fix-plan phase ships as one focused PR with the tests it specifies. Don't fold in opportunistic refactors from other phases.
-- Acceptance criteria in `AI_VILLAGE_FIX_PLAN.md` are the bar.
+- Each phase ships as one focused PR with the tests it specifies. Don't fold in opportunistic refactors from other phases.
+- Acceptance criteria in `AI_VILLAGE_PLAN.md` are the bar — including the per-phase anti-corner-cut clauses on visible/coherent behavior.
 
 ## Quick references
 
