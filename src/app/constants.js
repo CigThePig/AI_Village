@@ -107,6 +107,11 @@ const ANIMAL_TYPES = {
 };
 const HUNT_RANGE = 3.5;
 const HUNT_RETRY_COOLDOWN = 140;
+// Crops are harvest-ready at this growth value. Used by both the planner's
+// harvest-job emit scan and `hasRipeCrops()` so the two stay in sync — a
+// mismatch caused B2/S8/S9 (forage jobs scheduled on top of harvest in the
+// 150–160 window).
+const RIPE_THRESHOLD = 150;
 const ANIMAL_BEHAVIORS = {
   deer: {
     roamRadius: 4,
@@ -188,6 +193,7 @@ export {
   LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,
   RESOURCE_TYPES,
+  RIPE_THRESHOLD,
   SAVE_KEY,
   SAVE_MIGRATIONS,
   SAVE_VERSION,

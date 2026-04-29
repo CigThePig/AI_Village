@@ -8,6 +8,7 @@ import {
   GRID_SIZE,
   GRID_W,
   RESOURCE_TYPES,
+  RIPE_THRESHOLD,
   TILE,
   TILES,
   ZONES,
@@ -704,7 +705,7 @@ function seasonTick(){
     const next=Math.min(240, prev+delta);
     world.growth[i]=next;
     // Slightly earlier harvest window so ripe food gets picked before withering.
-    if(prev<150 && next>=150){
+    if(prev<RIPE_THRESHOLD && next>=RIPE_THRESHOLD){
       if(!violatesSpacing(x,y,'harvest',creationCfg)){
         addJob({type:'harvest',x,y, prio:0.65+(policy.sliders.food||0)*0.6});
       }

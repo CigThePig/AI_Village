@@ -3,6 +3,7 @@ import {
   GRID_H,
   GRID_W,
   ITEM,
+  RIPE_THRESHOLD,
   TILES,
   ZONES
 } from './constants.js';
@@ -802,7 +803,7 @@ export function createPlanner(opts) {
     return best;
   }
 
-  function hasRipeCrops(threshold = 160) {
+  function hasRipeCrops(threshold = RIPE_THRESHOLD) {
     const world = state.world;
     if (!world || !world.growth || !world.tiles) return false;
     for (let i = 0; i < world.growth.length; i++) {
@@ -817,7 +818,7 @@ export function createPlanner(opts) {
     let count = 0;
     for (let i = 0; i < world.tiles.length; i++) {
       if (world.tiles[i] === TILES.FARMLAND
-        && world.growth[i] > 0 && world.growth[i] < 150) count++;
+        && world.growth[i] > 0 && world.growth[i] < RIPE_THRESHOLD) count++;
     }
     return count;
   }
@@ -901,7 +902,7 @@ export function createPlanner(opts) {
         // idempotent each planner pass.
         if (allowHarvest
           && world.tiles[i] === TILES.FARMLAND
-          && world.growth[i] >= 150
+          && world.growth[i] >= RIPE_THRESHOLD
           && !violatesSpacing(x, y, 'harvest', creationCfg)) {
           addJob({ type: 'harvest', x, y, prio: 0.65 + (policy.sliders.food || 0) * 0.6 });
         }
@@ -1030,5 +1031,5 @@ export function createPlanner(opts) {
     }
   }
 
-  return { planZones, planBuildings, generateJobs };
+  return { planZones, planBuildings, generateJobs, hasRipeCrops };
 }
