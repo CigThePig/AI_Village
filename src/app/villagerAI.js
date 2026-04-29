@@ -38,7 +38,7 @@ export function createVillagerAI(opts) {
     Toast,
     addJob: _addJob, // unused but kept for symmetry; pickJobFor doesn't add jobs directly
     finishJob,
-    noteJobAssignmentChanged: _noteJobAssignmentChanged,
+    noteJobAssignmentChanged,
     availableToReserve: _availableToReserve,
     reserveMaterials,
     releaseReservedMaterials,
@@ -52,7 +52,6 @@ export function createVillagerAI(opts) {
   } = opts;
 
   void _addJob;
-  void _noteJobAssignmentChanged;
   void _availableToReserve;
   void _getBuildingById;
 
@@ -198,6 +197,19 @@ export function createVillagerAI(opts) {
     const cooldown = Math.max(8, Math.min(22, target.path.length + 6));
     v._nextPathTick = tick + cooldown;
     if (target.kind === 'berry') {
+      // Attach an existing planner-emitted forage job at this tile so the
+      // arrival path's finishJob(remove=true) cleans it up. Without this,
+      // the queue accumulates orphaned forage jobs at picked-empty tiles.
+      const existing = jobs.find(j =>
+        j && j.type === 'forage'
+        && j.targetI === target.targetI
+        && (j.assigned || 0) < 1
+      );
+      if (existing) {
+        v.targetJob = existing;
+        existing.assigned = (existing.assigned || 0) + 1;
+        noteJobAssignmentChanged(existing);
+      }
       v.state = 'forage';
       v.targetI = target.targetI;
       v.thought = moodThought(v, 'Foraging');
@@ -542,6 +554,15 @@ export function createVillagerAI(opts) {
     let distance;
     if (j.type === 'build') {
       distance = buildTarget ? distanceToFootprint(v.x | 0, v.y | 0, buildTarget) : Math.abs((v.x | 0) - j.x) + Math.abs((v.y | 0) - j.y);
+    } else if (j.type === 'hunt') {
+      // Must mirror pickJobFor's live-animal lookup — j.x/j.y is the hunt's
+      // spawn point, not where the animal is now. Without this,
+      // maybeInterruptJob compares stale-distance current vs fresh-distance
+      // candidate and drops live pursuits.
+      const targetAnimal = findAnimalById(j.targetAid);
+      const targetX = targetAnimal?.x ?? j.x;
+      const targetY = targetAnimal?.y ?? j.y;
+      distance = Math.abs((v.x | 0) - Math.round(targetX)) + Math.abs((v.y | 0) - Math.round(targetY));
     } else {
       distance = Math.abs((v.x | 0) - j.x) + Math.abs((v.y | 0) - j.y);
     }
