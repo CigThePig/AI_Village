@@ -62,7 +62,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 5;
+const SAVE_VERSION = 6;
 const COARSE_SAVE_SIZE = 96;
 
 // Sequential save-format migrations: when loading a save with version `v`,
@@ -74,7 +74,12 @@ const SAVE_MIGRATIONS = new Map([
   // v4 -> v5: introduces top-level tick/dayTime + per-villager np/rt.
   // Missing fields default via Number.isFinite checks at load time, so the
   // migration body is intentionally a no-op.
-  [4, (data) => data]
+  [4, (data) => data],
+  // v5 -> v6: Phase 7 adds `b.laborProgress` per building. ensureBuildingData
+  // defaults missing fields to 0 (or to the kind's full buildLaborTicks if
+  // the building was already built), so old mid-build saves resume from
+  // scratch — acceptable per CLAUDE.md save-compat rule.
+  [5, (data) => data]
 ]);
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };

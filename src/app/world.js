@@ -1,14 +1,20 @@
 import { GRID_W, GRID_H, TILES } from './constants.js';
 
+// buildLaborTicks gates the new "felt construction" arc (Phase 7 / B3-S6):
+// once materials are delivered, the build job stays in the queue while the
+// villager accumulates `b.laborProgress` per-tick in the 'building' state.
+// Zero ticks (campfire) keeps the legacy one-tick finish path so emitter
+// initialization and the cost-0 case stay simple.
 export const BUILDINGS = {
-  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, effects: { radius: 4 }, tooltip: 'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
-  storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0 },
-  hut:      { label: 'Hut',      cost: 10, wood: 10, stone: 0, effects: { radius: 3, moodBonus: 0.0008 }, tooltip: 'Shelter that gently lifts moods nearby.' },
+  campfire: { label: 'Campfire', cost: 0, wood: 0, stone: 0, buildLaborTicks: 0, effects: { radius: 4 }, tooltip: 'Villagers gather here at night; warms and cheers everyone within 4 tiles.' },
+  storage:  { label: 'Storage',  cost: 8, wood: 8, stone: 0, buildLaborTicks: 80 },
+  hut:      { label: 'Hut',      cost: 10, wood: 10, stone: 0, buildLaborTicks: 60, effects: { radius: 3, moodBonus: 0.0008 }, tooltip: 'Shelter that gently lifts moods nearby.' },
   hunterLodge: {
     label: 'Hunter Lodge',
     cost: 12,
     wood: 10,
     stone: 2,
+    buildLaborTicks: 80,
     effects: {
       huntingRadius: 6,
       gameYieldBonus: 0.25,
@@ -21,6 +27,7 @@ export const BUILDINGS = {
     cost: 4,
     wood: 4,
     stone: 0,
+    buildLaborTicks: 30,
     effects: {
       radius: 3,
       growthBonus: 0.85,
@@ -33,6 +40,7 @@ export const BUILDINGS = {
     cost: 6,
     wood: 0,
     stone: 6,
+    buildLaborTicks: 100,
     effects: {
       hydrationRadius: 4,
       hydrationGrowthBonus: 0.45,
@@ -133,6 +141,7 @@ export function ensureBuildingData(b) {
   if (typeof b.pending.wood !== 'number') b.pending.wood = 0;
   if (typeof b.pending.stone !== 'number') b.pending.stone = 0;
   if (typeof b.progress !== 'number') b.progress = (b.spent.wood || 0) + (b.spent.stone || 0);
+  if (typeof b.laborProgress !== 'number') b.laborProgress = b.built >= 1 ? (BUILDINGS[b.kind]?.buildLaborTicks || 0) : 0;
   if (!b.activity) { b.activity = { occupants: 0, lastUse: 0, lastHydrate: 0, lastSocial: 0, lastRest: 0 }; }
   if (typeof b.activity.occupants !== 'number') b.activity.occupants = 0;
   if (typeof b.activity.lastUse !== 'number') b.activity.lastUse = 0;
