@@ -936,16 +936,12 @@ const {
   consumeFood,
   seekEmergencyFood,
   foragingJob,
-  goRest,
-  tryHydrateAtWell,
-  tryCampfireSocial,
-  tryStorageIdle,
-  tryEquipBow,
   enterSickState,
   maybeInterruptJob,
   findPanicHarvestJob,
   pickJobFor,
-  handleIdleRoam
+  chooseIdleBeforeJobs,
+  chooseIdleAfterJobs
 } = _villagerAI;
 
 const TICKS_PER_SEC = policy.routine.ticksPerSecond || 6;
@@ -1055,12 +1051,9 @@ const _villagerTick = createVillagerTick({
   findHuntApproachPath,
   findAnimalById,
   buildingAt,
-  tryEquipBow,
-  tryHydrateAtWell,
-  tryCampfireSocial,
-  tryStorageIdle,
+  chooseIdleBeforeJobs,
+  chooseIdleAfterJobs,
   foragingJob,
-  goRest,
   seekEmergencyFood,
   consumeFood,
   findPanicHarvestJob,
@@ -1069,7 +1062,6 @@ const _villagerTick = createVillagerTick({
   tryStartPregnancy,
   completePregnancy,
   promoteChildToAdult,
-  handleIdleRoam,
   stepAlong
 });
 

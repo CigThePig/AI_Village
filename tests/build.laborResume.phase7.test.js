@@ -163,12 +163,9 @@ function makeVillagerTick(state) {
     findHuntApproachPath: () => null,
     findAnimalById: () => null,
     buildingAt: () => null,
-    tryEquipBow: () => false,
-    tryHydrateAtWell: () => false,
-    tryCampfireSocial: () => false,
-    tryStorageIdle: () => false,
+    chooseIdleBeforeJobs: () => false,
+    chooseIdleAfterJobs: () => false,
     foragingJob: () => false,
-    goRest: () => false,
     seekEmergencyFood: () => false,
     consumeFood: () => false,
     findPanicHarvestJob: () => null,
@@ -177,7 +174,6 @@ function makeVillagerTick(state) {
     tryStartPregnancy: noop,
     completePregnancy: noop,
     promoteChildToAdult: noop,
-    handleIdleRoam: () => false,
     stepAlong: noop,
   });
 }

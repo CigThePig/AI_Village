@@ -474,6 +474,15 @@ export function createPlanner(opts) {
     return true;
   }
 
+  // Phase 11 (B13): per-tier resource gates deduct each pushed plan's wood
+  // and stone cost from the running `available` pool, so a later tier sees
+  // resources committed by an earlier tier in the same tick. Without this,
+  // two tiers could both pass meetsProgressionRequirements against the same
+  // wood; the downstream budget loop in planBuildings would skip the second
+  // tier's plan, but applyProgressionPlanner had already stamped it as
+  // `unlocked = true` and put it on cooldown — leaving progression stuck.
+  // tierState.unlocked / cooldownUntil semantics are unchanged: they still
+  // track only what was actually queued (`addedForTier > 0`).
   function applyProgressionPlanner(buildQueue, bb, plannedTotals, anchor) {
     const villagers = state.units.villagers;
     const tick = state.time.tick;
@@ -520,10 +529,17 @@ export function createPlanner(opts) {
         const anchorOffset = plan.anchorOffset || tier.anchorOffset || null;
         const tierAnchor = plan.anchor || tier.anchor || defaultAnchor;
         const planAnchor = anchorOffset ? { x: (tierAnchor.x || 0) + (anchorOffset.x || 0), y: (tierAnchor.y || 0) + (anchorOffset.y || 0) } : tierAnchor;
-        const priority = Number.isFinite(plan.priority) ? plan.priority : (Number.isFinite(tier.priority) ? tier.priority : 2);
+        // Phase 11 (S14): buildQueue uses highest-priority-wins. Default 8 is
+        // a "neutral progression" band, well below famine pushes (~9.5+).
+        const priority = Number.isFinite(plan.priority) ? plan.priority : (Number.isFinite(tier.priority) ? tier.priority : 8);
         buildQueue.push({ priority, kind: plan.kind, anchor: planAnchor, reason: plan.reason || tier.reason || 'progress milestone', radius: plan.radius || tier.radius || 18, context: plan.context || tier.context });
         additionalTargets[plan.kind] = Math.max(additionalTargets[plan.kind] || 0, target);
         addedForTier++; injected++;
+        const def = BUILDINGS[plan.kind];
+        if (def) {
+          if (Number.isFinite(def.wood)) available.wood = Math.max(0, available.wood - def.wood);
+          if (Number.isFinite(def.stone)) available.stone = Math.max(0, available.stone - def.stone);
+        }
       }
       if (addedForTier > 0) {
         tierState.unlocked = true;
@@ -680,27 +696,32 @@ export function createPlanner(opts) {
 
     const buildQueue = [];
     const progressionTargets = applyProgressionPlanner(buildQueue, bb, plannedTotals, anchor);
+    // Phase 11 (S14) priority bands (highest-priority-wins):
+    //   ~9.5+ critical / famine survival
+    //   ~7-9   urgent / standard progression milestones
+    //   ~4-6   nominal building queue
+    //   ~1-3   low / deferred (e.g., redundant storage during famine)
     if (plannedTotals.hut < hutTarget && (!lowEnergy || hutCounts.total < hutTargetBase)) {
       const fatiguePenalty = lowEnergy ? 1 : 0;
-      buildQueue.push({ priority: 1 + fatiguePenalty, kind: 'hut', anchor: { x: anchor.x + 2, y: anchor.y + 1 }, reason: 'shelter plan' });
+      buildQueue.push({ priority: 9 - fatiguePenalty, kind: 'hut', anchor: { x: anchor.x + 2, y: anchor.y + 1 }, reason: 'shelter plan' });
     }
     if (desiredFarmplots > plannedTotals.farmplot) {
       const farmAnchor = zoneCentroid(ZONES.FARM) || anchor;
-      const farmPriority = famine ? 0.5 : (approachingWinter ? 1 : 2);
+      const farmPriority = famine ? 9.5 : (approachingWinter ? 9 : 8);
       buildQueue.push({ priority: farmPriority, kind: 'farmplot', anchor: farmAnchor, reason: 'support crops', radius: 14 });
     }
     if (wellTarget > plannedTotals.well && (availableWood > TUNING.wellWoodBuffer || availableStone > 0) && (!famine || approachingWinter)) {
       const farmAnchor = zoneCentroid(ZONES.FARM) || anchor;
-      const prio = approachingWinter ? 2.5 : 3;
+      const prio = approachingWinter ? 7.5 : 7;
       buildQueue.push({ priority: prio, kind: 'well', anchor: farmAnchor, reason: approachingWinter ? 'prepare for winter water' : 'hydrate farms', radius: 16 });
     }
     if (plannedTotals.storage < storageTarget && (woodBufferOk || storageCounts.built === 0) && (!famine || storageCounts.total === 0)) {
-      buildQueue.push({ priority: famine ? 6 : 4, kind: 'storage', anchor: { x: anchor.x - 2, y: anchor.y }, reason: 'extra storage', radius: 18 });
+      buildQueue.push({ priority: famine ? 4 : 6, kind: 'storage', anchor: { x: anchor.x - 2, y: anchor.y }, reason: 'extra storage', radius: 18 });
     }
     if (hunterTarget > plannedTotals.hunterLodge) {
       const hotspot = wildlifeInfo.hotspot || anchor;
       buildQueue.push({
-        priority: famine ? 0.4 : 1.8,
+        priority: famine ? 9.6 : 8.2,
         kind: 'hunterLodge',
         anchor: { x: hotspot.x, y: hotspot.y },
         reason: famine ? 'hunt to survive' : 'secure wild food',
@@ -709,7 +730,8 @@ export function createPlanner(opts) {
       });
     }
 
-    buildQueue.sort((a, b) => a.priority - b.priority);
+    // Phase 11 (S14): highest priority placed first.
+    buildQueue.sort((a, b) => b.priority - a.priority);
 
     const targetByKind = {
       hut: hutTarget,
@@ -1031,5 +1053,13 @@ export function createPlanner(opts) {
     }
   }
 
-  return { planZones, planBuildings, generateJobs, hasRipeCrops };
+  return {
+    planZones,
+    planBuildings,
+    generateJobs,
+    hasRipeCrops,
+    // Phase 11 (B13): exposed for targeted resource-bookkeeping tests.
+    _applyProgressionPlanner: applyProgressionPlanner,
+    _progressionMemory: progressionMemory,
+  };
 }

@@ -84,12 +84,17 @@ const DEFAULT_HUNGER_THRESHOLDS = Object.freeze({
   coldSeasonTightening: 0.05
 });
 
+// Phase 11 (S14): tier priorities follow the buildQueue convention —
+// highest-priority-wins. Earlier-tier entries (stockpile) outrank later
+// tiers (infrastructure) when both are queued in the same tick.
+// Note: style.jobScoring.priorityMoodWeight is unrelated; that knob weights
+// per-job mood scoring, not the buildQueue ordering used here.
 const DEFAULT_PROGRESS_TIERS = Object.freeze([
   {
     id: 'stockpile',
     minPopulation: 2,
     requires: { wood: 12 },
-    priority: 1.4,
+    priority: 8.6,
     plans: [
       { kind: 'storage', target: 1, reason: 'stash essential supplies', radius: 16 }
     ]
@@ -98,7 +103,7 @@ const DEFAULT_PROGRESS_TIERS = Object.freeze([
     id: 'housing',
     minPopulation: 4,
     requires: { wood: 16 },
-    priority: 1.7,
+    priority: 8.3,
     plans: [
       { kind: 'hut', target: 2, reason: 'give villagers beds', radius: 18 }
     ]
@@ -107,7 +112,7 @@ const DEFAULT_PROGRESS_TIERS = Object.freeze([
     id: 'workshops',
     minPopulation: 5,
     requires: { wood: 18, stone: 2 },
-    priority: 2.1,
+    priority: 7.9,
     plans: [
       { kind: 'hunterLodge', target: 1, reason: 'organize hunts', radius: 18 }
     ]
@@ -116,7 +121,7 @@ const DEFAULT_PROGRESS_TIERS = Object.freeze([
     id: 'infrastructure',
     minPopulation: 6,
     requires: { wood: 20, stone: 6 },
-    priority: 2.6,
+    priority: 7.4,
     plans: [
       { kind: 'well', target: 1, reason: 'secure water and mood', radius: 18 },
       { kind: 'farmplot', target: 3, reason: 'grow steady crops', radius: 18 }
