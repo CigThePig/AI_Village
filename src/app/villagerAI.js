@@ -206,6 +206,9 @@ export function createVillagerAI(opts) {
         && (j.assigned || 0) < 1
       );
       if (existing) {
+        // Release any prior claim so its assigned counter doesn't leak when
+        // the urgent-food path interrupts a non-forage job.
+        if (v.targetJob && v.targetJob !== existing) finishJob(v);
         v.targetJob = existing;
         existing.assigned = (existing.assigned || 0) + 1;
         noteJobAssignmentChanged(existing);

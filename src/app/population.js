@@ -6,6 +6,10 @@ export const PREGNANCY_TICKS = DAY_LENGTH * 2;
 export const CHILDHOOD_TICKS = DAY_LENGTH * 5;
 export const PREGNANCY_ATTEMPT_COOLDOWN_TICKS = Math.floor(DAY_LENGTH * 1.1);
 export const PREGNANCY_ATTEMPT_CHANCE = 0.12;
+// Short recheck cooldown for villagers that fail body-state eligibility
+// (tired, sad, sick, hungry). Keeps tryStartPregnancy off the hot path:
+// at TICKS_PER_SECOND=6 this is ~10 s of game time per re-evaluation.
+export const PREGNANCY_RECHECK_TICKS = 60;
 export const POPULATION_SOFT_BUFFER = 2;
 export const POPULATION_HARD_CAP = 80;
 export const FOOD_HEADROOM_PER_VILLAGER = 1.25;
@@ -21,6 +25,8 @@ export function createPopulation(opts) {
 
   const villagers = state.units.villagers;
   const storageTotals = state.stocks.totals;
+  // Drained every tick by flushPendingBirths (see src/app/tick.js); lifetime
+  // of any entry is < 1 tick, so we deliberately don't persist it in saves.
   const pendingBirths = [];
 
   function getWorld() { return state.world; }
@@ -122,17 +128,24 @@ export function createPopulation(opts) {
     return underCap && wellFed;
   }
 
+  function isPregnancyEligible(v) {
+    if (v.lifeStage !== 'adult') return false;
+    if (v.pregnancyTimer > 0) return false;
+    if ((v.starveStage || 0) >= 1) return false;
+    if (v.condition === 'sick') return false;
+    if ((v.energy || 0) < 0.4) return false;
+    if ((v.happy || 0) < 0.35) return false;
+    return true;
+  }
+
   function findBirthMate(v) {
     const tick = getTick();
     let best = null;
     let bestDist = Infinity;
     for (const other of villagers) {
       if (other === v) continue;
-      if (other.lifeStage !== 'adult') continue;
-      if (other.pregnancyTimer > 0) continue;
       if ((other.nextPregnancyTick || 0) > tick) continue;
-      if ((other.starveStage || 0) >= 2) continue;
-      if (other.condition !== 'normal' && other.condition !== 'hungry') continue;
+      if (!isPregnancyEligible(other)) continue;
       const dist = Math.abs((other.x | 0) - (v.x | 0)) + Math.abs((other.y | 0) - (v.y | 0));
       if (dist < bestDist) { best = other; bestDist = dist; }
     }
@@ -141,12 +154,11 @@ export function createPopulation(opts) {
 
   function tryStartPregnancy(v) {
     const tick = getTick();
-    if (v.lifeStage !== 'adult') return;
-    if (v.pregnancyTimer > 0) return;
-    if ((v.starveStage || 0) >= 1) return;
-    if (v.condition === 'sick') return;
-    if (v.energy < 0.4 || v.happy < 0.35) return;
     if (tick < (v.nextPregnancyTick || 0)) return;
+    if (!isPregnancyEligible(v)) {
+      v.nextPregnancyTick = tick + PREGNANCY_RECHECK_TICKS;
+      return;
+    }
     if (!canSupportBirth()) {
       v.nextPregnancyTick = Math.max(v.nextPregnancyTick || 0, tick + Math.floor(PREGNANCY_ATTEMPT_COOLDOWN_TICKS * 0.5));
       return;
@@ -229,6 +241,7 @@ export function createPopulation(opts) {
     housingCapacity,
     populationLimit,
     canSupportBirth,
+    isPregnancyEligible,
     findBirthMate,
     tryStartPregnancy,
     spawnChildNearParents,
