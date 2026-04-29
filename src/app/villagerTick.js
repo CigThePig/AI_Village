@@ -9,7 +9,7 @@ import {
   moodThought,
   seasonalHungerMultiplier
 } from './simulation.js';
-import { DAY_LENGTH, HUNT_RANGE, HUNT_RETRY_COOLDOWN } from './constants.js';
+import { DAY_LENGTH, HUNT_RANGE, HUNT_RETRY_COOLDOWN, ITEM } from './constants.js';
 import { BUILDINGS } from './world.js';
 import { CHILDHOOD_TICKS } from './population.js';
 import {
@@ -34,6 +34,12 @@ const REST_ENERGY_RECOVERY = 0.0024;
 const REST_MOOD_TICK = 0.0009;
 const REST_FINISH_MOOD = 0.05;
 const REST_HUNGER_MULT = 0.42;
+// Metabolism slows overnight regardless of whether the villager is asleep —
+// a campfire socializer or a midnight forager still burns less than at noon.
+// Stacks multiplicatively with REST_HUNGER_MULT so deep sleep at night
+// (~0.27x) is the cheapest state, and an awake daytime worker (1.0x) the
+// most expensive. Tick-rate only; not persisted, not read by scoring.
+const NIGHT_HUNGER_MULT = 0.65;
 
 // Phase 10 (S10): tightened decay + dehydrated threshold so dry stretches
 // matter. The pre-Phase-10 0.00018/tick reached the visit threshold (0.46)
@@ -149,7 +155,12 @@ export function createVillagerTick(opts) {
     const dehydrated = v.hydration < HYDRATION_LOW;
     // Phase 9 (B4/S7): winter raises drain ~15%, summer dips slightly.
     const seasonalHungerMult = seasonalHungerMultiplier(state?.world?.season ?? 0);
-    const hungerRate = (resting ? HUNGER_RATE * REST_HUNGER_MULT : HUNGER_RATE) * (hydratedBuff ? HYDRATION_HUNGER_MULT : (dehydrated ? HYDRATION_DEHYDRATED_PENALTY : 1)) * seasonalHungerMult;
+    const restMult = resting ? REST_HUNGER_MULT : 1;
+    const nightMult = nightNow ? NIGHT_HUNGER_MULT : 1;
+    const hydrationMult = hydratedBuff
+      ? HYDRATION_HUNGER_MULT
+      : (dehydrated ? HYDRATION_DEHYDRATED_PENALTY : 1);
+    const hungerRate = HUNGER_RATE * restMult * nightMult * hydrationMult * seasonalHungerMult;
     v.hunger += hungerRate;
 
     const tileX = v.x | 0;
@@ -403,6 +414,15 @@ export function createVillagerTick(opts) {
           }
         }
       }
+    }
+
+    // Proactive snack: once hunger crosses the peckish threshold but before
+    // stage 1's energy/mood drain kicks in, eat from our pack only. We do
+    // NOT raid camp storage at this stage — that's reserved for needsFood
+    // below — to avoid storage thrashing on a soft cue.
+    if (stage === 0 && v.hunger > STARVE_THRESH.peckish
+        && v.inv && v.inv.type === ITEM.FOOD) {
+      if (consumeFood(v)) { v.thought = moodThought(v, 'Snacking'); return; }
     }
 
     if (urgentFood) {

@@ -51,7 +51,7 @@ export function createPopulation(opts) {
       id: uid(),
       x, y,
       path: [],
-      hunger: rnd(0.2, 0.5),
+      hunger: rnd(0.05, 0.25),
       energy: rnd(0.5, 0.9),
       happy: rnd(0.4, 0.8),
       hydration: 0.7,
@@ -93,7 +93,7 @@ export function createPopulation(opts) {
     const v = newVillager(x, y);
     v.role = 'child';
     v.speed = 1.6 + rnd(-0.1, 0.1);
-    v.hunger = rnd(0.1, 0.3);
+    v.hunger = rnd(0.05, 0.15);
     v.energy = rnd(0.55, 0.85);
     v.happy = rnd(0.45, 0.85);
     v.lifeStage = 'child';

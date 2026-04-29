@@ -15,7 +15,10 @@ import { score as scoreJob, computeFamineSeverity } from '../ai/scoring.js';
 
 // Single source of truth for villager-tuning constants. villagerTick.js,
 // onArrive.js, and this module all read from here.
-export const STARVE_THRESH = { hungry: 0.82, starving: 1.08, sick: 1.18 };
+// `peckish` is a soft pre-stage-1 cue: villagers carrying food snack from
+// their pack once hunger crosses this so they don't slide into stage 1's
+// energy/mood drain. It deliberately does not trigger camp-storage runs.
+export const STARVE_THRESH = { peckish: 0.60, hungry: 0.82, starving: 1.08, sick: 1.18 };
 export const STARVE_COLLAPSE_TICKS = 140;
 export const STARVE_RECOVERY_TICKS = 280;
 export const STARVE_TOAST_COOLDOWN = 420;
