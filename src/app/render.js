@@ -16,7 +16,7 @@ import {
   tileToPxY
 } from './constants.js';
 import { LIGHTING, clamp01 } from './lighting.js';
-import { clamp } from './rng.js';
+import { clamp, hash2 } from './rng.js';
 import { context2d } from './canvas.js';
 import { SHADOW_TEXTURE, Tileset, makeCanvas, normalizeSeason, seasonName } from './tileset.js';
 import {
@@ -499,7 +499,23 @@ export function createRenderSystem(deps) {
 
     const season = normalizeSeason(world.season);
     const baseSet = Tileset.baseBySeason?.[season] || Tileset.base || {};
-    const fallback = Tileset.base?.grass || baseSet.grass;
+    const fallbackSet = baseSet.grass || Tileset.base?.grass;
+
+    // baseSet[kind] is an array of canvases (length 1 for sand/snow/rock,
+    // multiple for grass/forest/meadow/etc). Picking by hash2(x, y) gives a
+    // deterministic, repetition-breaking variant per tile that survives
+    // reloads and only re-evaluates on staticDirty.
+    const pickVariant = (set, x, y) => {
+      if (!set) return null;
+      if (Array.isArray(set)) {
+        if (set.length === 0) return null;
+        if (set.length === 1) return set[0];
+        return set[hash2(x, y) % set.length];
+      }
+      return set;
+    };
+
+    const fallback = pickVariant(fallbackSet, 0, 0);
 
     ensureRowMasksSize();
 
@@ -511,18 +527,18 @@ export function createRenderSystem(deps) {
         const i = rowStart + x;
         const t = world.tiles[i];
 
-        let img = baseSet.grass || fallback;
+        let img = pickVariant(baseSet.grass, x, y) || fallback;
 
-        if (t === TILES.GRASS) img = baseSet.grass || fallback;
-        else if (t === TILES.FOREST) img = baseSet.forest || baseSet.grass || fallback;
-        else if (t === TILES.FERTILE) img = baseSet.fertile || fallback;
-        else if (t === TILES.MEADOW) img = baseSet.meadow || fallback;
-        else if (t === TILES.MARSH) img = baseSet.marsh || fallback;
-        else if (t === TILES.SAND) img = baseSet.sand || fallback;
-        else if (t === TILES.SNOW) img = baseSet.snow || fallback;
-        else if (t === TILES.ROCK) img = baseSet.rock || fallback;
-        else if (t === TILES.WATER) img = baseSet.water || fallback;
-        else if (t === TILES.FARMLAND) img = baseSet.farmland || fallback;
+        if (t === TILES.GRASS) img = pickVariant(baseSet.grass, x, y) || fallback;
+        else if (t === TILES.FOREST) img = pickVariant(baseSet.forest, x, y) || pickVariant(baseSet.grass, x, y) || fallback;
+        else if (t === TILES.FERTILE) img = pickVariant(baseSet.fertile, x, y) || fallback;
+        else if (t === TILES.MEADOW) img = pickVariant(baseSet.meadow, x, y) || fallback;
+        else if (t === TILES.MARSH) img = pickVariant(baseSet.marsh, x, y) || fallback;
+        else if (t === TILES.SAND) img = pickVariant(baseSet.sand, x, y) || fallback;
+        else if (t === TILES.SNOW) img = pickVariant(baseSet.snow, x, y) || fallback;
+        else if (t === TILES.ROCK) img = pickVariant(baseSet.rock, x, y) || fallback;
+        else if (t === TILES.WATER) img = pickVariant(baseSet.water, x, y) || fallback;
+        else if (t === TILES.FARMLAND) img = pickVariant(baseSet.farmland, x, y) || fallback;
 
         if (img) g.drawImage(img, x * TILE, y * TILE);
 
@@ -1288,7 +1304,15 @@ export function createRenderSystem(deps) {
             const rect = entityDrawRect(x, y, cam);
             const raisedY = rect.y - Math.round(cam.z * TREE_VERTICAL_RAISE);
             const light = useMultiply ? 1 : sampleLightAt(world, x, y);
-            const treeSprite = Tileset.sprite.treeBySeason?.[season] || Tileset.sprite.tree;
+            const treeSet = Tileset.sprite.treeBySeason?.[season];
+            let treeSprite = null;
+            if (Array.isArray(treeSet) && treeSet.length > 0) {
+              treeSprite = treeSet[hash2(x, y, 17) % treeSet.length];
+            } else if (treeSet) {
+              treeSprite = treeSet;
+            } else {
+              treeSprite = Tileset.sprite.tree;
+            }
             if (treeSprite) {
               ctx.save();
               ctx.drawImage(treeSprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);

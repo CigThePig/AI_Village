@@ -1,6 +1,17 @@
 import { ENTITY_TILE_PX, TILE } from './constants.js';
 import { context2d } from './canvas.js';
-import { irnd } from './rng.js';
+import { hash2, irnd, seededFrom } from './rng.js';
+
+// Per-tile variant count for ground kinds that support visual variation. Three
+// variants is enough to break the obvious 192×192 stamping pattern without
+// inflating the bake time meaningfully.
+const GROUND_VARIANTS = 3;
+const TREE_VARIANTS = 3;
+
+function makeIrand(rng) {
+  if (!rng) return irnd;
+  return (a, b) => ((rng() * (b - a + 1)) | 0) + a;
+}
 
 const SEASON_NAMES = ['spring', 'summer', 'autumn', 'winter'];
 
@@ -78,26 +89,26 @@ const SEASON_PALETTES = [
   {
     name: 'spring',
     grass: {
-      base: '#2d703b',
-      blades: ['#3f9a50', '#4fb660', '#77d26f', '#2f8444'],
-      shadow: '#1f4f2b',
-      flowers: ['#f8e7a1', '#ffc5df', '#d7f3ff']
+      base: '#2d6a3a',
+      blades: ['#449152', '#58a45e', '#85c180', '#327a44'],
+      shadow: '#1f4a2a',
+      flowers: ['#f0dd9a', '#f3bcd4', '#cfe9f6']
     },
     forest: {
-      base: '#285f35',
-      blades: ['#347a43', '#429a55', '#5ebd67'],
-      shadow: '#1c4426'
+      base: '#234f2c',
+      blades: ['#316f3d', '#418c4f', '#5ea66a'],
+      shadow: '#173a22'
     },
     fertile: {
-      base: '#347c43',
-      blades: ['#51b968', '#419e55', '#82dc7a'],
-      shadow: '#245f31'
+      base: '#327443',
+      blades: ['#56a566', '#418f50', '#86c780'],
+      shadow: '#225a31'
     },
     meadow: {
-      base: '#3c8548',
-      blades: ['#61bb6d', '#4aa75a', '#93e084'],
-      shadow: '#2b6235',
-      flowers: ['#fff3ac', '#ffb8d5', '#c9f0ff', '#e9c9ff']
+      base: '#3c7e47',
+      blades: ['#62ac6c', '#4a9658', '#94ce85'],
+      shadow: '#2a5e35',
+      flowers: ['#f6ecaa', '#f5b8d2', '#c5ecf6', '#dcc4ee']
     },
     marsh: {
       base: '#255940',
@@ -128,52 +139,52 @@ const SEASON_PALETTES = [
       specks: ['#c8d8e8', '#eef8ff']
     },
     tree: {
-      trunk: '#68401f',
-      barkDark: '#4d2d17',
-      leafDark: '#255d31',
-      leafMid: '#348143',
-      leafLight: '#62bd62',
-      accent: '#b6e89a',
+      trunk: '#5e3b1d',
+      barkDark: '#41260f',
+      leafDark: '#22552d',
+      leafMid: '#347340',
+      leafLight: '#6caa6c',
+      accent: '#bedbb0',
       snow: null
     },
     berry: {
-      leafDark: '#2f6938',
-      leafMid: '#3d8848',
-      leafLight: '#5cad5c',
-      fruit: '#b74c6b',
-      fruitLight: '#e27791',
+      leafDark: '#2c5f33',
+      leafMid: '#3a7a44',
+      leafLight: '#5da265',
+      fruit: '#a64458',
+      fruitLight: '#d3768c',
       snow: null
     },
     crop: {
-      stem: '#64ad55',
-      leaf: '#86cc6b',
-      head: '#d9c35c',
+      stem: '#6ba35a',
+      leaf: '#90c275',
+      head: '#d2b95a',
       frost: null
     }
   },
   {
     name: 'summer',
     grass: {
-      base: '#2f6d35',
-      blades: ['#3c8f43', '#4fa94f', '#6fc55f', '#2b7a3a'],
-      shadow: '#204c26',
-      flowers: ['#f4db7b', '#f6a6c8']
+      base: '#2c6533',
+      blades: ['#3e8744', '#4d9b4f', '#75b465', '#2d703a'],
+      shadow: '#1d4524',
+      flowers: ['#ecd07a', '#eda5c2']
     },
     forest: {
-      base: '#245b2d',
-      blades: ['#31733a', '#3e8e47', '#56aa55'],
-      shadow: '#193f20'
+      base: '#1f4d28',
+      blades: ['#306a39', '#3d8044', '#549858'],
+      shadow: '#15391c'
     },
     fertile: {
-      base: '#326f37',
-      blades: ['#4fa854', '#3f9349', '#7cc76d'],
-      shadow: '#214e28'
+      base: '#316b38',
+      blades: ['#509853', '#418548', '#80b573'],
+      shadow: '#1f4628'
     },
     meadow: {
-      base: '#3b7c3f',
-      blades: ['#5dab5c', '#4b9950', '#80cf6b'],
-      shadow: '#2a5830',
-      flowers: ['#f8df70', '#f2a6c0', '#fff2a0']
+      base: '#3a763f',
+      blades: ['#5d9b5d', '#4b8c50', '#82bd72'],
+      shadow: '#28522e',
+      flowers: ['#f0d176', '#e7a4be', '#f3e09a']
     },
     marsh: {
       base: '#254f38',
@@ -204,52 +215,52 @@ const SEASON_PALETTES = [
       specks: ['#c0cfdd', '#eaf3fb']
     },
     tree: {
-      trunk: '#5f381c',
-      barkDark: '#432614',
-      leafDark: '#214f27',
-      leafMid: '#2f7636',
-      leafLight: '#54a94f',
-      accent: '#83d06a',
+      trunk: '#56331c',
+      barkDark: '#3a2110',
+      leafDark: '#1d4624',
+      leafMid: '#2d6a33',
+      leafLight: '#549952',
+      accent: '#94c481',
       snow: null
     },
     berry: {
-      leafDark: '#2c5f32',
-      leafMid: '#39793e',
-      leafLight: '#58a654',
-      fruit: '#9f384f',
-      fruitLight: '#d45b73',
+      leafDark: '#28552c',
+      leafMid: '#356c39',
+      leafLight: '#5b9858',
+      fruit: '#94364a',
+      fruitLight: '#c8576c',
       snow: null
     },
     crop: {
-      stem: '#5f9f48',
-      leaf: '#7dbd55',
-      head: '#e2c75c',
+      stem: '#5f924a',
+      leaf: '#85b25e',
+      head: '#d6bc5a',
       frost: null
     }
   },
   {
     name: 'autumn',
     grass: {
-      base: '#6d6938',
-      blades: ['#817b3f', '#9c8740', '#b9873a', '#5f5e33'],
-      shadow: '#4b4828',
-      leaves: ['#d27b31', '#bf4d2d', '#e2a03c']
+      base: '#675f35',
+      blades: ['#7a6f3a', '#947c3d', '#a87a3a', '#5b552f'],
+      shadow: '#443f25',
+      leaves: ['#c66e2c', '#a8462a', '#d3923a']
     },
     forest: {
-      base: '#5f5b32',
-      blades: ['#806a34', '#a46f32', '#ba8436'],
-      shadow: '#3f3b22'
+      base: '#564e2c',
+      blades: ['#7a6233', '#9e6b34', '#b07d3a'],
+      shadow: '#3a3320'
     },
     fertile: {
-      base: '#6a6338',
-      blades: ['#8a7c42', '#a0853f', '#c08f3b'],
-      shadow: '#4a4428'
+      base: '#675e36',
+      blades: ['#86763f', '#9a7e3e', '#b58940'],
+      shadow: '#443d25'
     },
     meadow: {
-      base: '#74683a',
-      blades: ['#9b7f3d', '#b8893a', '#d09a45'],
-      shadow: '#51472a',
-      flowers: ['#e6b85c', '#d77a45']
+      base: '#6f6238',
+      blades: ['#94793c', '#ad853f', '#c39146'],
+      shadow: '#4a4028',
+      flowers: ['#d8a85a', '#c97044']
     },
     marsh: {
       base: '#455139',
@@ -280,26 +291,26 @@ const SEASON_PALETTES = [
       specks: ['#c3cfdb', '#eef5fb']
     },
     tree: {
-      trunk: '#5d3519',
-      barkDark: '#3f2210',
-      leafDark: '#8a3f24',
-      leafMid: '#b75f2d',
-      leafLight: '#e09a3a',
-      accent: '#f0c35b',
+      trunk: '#553118',
+      barkDark: '#371e0e',
+      leafDark: '#7c3923',
+      leafMid: '#a6552d',
+      leafLight: '#c98a3c',
+      accent: '#e2b15a',
       snow: null
     },
     berry: {
-      leafDark: '#5c4f2c',
-      leafMid: '#806b33',
-      leafLight: '#b9863c',
-      fruit: '#8e2f3e',
-      fruitLight: '#c85662',
+      leafDark: '#564a2b',
+      leafMid: '#766332',
+      leafLight: '#a87c3c',
+      fruit: '#852b39',
+      fruitLight: '#bb5160',
       snow: null
     },
     crop: {
-      stem: '#96783f',
-      leaf: '#b39145',
-      head: '#e0b854',
+      stem: '#8a703e',
+      leaf: '#a78743',
+      head: '#d2ab52',
       frost: null
     }
   },
@@ -381,21 +392,21 @@ const SEASON_PALETTES = [
   }
 ];
 
-function noisePixels(g, colors, count, alpha = 1) {
+function noisePixels(g, colors, count, alpha = 1, irand = irnd) {
   if (!g || !colors || !colors.length) return;
   const oldAlpha = g.globalAlpha;
   g.globalAlpha = alpha;
   for (let i = 0; i < count; i++) {
-    px(g, irnd(0, TILE - 1), irnd(0, TILE - 1), colors[i % colors.length]);
+    px(g, irand(0, TILE - 1), irand(0, TILE - 1), colors[i % colors.length]);
   }
   g.globalAlpha = oldAlpha;
 }
 
-function grassClumps(g, colors, count) {
+function grassClumps(g, colors, count, irand = irnd) {
   if (!g || !colors || !colors.length) return;
   for (let i = 0; i < count; i++) {
-    const x = irnd(0, TILE - 2);
-    const y = irnd(2, TILE - 3);
+    const x = irand(0, TILE - 2);
+    const y = irand(2, TILE - 3);
     const c = colors[i % colors.length];
     px(g, x, y, c);
     if (i % 3 === 0) px(g, x + 1, y, c);
@@ -412,13 +423,13 @@ function cornerShade(g, color) {
   g.globalAlpha = oldAlpha;
 }
 
-function snowDust(g, colors, count = 22) {
+function snowDust(g, colors, count = 22, irand = irnd) {
   if (!g || !colors || !colors.length) return;
   const oldAlpha = g.globalAlpha;
   g.globalAlpha = 0.55;
   for (let i = 0; i < count; i++) {
-    const x = irnd(0, TILE - 2);
-    const y = irnd(0, TILE - 2);
+    const x = irand(0, TILE - 2);
+    const y = irand(0, TILE - 2);
     const c = colors[i % colors.length];
     px(g, x, y, c);
     if (i % 4 === 0) px(g, x + 1, y, c);
@@ -426,24 +437,24 @@ function snowDust(g, colors, count = 22) {
   g.globalAlpha = oldAlpha;
 }
 
-function leafScatter(g, colors, count = 8) {
+function leafScatter(g, colors, count = 8, irand = irnd) {
   if (!g || !colors || !colors.length) return;
   for (let i = 0; i < count; i++) {
-    const x = irnd(1, TILE - 3);
-    const y = irnd(2, TILE - 3);
+    const x = irand(1, TILE - 3);
+    const y = irand(2, TILE - 3);
     const c = colors[i % colors.length];
     px(g, x, y, c);
     if (i % 2 === 0) px(g, x + 1, y, c);
   }
 }
 
-function flowerScatter(g, colors, count = 5) {
+function flowerScatter(g, colors, count = 5, irand = irnd) {
   if (!g || !colors || !colors.length) return;
   const oldAlpha = g.globalAlpha;
   g.globalAlpha = 0.9;
   for (let i = 0; i < count; i++) {
-    const x = irnd(1, TILE - 2);
-    const y = irnd(2, TILE - 3);
+    const x = irand(1, TILE - 2);
+    const y = irand(2, TILE - 3);
     const c = colors[i % colors.length];
     px(g, x, y, c);
     if (i % 3 === 0) px(g, x + 1, y, c);
@@ -451,15 +462,19 @@ function flowerScatter(g, colors, count = 5) {
   g.globalAlpha = oldAlpha;
 }
 
-function makeGroundTile(palette, kind) {
+function makeGroundTile(palette, kind, variantSeed = 0) {
   const c = makeCanvas(TILE, TILE);
   const g = context2d(c);
   if (!g) return c;
 
+  // Each variant gets its own deterministic RNG so blade/flower/leaf noise
+  // differs between variants but is reproducible across reloads.
+  const irand = makeIrand(seededFrom(variantSeed));
+
   const p = palette[kind] || palette.grass;
   rect(g, 0, 0, TILE, TILE, p.base);
 
-  grassClumps(g, p.blades || [], kind === 'forest' ? 32 : 42);
+  grassClumps(g, p.blades || [], kind === 'forest' ? 32 : 42, irand);
 
   if (kind === 'marsh' && p.puddle) {
     const oldAlpha = g.globalAlpha;
@@ -471,17 +486,17 @@ function makeGroundTile(palette, kind) {
   }
 
   if (palette.name === 'spring' && kind === 'meadow') {
-    flowerScatter(g, p.flowers, 8);
+    flowerScatter(g, p.flowers, 8, irand);
   } else if (palette.name === 'summer' && kind === 'meadow') {
-    flowerScatter(g, p.flowers, 5);
+    flowerScatter(g, p.flowers, 5, irand);
   }
 
   if (palette.name === 'autumn') {
-    leafScatter(g, p.leaves || palette.grass.leaves, kind === 'forest' ? 12 : 7);
+    leafScatter(g, p.leaves || palette.grass.leaves, kind === 'forest' ? 12 : 7, irand);
   }
 
   if (palette.name === 'winter') {
-    snowDust(g, p.snowFlecks || palette.grass.snowFlecks, kind === 'forest' ? 26 : 34);
+    snowDust(g, p.snowFlecks || palette.grass.snowFlecks, kind === 'forest' ? 26 : 34, irand);
   }
 
   cornerShade(g, p.shadow || palette.grass.shadow);
@@ -617,7 +632,90 @@ function drawCanopyBlob(g, x, y, w, h, color) {
   rect(g, x + 1, y + 1, w - 2, h - 2, color);
 }
 
-function drawTree(g, season = 0) {
+// Sun comes from the upper-left (LIGHT_VECTOR ≈ (-0.75, -0.65)), so canopy
+// rim highlights belong on the upper-left edge — that anchor point is shared
+// across all three silhouette variants so a forest reads as one lit scene.
+function drawCanopyRim(g, x, y, w, h, color) {
+  rect(g, x + 1, y, Math.max(2, w - 4), 1, color);
+  rect(g, x, y + 1, 1, Math.max(2, h - 4), color);
+}
+
+function drawTreeRound(g, p) {
+  rect(g, 14, 17, 5, 10, p.trunk);
+  rect(g, 13, 22, 3, 4, p.barkDark);
+  rect(g, 18, 21, 3, 5, p.barkDark);
+  rect(g, 12, 26, 4, 2, p.barkDark);
+  rect(g, 18, 26, 4, 2, p.barkDark);
+
+  drawCanopyBlob(g, 8, 8, 17, 13, p.leafDark);
+  drawCanopyBlob(g, 6, 13, 21, 10, p.leafMid);
+  drawCanopyBlob(g, 11, 5, 12, 10, p.leafMid);
+  rect(g, 12, 7, 7, 2, p.leafLight);
+  rect(g, 9, 15, 6, 2, p.leafLight);
+  rect(g, 18, 13, 5, 2, p.accent);
+  drawCanopyRim(g, 8, 6, 14, 4, p.accent);
+  px(g, 22, 18, p.leafDark);
+  px(g, 7, 17, p.leafDark);
+}
+
+function drawTreeConical(g, p) {
+  rect(g, 15, 19, 3, 8, p.trunk);
+  rect(g, 14, 23, 2, 4, p.barkDark);
+  rect(g, 18, 23, 2, 4, p.barkDark);
+
+  // Three stacked tiers, narrowing toward the top.
+  drawCanopyBlob(g, 9, 17, 15, 7, p.leafDark);
+  drawCanopyBlob(g, 11, 11, 11, 7, p.leafMid);
+  drawCanopyBlob(g, 13, 5, 7, 7, p.leafMid);
+  rect(g, 13, 17, 6, 2, p.leafLight);
+  rect(g, 14, 11, 5, 2, p.leafLight);
+  rect(g, 15, 6, 3, 2, p.accent);
+  drawCanopyRim(g, 11, 11, 6, 2, p.accent);
+  drawCanopyRim(g, 9, 17, 6, 2, p.accent);
+  px(g, 23, 22, p.leafDark);
+  px(g, 8, 22, p.leafDark);
+}
+
+function drawTreeSparse(g, p) {
+  rect(g, 14, 14, 4, 13, p.trunk);
+  rect(g, 13, 18, 2, 6, p.barkDark);
+  rect(g, 17, 20, 2, 4, p.barkDark);
+  rect(g, 12, 26, 4, 2, p.barkDark);
+  rect(g, 18, 26, 4, 2, p.barkDark);
+
+  // Branch silhouettes peeking through a thinner canopy.
+  rect(g, 8, 14, 6, 1, p.barkDark);
+  rect(g, 18, 12, 6, 1, p.barkDark);
+
+  drawCanopyBlob(g, 7, 7, 9, 8, p.leafDark);
+  drawCanopyBlob(g, 16, 8, 10, 9, p.leafDark);
+  drawCanopyBlob(g, 11, 4, 10, 8, p.leafMid);
+  rect(g, 8, 9, 5, 2, p.leafLight);
+  rect(g, 18, 10, 5, 2, p.leafLight);
+  rect(g, 13, 5, 5, 2, p.accent);
+  drawCanopyRim(g, 7, 5, 7, 3, p.accent);
+}
+
+function drawTreeWinter(g, p) {
+  rect(g, 14, 17, 5, 10, p.trunk);
+  rect(g, 13, 22, 3, 4, p.barkDark);
+  rect(g, 18, 21, 3, 5, p.barkDark);
+  rect(g, 12, 26, 4, 2, p.barkDark);
+  rect(g, 18, 26, 4, 2, p.barkDark);
+
+  rect(g, 15, 8, 2, 10, p.barkDark);
+  rect(g, 10, 12, 7, 2, p.barkDark);
+  rect(g, 17, 13, 7, 2, p.barkDark);
+  rect(g, 8, 9, 4, 2, p.snow);
+  rect(g, 19, 10, 7, 2, p.snow);
+  rect(g, 12, 5, 8, 3, p.leafLight);
+  rect(g, 9, 8, 14, 4, p.leafMid);
+  rect(g, 7, 13, 18, 4, p.leafDark);
+  rect(g, 10, 7, 8, 1, p.accent);
+  rect(g, 7, 12, 12, 1, p.accent);
+}
+
+function drawTreeVariant(g, season = 0, variant = 0) {
   if (!g) return;
   const palette = SEASON_PALETTES[normalizeSeason(season)];
   const p = palette.tree;
@@ -627,34 +725,15 @@ function drawTree(g, season = 0) {
   rect(g, 8, 25, 17, 3, '#000000');
   g.globalAlpha = 1;
 
-  rect(g, 14, 17, 5, 10, p.trunk);
-  rect(g, 13, 22, 3, 4, p.barkDark);
-  rect(g, 18, 21, 3, 5, p.barkDark);
-  rect(g, 12, 26, 4, 2, p.barkDark);
-  rect(g, 18, 26, 4, 2, p.barkDark);
-
   if (winter) {
-    rect(g, 15, 8, 2, 10, p.barkDark);
-    rect(g, 10, 12, 7, 2, p.barkDark);
-    rect(g, 17, 13, 7, 2, p.barkDark);
-    rect(g, 8, 9, 4, 2, p.snow);
-    rect(g, 19, 10, 7, 2, p.snow);
-    rect(g, 12, 5, 8, 3, p.leafLight);
-    rect(g, 9, 8, 14, 4, p.leafMid);
-    rect(g, 7, 13, 18, 4, p.leafDark);
-    rect(g, 10, 7, 8, 1, p.accent);
-    rect(g, 7, 12, 12, 1, p.accent);
+    drawTreeWinter(g, p);
     return;
   }
 
-  drawCanopyBlob(g, 8, 8, 17, 13, p.leafDark);
-  drawCanopyBlob(g, 6, 13, 21, 10, p.leafMid);
-  drawCanopyBlob(g, 11, 5, 12, 10, p.leafMid);
-  rect(g, 12, 7, 7, 2, p.leafLight);
-  rect(g, 9, 15, 6, 2, p.leafLight);
-  rect(g, 18, 13, 5, 2, p.accent);
-  px(g, 22, 18, p.leafDark);
-  px(g, 7, 17, p.leafDark);
+  const v = ((variant | 0) % TREE_VARIANTS + TREE_VARIANTS) % TREE_VARIANTS;
+  if (v === 1) drawTreeConical(g, p);
+  else if (v === 2) drawTreeSparse(g, p);
+  else drawTreeRound(g, p);
 }
 
 function drawBerry(g, season = 0) {
@@ -871,24 +950,34 @@ function buildTileset() {
       const palette = SEASON_PALETTES[s];
       const base = {};
 
-      base.grass = makeGroundTile(palette, 'grass');
-      base.forest = makeGroundTile(palette, 'forest');
-      base.fertile = makeGroundTile(palette, 'fertile');
-      base.meadow = makeGroundTile(palette, 'meadow');
-      base.marsh = makeGroundTile(palette, 'marsh');
-      base.sand = makeSandTile(palette);
-      base.snow = makeSnowTile(palette);
-      base.rock = makeRockTile(palette);
-      base.water = makeWaterBase(palette);
-      base.farmland = makeFarmlandTile(palette);
+      // Grassy tiles get GROUND_VARIANTS unique bakes so the static albedo
+      // doesn't read as a stamped grid. Variant 0 doubles as the legacy
+      // single-canvas fallback for any consumer that picks a fixed index.
+      const variants = (kind) => Array.from(
+        { length: GROUND_VARIANTS },
+        (_, v) => makeGroundTile(palette, kind, hash2(s, v, kind.charCodeAt(0)))
+      );
+      base.grass = variants('grass');
+      base.forest = variants('forest');
+      base.fertile = variants('fertile');
+      base.meadow = variants('meadow');
+      base.marsh = variants('marsh');
+      base.sand = [makeSandTile(palette)];
+      base.snow = [makeSnowTile(palette)];
+      base.rock = [makeRockTile(palette)];
+      base.water = [makeWaterBase(palette)];
+      base.farmland = [makeFarmlandTile(palette)];
 
       Tileset.baseBySeason[s] = base;
       Tileset.waterOverlayBySeason[s] = makeWaterOverlayFrames(palette);
 
-      Tileset.sprite.treeBySeason[s] = makeSprite(
-        ENTITY_TILE_PX,
-        ENTITY_TILE_PX,
-        g => drawTree(g, s)
+      Tileset.sprite.treeBySeason[s] = Array.from(
+        { length: TREE_VARIANTS },
+        (_, v) => makeSprite(
+          ENTITY_TILE_PX,
+          ENTITY_TILE_PX,
+          g => drawTreeVariant(g, s, v)
+        )
       );
 
       Tileset.sprite.berryBySeason[s] = makeSprite(
@@ -907,7 +996,7 @@ function buildTileset() {
     Tileset.base = Tileset.baseBySeason[0];
     Tileset.waterOverlay = Tileset.waterOverlayBySeason[0];
 
-    Tileset.sprite.tree = Tileset.sprite.treeBySeason[0];
+    Tileset.sprite.tree = Tileset.sprite.treeBySeason[0]?.[0] || null;
     Tileset.sprite.berry = Tileset.sprite.berryBySeason[0];
     Tileset.sprite.sprout = Tileset.sprite.sproutBySeason[0];
   } catch (e) {
