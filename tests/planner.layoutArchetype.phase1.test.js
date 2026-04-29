@@ -232,8 +232,10 @@ test('Phase 1: recomputeOccupancy rebuilds the occupancy map from a live buildin
     `housing slot ${housingSlot.id} should report occupancy=2, got ${layout.occupancy.get(housingSlot.id)}`);
 });
 
-test('Phase 1: SAVE_VERSION is 8 and SAVE_MIGRATIONS exposes a no-op entry for v7→v8', () => {
-  assert.equal(SAVE_VERSION, 8, 'SAVE_VERSION must be bumped to 8 for the layout addition');
+test('Phase 1: SAVE_MIGRATIONS exposes a no-op entry for v7→v8', () => {
+  // Phase 2 bumps SAVE_VERSION past 8; assert the v7→v8 hop still exists and
+  // is a no-op so old saves can chain through it on the way to current.
+  assert.ok(SAVE_VERSION >= 8, `SAVE_VERSION must be ≥ 8 (got ${SAVE_VERSION})`);
   const migrate7 = SAVE_MIGRATIONS.get(7);
   assert.equal(typeof migrate7, 'function', 'v7→v8 migration entry must exist');
   const probe = { foo: 'bar' };

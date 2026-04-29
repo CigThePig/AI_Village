@@ -104,8 +104,10 @@ function makeSystem() {
   return { sys, world, getRegenCount: () => regenCount };
 }
 
-test('Phase 1: SAVE_VERSION is 8 and the v7 migration is a no-op', () => {
-  assert.equal(SAVE_VERSION, 8);
+test('Phase 1: SAVE_VERSION includes the layout-template bump and the v7 migration is a no-op', () => {
+  // Phase 2 bumps SAVE_VERSION beyond 8; this test still gates that the v7
+  // entry exists and is benign for old saves coming up through Phase 1.
+  assert.ok(SAVE_VERSION >= 8, `SAVE_VERSION must be ≥ 8 (got ${SAVE_VERSION})`);
   const m = SAVE_MIGRATIONS.get(7);
   assert.equal(typeof m, 'function');
   const probe = { saveVersion: 7, seed: 5 };

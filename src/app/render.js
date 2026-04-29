@@ -32,6 +32,7 @@ import {
   buildingCenter,
   getFootprint
 } from './world.js';
+import { findFarmPlotForTile } from './layout.js';
 import { isNightAmbient } from './simulation.js';
 
 export function createRenderSystem(deps) {
@@ -687,6 +688,35 @@ export function createRenderSystem(deps) {
     fields: 'rgba(150, 220, 120, 0.45)',
     wells: 'rgba(80, 160, 220, 0.5)'
   };
+
+  // Phase 2 — debug-only overlay that strokes each rectangular farm plot and
+  // labels it with id, dimensions, and an orientation glyph. Mirrors the
+  // Phase 1 drawLayoutOverlay style so reviewers see plot vs. slot in the
+  // same idiom.
+  function drawPlotOverlay(world, camState) {
+    const ctx = getCtx();
+    if (!ctx || !world || !Array.isArray(world.farmPlots) || world.farmPlots.length === 0) return;
+    ctx.save();
+    ctx.lineWidth = Math.max(1, camState.z);
+    for (const plot of world.farmPlots) {
+      if (!plot) continue;
+      const px = tileToPxX(plot.x, camState);
+      const py = tileToPxY(plot.y, camState);
+      const w = plot.w * TILE * camState.z;
+      const h = plot.h * TILE * camState.z;
+      const stroke = plot.abutsWells ? 'rgba(255, 200, 80, 0.95)' : 'rgba(220, 220, 80, 0.85)';
+      const fill = plot.abutsWells ? 'rgba(255, 200, 80, 0.12)' : 'rgba(220, 220, 80, 0.10)';
+      ctx.strokeStyle = stroke;
+      ctx.fillStyle = fill;
+      ctx.fillRect(px, py, w, h);
+      ctx.strokeRect(px, py, w, h);
+      const glyph = plot.orientation === 'horizontal' ? '↔' : '↕';
+      ctx.fillStyle = '#0a0c10';
+      ctx.font = `${Math.max(8, Math.round(8 * camState.z))}px system-ui, sans-serif`;
+      ctx.fillText(`${plot.id} ${plot.w}x${plot.h} ${glyph}`, px + 2, py + Math.max(10, 10 * camState.z));
+    }
+    ctx.restore();
+  }
 
   function drawLayoutOverlay(layout, camState) {
     const ctx = getCtx();
@@ -1530,8 +1560,23 @@ export function createRenderSystem(deps) {
             const sproutSet = Tileset.sprite.sproutBySeason?.[season] || Tileset.sprite.sprout;
             const sproutSprite = sproutSet?.[stageIndex] || Tileset.sprite.sprout?.[stageIndex];
             if (sproutSprite) {
+              // Phase 2: stagger crop sprites perpendicular to the plot's row
+              // axis so plots read as rows of crops instead of an undifferentiated
+              // patch. Magnitude is one in-tile step (~2 device px @ z=1) so the
+              // shift survives at small zoom but never overlaps neighbouring tiles.
+              let dx = 0;
+              let dy = 0;
+              const plot = findFarmPlotForTile(world, x, y);
+              if (plot) {
+                const stagger = Math.max(1, Math.round(rect.size * 0.12));
+                if (plot.orientation === 'horizontal') {
+                  dy = ((y - plot.y) % 2 === 0) ? -stagger : stagger;
+                } else {
+                  dx = ((x - plot.x) % 2 === 0) ? -stagger : stagger;
+                }
+              }
               ctx.save();
-              ctx.drawImage(sproutSprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+              ctx.drawImage(sproutSprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x + dx, rect.y + dy, rect.size, rect.size);
               ctx.restore();
             }
           }
@@ -1667,6 +1712,10 @@ export function createRenderSystem(deps) {
       // small cross — purely additive, no impact when the flag is off.
       if (typeof window !== 'undefined' && window.AIV_DEBUG_SLOTS && world.layout) {
         drawLayoutOverlay(world.layout, cam);
+      }
+      // Phase 2: optional plot rectangle overlay, gated by AIV_DEBUG_PLOTS.
+      if (typeof window !== 'undefined' && window.AIV_DEBUG_PLOTS && world.farmPlots) {
+        drawPlotOverlay(world, cam);
       }
       drawPostFx();
       drawQueuedVillagerLabels(ambient);

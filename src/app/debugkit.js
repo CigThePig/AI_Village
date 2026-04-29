@@ -203,6 +203,19 @@ export function createDebugKitBridge(opts) {
           activeBuildingId: v.activeBuildingId ?? null,
         }))
       : [];
+    // Phase 2: surface the rectangular farm plots (a small, fully JSON-safe
+    // array) so the debug overlay's refresh button can show plot counts and
+    // tests/tools can introspect plot geometry without poking world directly.
+    const farmPlots = Array.isArray(world?.farmPlots)
+      ? world.farmPlots.map((p) => ({
+          id: p.id,
+          slotId: p.slotId,
+          x: p.x, y: p.y, w: p.w, h: p.h,
+          orientation: p.orientation,
+          abutsWells: !!p.abutsWells,
+          abutsNeighbor: !!p.abutsNeighbor
+        }))
+      : [];
     return {
       frame: world?.__debug?.lastFrame ?? 0,
       timeOfDay: snapshotTime,
@@ -210,6 +223,7 @@ export function createDebugKitBridge(opts) {
       lightingMode: LIGHTING?.mode ?? 'unknown',
       multiplyComposite: LIGHTING?.useMultiplyComposite === true,
       layout,
+      farmPlots,
       villagerDetails,
     };
   }
