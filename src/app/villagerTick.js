@@ -20,7 +20,8 @@ import {
   STORAGE_IDLE_BASE,
   STORAGE_IDLE_COOLDOWN,
   restDurationTicks,
-  wantsToSleep
+  wantsToSleep,
+  workEffortMultiplier
 } from './villagerAI.js';
 
 // Tick-only knobs (decay rates / per-frame deltas) live next to the function
@@ -35,8 +36,13 @@ const REST_MOOD_TICK = 0.0009;
 const REST_FINISH_MOOD = 0.05;
 const REST_HUNGER_MULT = 0.42;
 
-const HYDRATION_DECAY = 0.00018;
-const HYDRATION_LOW = 0.28;
+// Phase 10 (S10): tightened decay + dehydrated threshold so dry stretches
+// matter. The pre-Phase-10 0.00018/tick reached the visit threshold (0.46)
+// only once per day; 0.00028/tick puts that ~1929 ticks after drinking, so
+// wells get visited ~2× per day and the dehydrated penalty (raised to 0.32)
+// is reachable in normal play instead of just edge cases.
+const HYDRATION_DECAY = 0.00028;
+const HYDRATION_LOW = 0.32;
 const HYDRATION_HUNGER_MULT = 0.9;
 const HYDRATION_FATIGUE_BONUS = 0.8;
 const HYDRATION_DEHYDRATED_PENALTY = 1.12;
@@ -367,7 +373,11 @@ export function createVillagerTick(opts) {
         } else {
           const def = BUILDINGS[b.kind] || {};
           const laborGoal = def.buildLaborTicks | 0;
-          b.laborProgress = (b.laborProgress | 0) + 1;
+          // Phase 10 (S5): tired/sick villagers contribute less labor per
+          // tick. Drop the `| 0` truncation so the fractional accumulation
+          // is preserved across ticks; the `>=` completion check still
+          // works fine on a float.
+          b.laborProgress = (b.laborProgress || 0) + workEffortMultiplier(v);
           noteBuildingActivity(b, 'use');
           if (b.laborProgress >= laborGoal) {
             b.built = 1;
