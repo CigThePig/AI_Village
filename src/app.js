@@ -48,7 +48,8 @@ import {
 } from './app/world.js';
 import {
   createTimeOfDay,
-  normalizeExperienceLedger
+  normalizeExperienceLedger,
+  seasonalGrowthMultiplier
 } from './app/simulation.js';
 
 if (import.meta.env?.DEV) {
@@ -692,7 +693,9 @@ function seasonTick(){
     if(prev<=0 || prev>=240) continue;
     const y=(i/GRID_W)|0, x=i%GRID_W;
     // Crop balance knob: faster base growth to help farms stabilize food.
-    let delta=1.2;
+    // Phase 9 (B4/S7): season multiplier on base growth only; booster
+    // bonuses layer on top so wells/farmplots partially mitigate winter.
+    let delta = 1.2 * seasonalGrowthMultiplier(world.season, world.tSeason / SEASON_LEN);
     if(hasFarmBoosters){
       const { growthBonus } = agricultureBonusesAt(x,y);
       if(growthBonus>0){
