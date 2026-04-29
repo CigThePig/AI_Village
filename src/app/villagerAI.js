@@ -633,6 +633,10 @@ export function createVillagerAI(opts) {
       let supplyStatus = null;
       let buildTarget = null;
       if (j.type === 'hunt' && !v.equippedBow) continue;
+      // Phase 7: build jobs decrement `assigned` when the first builder
+      // arrives at the site (see onArrive.js build branch), so this skip
+      // gates "in-flight to job" rather than "construction in progress" —
+      // a second villager can join an already-staffed build site.
       if (j.assigned >= 1) continue;
       if (j.type === 'build') {
         buildTarget = buildings.find(bb => bb.id === j.bid);

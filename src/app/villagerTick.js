@@ -1,12 +1,14 @@
 import { clamp } from './rng.js';
 import {
   addJobExperience,
+  applySkillGain,
   isDawnAmbient,
   isNightAmbient,
   moodMotivation,
   moodThought
 } from './simulation.js';
 import { DAY_LENGTH, HUNT_RANGE, HUNT_RETRY_COOLDOWN } from './constants.js';
+import { BUILDINGS } from './world.js';
 import { CHILDHOOD_TICKS } from './population.js';
 import {
   HYDRATION_BUFF_TICKS,
@@ -55,6 +57,10 @@ export function createVillagerTick(opts) {
     getBuildingById,
     noteBuildingActivity,
     endBuildingStay,
+    cancelHaulJobsForBuilding,
+    finishJob,
+    markStaticDirty,
+    markEmittersDirty,
     issueStarveToast,
     enterSickState,
     suppressJob,
@@ -130,6 +136,7 @@ export function createVillagerTick(opts) {
     const blackboard = state.bb;
     const buildings = state.units.buildings;
     const jobs = state.units.jobs;
+    const storageTotals = state.stocks.totals;
 
     const resting = v.state === 'resting';
     const hydrationDecay = HYDRATION_DECAY * (resting ? 0.55 : 1);
@@ -322,6 +329,63 @@ export function createVillagerTick(opts) {
           v.thought = moodThought(v, 'Organized');
         } else {
           return;
+        }
+      }
+    }
+
+    // Phase 7 (B3/S6): the 'building' transient state accumulates labor on a
+    // build site that already has its materials. The job stays in the queue
+    // until laborProgress reaches buildLaborTicks; if the villager bails out
+    // (urgentFood, missing site), another villager can pick the job up and
+    // resume from the existing laborProgress.
+    if (v.state === 'building') {
+      if (urgentFood) {
+        endBuildingStay(v);
+        v.state = 'idle';
+        finishJob(v, false);
+      } else {
+        const b = getBuildingById(v.activeBuildingId)
+          || (v.targetJob ? buildings.find(bb => bb.id === v.targetJob.bid) : null);
+        if (!b) {
+          endBuildingStay(v);
+          v.state = 'idle';
+          finishJob(v, true);
+        } else if (b.built >= 1) {
+          endBuildingStay(v);
+          v.state = 'idle';
+          finishJob(v, true);
+        } else {
+          const def = BUILDINGS[b.kind] || {};
+          const laborGoal = def.buildLaborTicks | 0;
+          b.laborProgress = (b.laborProgress | 0) + 1;
+          noteBuildingActivity(b, 'use');
+          if (b.laborProgress >= laborGoal) {
+            b.built = 1;
+            if (!b.spent) b.spent = { wood: 0, stone: 0 };
+            b.spent.wood = def.wood || 0;
+            b.spent.stone = def.stone || 0;
+            b.progress = def.cost || ((def.wood || 0) + (def.stone || 0));
+            if (!b.store) b.store = { wood: 0, stone: 0, food: 0 };
+            for (const res of ['wood', 'stone', 'food']) {
+              const leftover = b.store[res] || 0;
+              if (leftover > 0) {
+                storageTotals[res] = (storageTotals[res] || 0) + leftover;
+                b.store[res] = 0;
+              }
+            }
+            if (b.kind === 'campfire') markEmittersDirty();
+            cancelHaulJobsForBuilding(b);
+            markStaticDirty();
+            applySkillGain(v, 'constructionSkill', 0.02, 0.9, 1);
+            addJobExperience(v, 'build', 3);
+            v.thought = moodThought(v, 'Built');
+            endBuildingStay(v);
+            v.state = 'idle';
+            finishJob(v, true);
+          } else {
+            v.thought = moodThought(v, 'Building');
+            return;
+          }
         }
       }
     }

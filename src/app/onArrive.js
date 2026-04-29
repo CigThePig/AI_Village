@@ -268,76 +268,101 @@ export function createOnArrive(opts) {
       finishJob(v, true);
     }
     else if (v.state === 'build') {
-      let remove = false;
       const b = buildings.find(bb => bb.id === v.targetJob?.bid);
-      if (b) {
-        ensureBuildingData(b);
-        const def = BUILDINGS[b.kind] || {};
-        const cost = def.cost || ((def.wood || 0) + (def.stone || 0));
-        if (b.built < 1) {
-          const store = b.store || {};
-          const spent = b.spent || { wood: 0, stone: 0 };
-          let used = 0;
-          if (def.wood) {
-            const needWood = Math.max(0, (def.wood || 0) - (spent.wood || 0));
-            if (needWood > 0 && (store.wood || 0) > 0) {
-              const take = Math.min(needWood, store.wood);
-              store.wood -= take;
-              spent.wood = (spent.wood || 0) + take;
-              used += take;
-            }
-          }
-          if (def.stone) {
-            const needStone = Math.max(0, (def.stone || 0) - (spent.stone || 0));
-            if (needStone > 0 && (store.stone || 0) > 0) {
-              const take = Math.min(needStone, store.stone);
-              store.stone -= take;
-              spent.stone = (spent.stone || 0) + take;
-              used += take;
-            }
-          }
-          b.progress = (spent.wood || 0) + (spent.stone || 0);
-          if (b.progress >= cost) {
-            b.built = 1;
-            spent.wood = def.wood || 0;
-            spent.stone = def.stone || 0;
-            b.progress = cost;
-            // Return any excess back to storage so over-delivered material
-            // does not get trapped inside the building (audit #28).
-            for (const res of ['wood', 'stone', 'food']) {
-              const leftover = store[res] || 0;
-              if (leftover > 0) {
-                storageTotals[res] = (storageTotals[res] || 0) + leftover;
-                store[res] = 0;
-              }
-            }
-            if (b.kind === 'campfire') markEmittersDirty();
-            cancelHaulJobsForBuilding(b);
-            markStaticDirty();
-            v.thought = moodThought(v, 'Built');
-            remove = true;
-          } else {
-            // Under supply-first construction the build job only exists once
-            // b.store fully covers the cost, so a single visit completes the
-            // build. Reaching this branch means materials drifted (e.g. a
-            // load-time race); leave the planner to re-request next tick.
-            v.thought = moodThought(v, used > 0 ? 'Building' : 'Needs supplies');
-          }
-        } else {
-          v.thought = moodThought(v, 'Built');
-          cancelHaulJobsForBuilding(b);
-          remove = true;
-        }
-      } else {
+      if (!b) {
         const bid = v.targetJob?.bid;
         if (bid) { cancelHaulJobsForBuilding({ id: bid }); }
         v.thought = moodThought(v, 'Site missing');
-        remove = true;
+        addJobExperience(v, 'build', 1);
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
       }
-      applySkillGain(v, 'constructionSkill', remove ? 0.02 : 0.012, 0.9, 1);
-      addJobExperience(v, 'build', remove ? 3 : 1);
-      v.state = 'idle';
-      finishJob(v, remove);
+      ensureBuildingData(b);
+      const def = BUILDINGS[b.kind] || {};
+      const cost = def.cost || ((def.wood || 0) + (def.stone || 0));
+      if (b.built >= 1) {
+        v.thought = moodThought(v, 'Built');
+        cancelHaulJobsForBuilding(b);
+        applySkillGain(v, 'constructionSkill', 0.02, 0.9, 1);
+        addJobExperience(v, 'build', 3);
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      const store = b.store || {};
+      const spent = b.spent || { wood: 0, stone: 0 };
+      let used = 0;
+      if (def.wood) {
+        const needWood = Math.max(0, (def.wood || 0) - (spent.wood || 0));
+        if (needWood > 0 && (store.wood || 0) > 0) {
+          const take = Math.min(needWood, store.wood);
+          store.wood -= take;
+          spent.wood = (spent.wood || 0) + take;
+          used += take;
+        }
+      }
+      if (def.stone) {
+        const needStone = Math.max(0, (def.stone || 0) - (spent.stone || 0));
+        if (needStone > 0 && (store.stone || 0) > 0) {
+          const take = Math.min(needStone, store.stone);
+          store.stone -= take;
+          spent.stone = (spent.stone || 0) + take;
+          used += take;
+        }
+      }
+      b.progress = (spent.wood || 0) + (spent.stone || 0);
+      if (b.progress < cost) {
+        // Under supply-first construction the build job only exists once
+        // b.store covers the cost. Reaching this branch means materials
+        // drifted (e.g. a load-time race); leave the planner to re-request
+        // and keep the build job alive.
+        v.thought = moodThought(v, used > 0 ? 'Building' : 'Needs supplies');
+        addJobExperience(v, 'build', 1);
+        v.state = 'idle';
+        finishJob(v, false);
+        return;
+      }
+      // Materials are in place. Phase 7: instead of finishing in one tick,
+      // transition into the 'building' transient state and accumulate
+      // b.laborProgress per tick. Zero-labor kinds (campfire) keep the
+      // legacy immediate-finish path so emitter initialization is unchanged.
+      const laborGoal = def.buildLaborTicks | 0;
+      if (laborGoal <= 0) {
+        b.built = 1;
+        spent.wood = def.wood || 0;
+        spent.stone = def.stone || 0;
+        b.progress = cost;
+        b.laborProgress = 0;
+        // Return any excess back to storage so over-delivered material
+        // does not get trapped inside the building (audit #28).
+        for (const res of ['wood', 'stone', 'food']) {
+          const leftover = store[res] || 0;
+          if (leftover > 0) {
+            storageTotals[res] = (storageTotals[res] || 0) + leftover;
+            store[res] = 0;
+          }
+        }
+        if (b.kind === 'campfire') markEmittersDirty();
+        cancelHaulJobsForBuilding(b);
+        markStaticDirty();
+        v.thought = moodThought(v, 'Built');
+        applySkillGain(v, 'constructionSkill', 0.02, 0.9, 1);
+        addJobExperience(v, 'build', 3);
+        v.state = 'idle';
+        finishJob(v, true);
+        return;
+      }
+      // Phase 7: kick off (or resume) labor. Decrement j.assigned so a second
+      // builder can claim the same job; pickJobFor's `assigned >= 1` skip is
+      // the gate that lets multiple villagers converge on one site.
+      setActiveBuilding(v, b);
+      noteBuildingActivity(b, 'use');
+      if (v.targetJob) {
+        v.targetJob.assigned = Math.max(0, (v.targetJob.assigned || 0) - 1);
+      }
+      v.state = 'building';
+      v.thought = moodThought(v, 'Building');
     }
     else if (v.state === 'haul_pickup') {
       const job = v.targetJob;
