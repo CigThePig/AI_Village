@@ -682,7 +682,12 @@ function seasonTick(){
   const SEASON_LEN=60*10;
   if(world.tSeason>=SEASON_LEN){
     world.tSeason=0;
+    const prevSeason = world.season;
     world.season=(world.season+1)%4;
+
+    if (world.season !== prevSeason && typeof markStaticDirty === 'function') {
+      markStaticDirty();
+    }
   }
   const hasFarmBoosters=buildings.some(b=>b.built>=1 && (b.kind==='farmplot'||b.kind==='well'));
   const creationCfg = getJobCreationConfig();

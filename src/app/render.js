@@ -18,7 +18,7 @@ import {
 import { LIGHTING, clamp01 } from './lighting.js';
 import { clamp } from './rng.js';
 import { context2d } from './canvas.js';
-import { SHADOW_TEXTURE, Tileset, makeCanvas } from './tileset.js';
+import { SHADOW_TEXTURE, Tileset, makeCanvas, normalizeSeason, seasonName } from './tileset.js';
 import {
   BUILDINGS,
   buildingCenter,
@@ -76,6 +76,7 @@ export function createRenderSystem(deps) {
     canvas: null,
     ctx: null,
     frameIndex: -1,
+    season: null,
     camX: null,
     camY: null,
     camZ: null,
@@ -487,34 +488,50 @@ export function createRenderSystem(deps) {
   function drawStaticAlbedo() {
     const world = getWorld();
     if (!world) return;
+
     if (!staticAlbedoCanvas) {
       staticAlbedoCanvas = makeCanvas(GRID_W * TILE, GRID_H * TILE);
       staticAlbedoCtx = context2d(staticAlbedoCanvas);
     }
+
     const g = staticAlbedoCtx;
     if (!g) return;
+
+    const season = normalizeSeason(world.season);
+    const baseSet = Tileset.baseBySeason?.[season] || Tileset.base || {};
+    const fallback = Tileset.base?.grass || baseSet.grass;
+
     ensureRowMasksSize();
+
     for (let y = 0; y < GRID_H; y++) {
       let rowHasWater = 0;
       const rowStart = y * GRID_W;
+
       for (let x = 0; x < GRID_W; x++) {
         const i = rowStart + x;
         const t = world.tiles[i];
-        let img = Tileset.base.grass;
-        if (t === TILES.GRASS) img = Tileset.base.grass;
-        else if (t === TILES.FERTILE) img = Tileset.base.fertile;
-        else if (t === TILES.MEADOW) img = Tileset.base.meadow;
-        else if (t === TILES.MARSH) img = Tileset.base.marsh;
-        else if (t === TILES.SAND) img = Tileset.base.sand;
-        else if (t === TILES.SNOW) img = Tileset.base.snow;
-        else if (t === TILES.ROCK) img = Tileset.base.rock;
-        else if (t === TILES.WATER) img = Tileset.base.water;
-        else if (t === TILES.FARMLAND) img = Tileset.base.farmland;
-        g.drawImage(img, x * TILE, y * TILE);
+
+        let img = baseSet.grass || fallback;
+
+        if (t === TILES.GRASS) img = baseSet.grass || fallback;
+        else if (t === TILES.FOREST) img = baseSet.forest || baseSet.grass || fallback;
+        else if (t === TILES.FERTILE) img = baseSet.fertile || fallback;
+        else if (t === TILES.MEADOW) img = baseSet.meadow || fallback;
+        else if (t === TILES.MARSH) img = baseSet.marsh || fallback;
+        else if (t === TILES.SAND) img = baseSet.sand || fallback;
+        else if (t === TILES.SNOW) img = baseSet.snow || fallback;
+        else if (t === TILES.ROCK) img = baseSet.rock || fallback;
+        else if (t === TILES.WATER) img = baseSet.water || fallback;
+        else if (t === TILES.FARMLAND) img = baseSet.farmland || fallback;
+
+        if (img) g.drawImage(img, x * TILE, y * TILE);
+
         if (t === TILES.WATER) rowHasWater = 1;
       }
+
       waterRowMask[y] = rowHasWater;
     }
+
     world.staticAlbedoCanvas = staticAlbedoCanvas;
     world.staticAlbedoCtx = staticAlbedoCtx;
     staticDirty = false;
@@ -633,7 +650,9 @@ export function createRenderSystem(deps) {
     const cam = getCam();
     const W = getViewportW();
     const H = getViewportH();
+    const overlaySeason = normalizeSeason(world.season);
     const needsRedraw = waterOverlayCache.frameIndex !== frameIndex
+      || waterOverlayCache.season !== overlaySeason
       || waterOverlayCache.camX !== cam.x
       || waterOverlayCache.camY !== cam.y
       || waterOverlayCache.camZ !== cam.z
@@ -655,11 +674,69 @@ export function createRenderSystem(deps) {
         }
       }
       waterOverlayCache.frameIndex = frameIndex;
+      waterOverlayCache.season = overlaySeason;
       waterOverlayCache.camX = cam.x;
       waterOverlayCache.camY = cam.y;
       waterOverlayCache.camZ = cam.z;
     }
     ctx.drawImage(waterOverlayCache.canvas, 0, 0);
+  }
+
+  function drawSeasonAtmosphere(season, tick, vis) {
+    const ctx = getCtx();
+    const cam = getCam();
+    if (!ctx || !cam || !vis) return;
+
+    const name = seasonName(season);
+
+    ctx.save();
+
+    if (name === 'winter') {
+      ctx.globalAlpha = 0.08;
+      ctx.fillStyle = '#dcecff';
+      ctx.fillRect(0, 0, getViewportW(), getViewportH());
+
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = '#f8fdff';
+
+      for (let y = vis.y0; y <= vis.y1; y += 3) {
+        for (let x = vis.x0; x <= vis.x1; x += 4) {
+          const n = (x * 928371 + y * 364479 + Math.floor(tick / 24) * 53) % 19;
+          if (n !== 0) continue;
+          const px = tileToPxX(x + 0.3, cam);
+          const py = tileToPxY(y + 0.2, cam);
+          ctx.fillRect(px, py, Math.max(1, cam.z), Math.max(1, cam.z));
+        }
+      }
+    } else if (name === 'autumn') {
+      ctx.globalAlpha = 0.05;
+      ctx.fillStyle = '#d38b3a';
+      ctx.fillRect(0, 0, getViewportW(), getViewportH());
+
+      ctx.globalAlpha = 0.4;
+      const colors = ['#d9852d', '#b84f2a', '#e1a33a'];
+
+      for (let y = vis.y0; y <= vis.y1; y += 4) {
+        for (let x = vis.x0; x <= vis.x1; x += 5) {
+          const n = (x * 7127 + y * 9151 + Math.floor(tick / 40) * 17) % 23;
+          if (n !== 0) continue;
+          const px = tileToPxX(x + 0.5, cam);
+          const py = tileToPxY(y + 0.4, cam);
+          ctx.fillStyle = colors[(x + y) % colors.length];
+          ctx.fillRect(px, py, Math.max(1, cam.z * 1.5), Math.max(1, cam.z));
+        }
+      }
+    } else if (name === 'spring') {
+      ctx.globalAlpha = 0.035;
+      ctx.fillStyle = '#b9ffd0';
+      ctx.fillRect(0, 0, getViewportW(), getViewportH());
+    } else if (name === 'summer') {
+      ctx.globalAlpha = 0.025;
+      ctx.fillStyle = '#ffe2a0';
+      ctx.fillRect(0, 0, getViewportW(), getViewportH());
+    }
+
+    ctx.restore();
   }
 
   function drawShadow(tileX, tileY, footprintW = 1, footprintH = 1, screenRect = null) {
@@ -743,7 +820,6 @@ export function createRenderSystem(deps) {
     if (!ctx || !world) return;
     const cam = getCam();
     const tick = getTick();
-    const storageTotals = getStorageTotals ? getStorageTotals() : null;
     const g = ctx;
     const s = cam.z;
     const fp = getFootprint(b.kind);
@@ -763,76 +839,132 @@ export function createRenderSystem(deps) {
     const useMultiply = LIGHTING.useMultiplyComposite && LIGHTING.mode !== 'off';
     const sampledLight = useMultiply ? 1 : sampleLightAt(world, center.x, center.y);
     const shade = b.kind === 'farmplot' ? 1 : sampledLight;
-    const campfireShade = b.kind === 'campfire' ? Math.max(shade, 0.95) : shade;
     drawShadow(b.x, b.y, fp.w, fp.h);
     const offsetX = Math.floor((ENTITY_TILE_PX - fp.w * TILE) * s * 0.5);
     const offsetY = Math.floor((ENTITY_TILE_PX - fp.h * TILE) * s * 0.5);
     gx -= offsetX;
     gy -= offsetY;
     g.save();
-    if (b.kind === 'campfire') {
-      g.fillStyle = shadeFillColorLit('#7b8591', campfireShade);
-      g.fillRect(gx + 10 * s, gy + 18 * s, 12 * s, 6 * s);
-      const f = (tick % 6);
-      const flameColor = ['#ffde7a', '#ffc05a', '#ff9b4a'][f % 3];
-      const flameH = 6 * s * (1 + activityPulse * 0.8);
-      g.fillStyle = shadeFillColorLit(flameColor, campfireShade);
-      g.fillRect(gx + 14 * s, gy + 12 * s, 4 * s, flameH);
-      g.globalAlpha = 0.35 + activityPulse * 0.25;
-      g.fillStyle = shadeFillColorLit('rgba(142,142,142,0.75)', campfireShade);
+
+    const line = (x1, y1, x2, y2, color, width = 1) => {
+      g.strokeStyle = shadeFillColorLit(color, shade);
+      g.lineWidth = Math.max(1, Math.round(width * s));
       g.beginPath();
-      g.arc(gx + 16 * s, gy + (10 - f) * s, 3 * s + activityPulse * 3 * s, 0, Math.PI * 2);
-      g.fill();
+      g.moveTo(gx + x1 * s, gy + y1 * s);
+      g.lineTo(gx + x2 * s, gy + y2 * s);
+      g.stroke();
+    };
+
+    const box = (x, y, w, h, color) => {
+      g.fillStyle = shadeFillColorLit(color, shade);
+      g.fillRect(gx + x * s, gy + y * s, w * s, h * s);
+    };
+
+    const litBox = (x, y, w, h, color, alpha = 1) => {
+      const oldAlpha = g.globalAlpha;
+      g.globalAlpha *= alpha;
+      box(x, y, w, h, color);
+      g.globalAlpha = oldAlpha;
+    };
+
+    if (b.kind === 'campfire') {
+      box(10, 21, 12, 3, '#5a5a5a');
+      box(8, 22, 4, 3, '#777777');
+      box(20, 22, 4, 3, '#777777');
+      box(12, 20, 8, 2, '#3a2a1d');
+
+      line(11, 22, 21, 18, '#6a3d1f', 2);
+      line(21, 22, 11, 18, '#6a3d1f', 2);
+
+      const flame = 1 + activityPulse * 0.4;
+      litBox(14, 14 - flame, 4, 8 + flame, '#f7b733', 0.95);
+      litBox(15, 11 - flame, 2, 8 + flame, '#ff6b2d', 0.9);
+      litBox(16, 16, 2, 5, '#fff1a8', 0.85);
+
+      g.globalAlpha *= 0.28 + activityPulse * 0.25;
+      box(9, 9, 14, 14, '#ffb347');
+      g.globalAlpha = 1;
+
+      g.globalAlpha = 0.25;
+      box(13, 7 - Math.sin(tick * 0.05) * 2, 2, 2, '#d8d0c0');
+      box(18, 5 - Math.sin(tick * 0.04) * 2, 3, 2, '#d8d0c0');
       g.globalAlpha = 1;
     } else if (b.kind === 'storage') {
-      g.fillStyle = shadeFillColorLit('#6a5338', shade);
-      g.fillRect(gx + 6 * s, gy + 10 * s, 20 * s, 14 * s);
-      g.fillStyle = shadeFillColorLit('#8b6b44', shade);
-      g.fillRect(gx + 6 * s, gy + 20 * s, 20 * s, 2 * s);
-      g.fillStyle = shadeFillColorLit('#3b2b1a', shade);
-      g.fillRect(gx + 6 * s, gy + 10 * s, 20 * s, 1 * s);
-      const totals = storageTotals || { food: 0, wood: 0, stone: 0 };
-      // audit Phase 2: pelt intentionally excluded from this fill heuristic
-      // (visualizes building-material/food fullness, not craft-resource stocks).
-      const storedLevel = Math.min(1, (totals.food * 0.5 + totals.wood * 0.35 + totals.stone * 0.35) / 40);
-      if (storedLevel > 0.02) {
-        const fillH = Math.max(2 * s, Math.floor(12 * storedLevel) * s);
-        g.fillStyle = shadeFillColorLit('rgba(152,118,76,0.9)', shade);
-        g.fillRect(gx + 8 * s, gy + 10 * s + (12 * s - fillH), 16 * s, fillH);
+      box(7, 12, 18, 13, '#7a5530');
+      box(6, 10, 20, 4, '#5d3b20');
+      box(9, 15, 14, 2, '#9b7044');
+      box(9, 20, 14, 2, '#9b7044');
+      line(11, 13, 11, 25, '#4a2d18', 1);
+      line(20, 13, 20, 25, '#4a2d18', 1);
+
+      box(10, 22, 4, 3, '#c6a35f');
+      box(15, 21, 4, 4, '#8d8f72');
+      box(20, 22, 3, 3, '#b88a4f');
+
+      const stored = Math.min(1, (b.store || 0) / Math.max(1, BUILDINGS[b.kind]?.cost || 1));
+      if (stored > 0.15) {
+        litBox(8, 8, 16 * stored, 2, '#d0b56c', 0.75);
       }
     } else if (b.kind === 'hut') {
-      g.fillStyle = shadeFillColorLit('#7d5a3a', shade);
-      g.fillRect(gx + 8 * s, gy + 16 * s, 16 * s, 12 * s);
-      g.fillStyle = shadeFillColorLit('#caa56a', shade);
-      g.fillRect(gx + 6 * s, gy + 12 * s, 20 * s, 6 * s);
-      g.fillStyle = shadeFillColorLit('#31251a', shade);
-      g.fillRect(gx + 14 * s, gy + 20 * s, 4 * s, 8 * s);
-      if (activityPulse > 0.05) {
-        const glowAlpha = Math.min(0.55, 0.25 + activityPulse * 0.5);
-        g.fillStyle = shadeFillColorLit(`rgba(255,215,128,${glowAlpha})`, shade);
-        g.fillRect(gx + 10 * s, gy + 18 * s, 4 * s, 4 * s);
-        g.fillRect(gx + 16 * s, gy + 18 * s, 4 * s, 4 * s);
-      }
+      box(8, 14, 17, 12, '#8a5d35');
+      box(10, 16, 13, 10, '#a06d3f');
+      box(7, 12, 19, 3, '#5b3a22');
+      box(9, 9, 15, 4, '#6e4728');
+      box(11, 7, 11, 3, '#7a4e2c');
+
+      box(14, 19, 5, 7, '#3b2415');
+      litBox(21, 17, 2, 3, '#ffd27a', 0.45);
+      box(13, 26, 7, 2, '#4a2d19');
+    } else if (b.kind === 'hunterLodge') {
+      box(7, 14, 18, 12, '#765033');
+      box(8, 11, 16, 4, '#4b2f1c');
+      box(10, 8, 12, 4, '#5e3b22');
+      box(5, 18, 4, 8, '#6a4329');
+      box(23, 18, 4, 8, '#6a4329');
+
+      line(9, 9, 5, 6, '#d7c7a2', 1);
+      line(23, 9, 27, 6, '#d7c7a2', 1);
+      line(10, 9, 7, 5, '#d7c7a2', 1);
+      line(22, 9, 25, 5, '#d7c7a2', 1);
+
+      box(13, 19, 6, 7, '#2f2016');
+      box(20, 18, 3, 4, '#b78b5a');
     } else if (b.kind === 'farmplot') {
-      g.fillStyle = shadeFillColorLit('#4a3624', shade);
-      g.fillRect(gx + 4 * s, gy + 8 * s, 24 * s, 16 * s);
-      g.fillStyle = shadeFillColorLit('#3b2a1d', shade);
-      g.fillRect(gx + 4 * s, gy + 12 * s, 24 * s, 2 * s);
-      g.fillRect(gx + 4 * s, gy + 16 * s, 24 * s, 2 * s);
-      g.fillRect(gx + 4 * s, gy + 20 * s, 24 * s, 2 * s);
+      box(4, 8, 24, 17, '#4d3420');
+      box(5, 9, 22, 2, '#704d2f');
+      box(5, 14, 22, 2, '#332217');
+      box(5, 19, 22, 2, '#332217');
+      box(5, 24, 22, 1, '#704d2f');
+
+      for (let x = 8; x <= 23; x += 5) {
+        box(x, 12, 1, 10, '#7dbb58');
+        box(x - 1, 14, 3, 1, '#9fd46b');
+        box(x, 18, 3, 1, '#9fd46b');
+      }
+
+      box(3, 7, 2, 20, '#6b4a2d');
+      box(27, 7, 2, 20, '#6b4a2d');
     } else if (b.kind === 'well') {
-      g.fillStyle = shadeFillColorLit('#6f8696', shade);
-      g.fillRect(gx + 10 * s, gy + 14 * s, 12 * s, 10 * s);
-      g.fillStyle = shadeFillColorLit('#2b3744', shade);
-      g.fillRect(gx + 12 * s, gy + 18 * s, 8 * s, 6 * s);
-      g.fillStyle = shadeFillColorLit('#927a54', shade);
-      g.fillRect(gx + 8 * s, gy + 12 * s, 16 * s, 2 * s);
+      box(9, 16, 14, 9, '#728896');
+      box(10, 15, 12, 3, '#9baab4');
+      box(12, 19, 8, 5, '#263746');
+
+      box(8, 9, 2, 13, '#7b5b38');
+      box(22, 9, 2, 13, '#7b5b38');
+      box(7, 8, 18, 3, '#8a6842');
+      box(10, 5, 12, 4, '#5d3b22');
+
+      line(16, 11, 16, 18, '#2f2520', 1);
+      box(15, 18, 3, 3, '#6f4d2e');
+
+      litBox(13, 20, 6, 2, '#7ec8ff', 0.8);
+
       if (hydratePulse > 0.05) {
         g.strokeStyle = shadeFillColorLit('rgba(134,201,255,0.9)', shade);
         g.lineWidth = Math.max(1, Math.round(s));
         const ripple = 3 * s + (Math.sin(tick * 0.2) + 1) * s * 0.8;
         g.beginPath();
-        g.arc(gx + 16 * s, gy + 17 * s, ripple * (1 + hydratePulse * 0.6), 0, Math.PI * 2);
+        g.arc(gx + 16 * s, gy + 20 * s, ripple * (1 + hydratePulse * 0.6), 0, Math.PI * 2);
         g.stroke();
       }
     }
@@ -1098,12 +1230,17 @@ export function createRenderSystem(deps) {
     const vis = visibleTileBounds();
     const x0 = vis.x0, y0 = vis.y0, x1 = vis.x1, y1 = vis.y1;
 
-    const frames = Tileset.waterOverlay || [];
+    const season = normalizeSeason(world.season);
+    const frames = Tileset.waterOverlayBySeason?.[season]?.length
+      ? Tileset.waterOverlayBySeason[season]
+      : Tileset.waterOverlay || [];
+
     if (frames.length) {
       const frame = Math.floor((tick / 10) % frames.length);
       drawWaterOverlay(frames, frame, vis);
     }
 
+    drawSeasonAtmosphere(season, tick, vis);
     drawZoneOverlay(activeZoneJobs, cam, baseDx, baseDy);
 
     __ck('albedo:end', true, null);
@@ -1151,27 +1288,37 @@ export function createRenderSystem(deps) {
             const rect = entityDrawRect(x, y, cam);
             const raisedY = rect.y - Math.round(cam.z * TREE_VERTICAL_RAISE);
             const light = useMultiply ? 1 : sampleLightAt(world, x, y);
-            ctx.save();
-            ctx.drawImage(Tileset.sprite.tree, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
-            applySpriteShadeLit(ctx, rect.x, raisedY, rect.size, rect.size, light);
-            ctx.restore();
+            const treeSprite = Tileset.sprite.treeBySeason?.[season] || Tileset.sprite.tree;
+            if (treeSprite) {
+              ctx.save();
+              ctx.drawImage(treeSprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, raisedY, rect.size, rect.size);
+              applySpriteShadeLit(ctx, rect.x, raisedY, rect.size, rect.size, light);
+              ctx.restore();
+            }
           }
           if (world.berries[i] > 0) {
             drawShadow(x, y, 1, 1);
             const rect = entityDrawRect(x, y, cam);
             const light = useMultiply ? 1 : sampleLightAt(world, x, y);
-            ctx.save();
-            ctx.drawImage(Tileset.sprite.berry, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-            applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
-            ctx.restore();
+            const berrySprite = Tileset.sprite.berryBySeason?.[season] || Tileset.sprite.berry;
+            if (berrySprite) {
+              ctx.save();
+              ctx.drawImage(berrySprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+              applySpriteShadeLit(ctx, rect.x, rect.y, rect.size, rect.size, light);
+              ctx.restore();
+            }
           }
           if (world.tiles[i] === TILES.FARMLAND && world.growth[i] > 0) {
             drawShadow(x, y, 1, 1);
             const stageIndex = Math.min(2, Math.floor(world.growth[i] / 80));
             const rect = entityDrawRect(x, y, cam);
-            ctx.save();
-            ctx.drawImage(Tileset.sprite.sprout[stageIndex], 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
-            ctx.restore();
+            const sproutSet = Tileset.sprite.sproutBySeason?.[season] || Tileset.sprite.sprout;
+            const sproutSprite = sproutSet?.[stageIndex] || Tileset.sprite.sprout?.[stageIndex];
+            if (sproutSprite) {
+              ctx.save();
+              ctx.drawImage(sproutSprite, 0, 0, ENTITY_TILE_PX, ENTITY_TILE_PX, rect.x, rect.y, rect.size, rect.size);
+              ctx.restore();
+            }
           }
         }
       }
