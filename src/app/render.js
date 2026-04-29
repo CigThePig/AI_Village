@@ -15,7 +15,7 @@ import {
   tileToPxX,
   tileToPxY
 } from './constants.js';
-import { LIGHTING, clamp01 } from './lighting.js';
+import { LIGHTING, clamp01, gradeLightmap } from './lighting.js';
 import { clamp, hash2 } from './rng.js';
 import { context2d } from './canvas.js';
 import { SHADOW_TEXTURE, Tileset, makeCanvas, normalizeSeason, seasonName } from './tileset.js';
@@ -415,11 +415,17 @@ export function createRenderSystem(deps) {
       img = ctx.createImageData(qw, qh);
       targetWorld.lightmapImageData = img;
     }
+    // Per-channel tint shifts the lightmap's neutral grey toward warm at
+    // dawn/dusk and cool blue at night. The multiply composite carries the
+    // tint across the whole scene, so this is the cheapest place to grade.
+    const tint = gradeLightmap(ambient);
     const data = img.data;
     for (let i = 0, p = 0; i < length; i++, p += 4) {
       const v = Math.max(0, Math.min(1, Lq[i]));
-      const b = Math.round(v * 255);
-      data[p] = data[p + 1] = data[p + 2] = b;
+      const b = v * 255;
+      data[p] = Math.round(b * tint.r);
+      data[p + 1] = Math.round(b * tint.g);
+      data[p + 2] = Math.round(b * tint.b);
       data[p + 3] = 255;
     }
     ctx.putImageData(img, 0, 0);
@@ -519,13 +525,19 @@ export function createRenderSystem(deps) {
 
     ensureRowMasksSize();
 
+    const tiles = world.tiles;
+    const isWater = (xi, yi) => {
+      if (xi < 0 || xi >= GRID_W || yi < 0 || yi >= GRID_H) return false;
+      return tiles[yi * GRID_W + xi] === TILES.WATER;
+    };
+
     for (let y = 0; y < GRID_H; y++) {
       let rowHasWater = 0;
       const rowStart = y * GRID_W;
 
       for (let x = 0; x < GRID_W; x++) {
         const i = rowStart + x;
-        const t = world.tiles[i];
+        const t = tiles[i];
 
         let img = pickVariant(baseSet.grass, x, y) || fallback;
 
@@ -541,6 +553,19 @@ export function createRenderSystem(deps) {
         else if (t === TILES.FARMLAND) img = pickVariant(baseSet.farmland, x, y) || fallback;
 
         if (img) g.drawImage(img, x * TILE, y * TILE);
+
+        // Foam edges: paint a 1-pixel pale rim on the side of any non-water
+        // tile that touches water. Drawn at bake time so per-frame cost is
+        // zero, and the contrast reads nicely at every zoom level.
+        if (t !== TILES.WATER) {
+          const px = x * TILE;
+          const py = y * TILE;
+          g.fillStyle = 'rgba(232, 245, 255, 0.55)';
+          if (isWater(x, y - 1)) g.fillRect(px, py, TILE, 1);
+          if (isWater(x, y + 1)) g.fillRect(px, py + TILE - 1, TILE, 1);
+          if (isWater(x - 1, y)) g.fillRect(px, py, 1, TILE);
+          if (isWater(x + 1, y)) g.fillRect(px + TILE - 1, py, 1, TILE);
+        }
 
         if (t === TILES.WATER) rowHasWater = 1;
       }
@@ -732,11 +757,14 @@ export function createRenderSystem(deps) {
       ctx.globalAlpha = 0.4;
       const colors = ['#d9852d', '#b84f2a', '#e1a33a'];
 
-      for (let y = vis.y0; y <= vis.y1; y += 4) {
-        for (let x = vis.x0; x <= vis.x1; x += 5) {
-          const n = (x * 7127 + y * 9151 + Math.floor(tick / 40) * 17) % 23;
+      // Denser leaf density (every ~17 cells vs the prior ~23) plus a small
+      // horizontal drift so leaves look wind-blown instead of static stamps.
+      for (let y = vis.y0; y <= vis.y1; y += 3) {
+        for (let x = vis.x0; x <= vis.x1; x += 4) {
+          const n = (x * 7127 + y * 9151 + Math.floor(tick / 40) * 17) % 17;
           if (n !== 0) continue;
-          const px = tileToPxX(x + 0.5, cam);
+          const drift = Math.sin((tick * 0.04) + x * 0.7 + y * 0.5) * 0.5;
+          const px = tileToPxX(x + 0.5 + drift, cam);
           const py = tileToPxY(y + 0.4, cam);
           ctx.fillStyle = colors[(x + y) % colors.length];
           ctx.fillRect(px, py, Math.max(1, cam.z * 1.5), Math.max(1, cam.z));
@@ -753,6 +781,91 @@ export function createRenderSystem(deps) {
     }
 
     ctx.restore();
+  }
+
+  // Summer-only night fireflies near grass/forest tiles. Hash-gated so the
+  // particle count is bounded by visible area, not a per-frame allocation.
+  function drawFireflies(season, tick, vis, ambient) {
+    if (seasonName(season) !== 'summer') return;
+    if (ambient > 0.5) return;
+    const ctx = getCtx();
+    const cam = getCam();
+    const world = getWorld();
+    if (!ctx || !cam || !vis || !world) return;
+    ctx.save();
+    for (let y = vis.y0; y <= vis.y1; y++) {
+      const rowStart = y * GRID_W;
+      for (let x = vis.x0; x <= vis.x1; x++) {
+        const t = world.tiles[rowStart + x];
+        if (t !== TILES.GRASS && t !== TILES.MEADOW && t !== TILES.FOREST && t !== TILES.FERTILE) continue;
+        const n = (x * 9301 + y * 49297 + Math.floor(tick / 30) * 53) % 47;
+        if (n !== 0) continue;
+        const flicker = ((x + y + Math.floor(tick / 6)) % 5) >= 2;
+        if (!flicker) continue;
+        const drift = Math.sin(tick * 0.05 + x * 0.4 + y * 0.7) * 0.3;
+        const px = tileToPxX(x + 0.5 + drift, cam);
+        const py = tileToPxY(y + 0.45, cam);
+        ctx.fillStyle = 'rgba(255, 232, 130, 0.95)';
+        ctx.fillRect(px, py, Math.max(1, cam.z), Math.max(1, cam.z));
+        ctx.fillStyle = 'rgba(255, 232, 130, 0.35)';
+        ctx.fillRect(px - cam.z, py - cam.z, Math.max(1, cam.z * 3), Math.max(1, cam.z * 3));
+      }
+    }
+    ctx.restore();
+  }
+
+  // Two soft circles per chimney/fire, phase-offset by hash2 so adjacent
+  // huts don't puff in lockstep. Drawn in the post-multiply pass so the
+  // alpha falloff reads against night without being darkened.
+  function drawSmokeWisps(b, baseX, baseY, tick, cam) {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const phaseSeed = hash2(b.x | 0, b.y | 0);
+    ctx.save();
+    for (let i = 0; i < 2; i++) {
+      const cycle = 80;
+      const offset = (((tick + (phaseSeed >>> (i * 8)) % cycle) % cycle) + i * cycle * 0.5) % cycle;
+      const t = offset / cycle;
+      const rise = t * 22 * cam.z;
+      const drift = Math.sin(t * Math.PI * 2 + i) * 2.4 * cam.z;
+      const alpha = (1 - t) * 0.32;
+      if (alpha <= 0) continue;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(220, 220, 224, 1)';
+      ctx.beginPath();
+      ctx.arc(baseX + drift, baseY - rise, (1.5 + t * 1.3) * cam.z, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Cached vignette gradient — only rebuild on viewport resize.
+  const vignetteCache = { canvas: null, w: 0, h: 0 };
+  function drawPostFx() {
+    const ctx = getCtx();
+    if (!ctx) return;
+    const W = getViewportW();
+    const H = getViewportH();
+    if (W <= 0 || H <= 0) return;
+    if (!vignetteCache.canvas || vignetteCache.w !== W || vignetteCache.h !== H) {
+      const off = makeCanvas(W, H);
+      const og = context2d(off);
+      if (!og) return;
+      const cx = W * 0.5;
+      const cy = H * 0.5;
+      const radius = Math.hypot(cx, cy);
+      const grd = og.createRadialGradient(cx, cy, radius * 0.55, cx, cy, radius);
+      grd.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      grd.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+      og.fillStyle = grd;
+      og.fillRect(0, 0, W, H);
+      vignetteCache.canvas = off;
+      vignetteCache.w = W;
+      vignetteCache.h = H;
+    }
+    if (vignetteCache.canvas) {
+      ctx.drawImage(vignetteCache.canvas, 0, 0);
+    }
   }
 
   function drawShadow(tileX, tileY, footprintW = 1, footprintH = 1, screenRect = null) {
@@ -1252,7 +1365,7 @@ export function createRenderSystem(deps) {
       : Tileset.waterOverlay || [];
 
     if (frames.length) {
-      const frame = Math.floor((tick / 10) % frames.length);
+      const frame = Math.floor((tick / 8) % frames.length);
       drawWaterOverlay(frames, frame, vis);
     }
 
@@ -1414,6 +1527,10 @@ export function createRenderSystem(deps) {
         ctx.restore();
       }
 
+      // Post-multiply pass: any glow / lit-window / smoke effect that should
+      // *not* be darkened by the lightmap multiply lives here. The campfire
+      // glow already established this pattern; lit huts and smoke wisps now
+      // ride alongside it.
       for (const b of buildings) {
         if (b.kind === 'campfire') {
           const center = buildingCenter(b);
@@ -1438,9 +1555,35 @@ export function createRenderSystem(deps) {
             }
             ctx.restore();
           }
+          drawSmokeWisps(b, gx, gy - 6 * cam.z, tick, cam);
+        } else if (b.kind === 'hut' && b.built >= 1) {
+          const fp = getFootprint(b.kind);
+          const offsetX = Math.floor((ENTITY_TILE_PX - fp.w * TILE) * cam.z * 0.5);
+          const offsetY = Math.floor((ENTITY_TILE_PX - fp.h * TILE) * cam.z * 0.5);
+          const bx = tileToPxX(b.x, cam) - offsetX;
+          const by = tileToPxY(b.y, cam) - offsetY;
+          if (nightActive) {
+            // Window at (21, 17) size 2x3 inside the 32px sprite (matches
+            // drawBuildingAt's hut window litBox call).
+            const winCx = bx + 22 * cam.z;
+            const winCy = by + 18.5 * cam.z;
+            const halo = 7 * cam.z;
+            const grd = ctx.createRadialGradient(winCx, winCy, 0, winCx, winCy, halo);
+            grd.addColorStop(0, 'rgba(255, 218, 142, 0.55)');
+            grd.addColorStop(1, 'rgba(255, 195, 110, 0)');
+            ctx.fillStyle = grd;
+            ctx.beginPath(); ctx.arc(winCx, winCy, halo, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255, 226, 160, 0.85)';
+            ctx.fillRect(bx + 21 * cam.z, by + 17 * cam.z, 2 * cam.z, 3 * cam.z);
+          }
+          // Chimney smoke from the upper-left corner of the roof so wisps
+          // don't overlap the window glow.
+          drawSmokeWisps(b, bx + 11 * cam.z, by + 4 * cam.z, tick, cam);
         }
       }
 
+      drawFireflies(season, tick, vis, ambient);
+      drawPostFx();
       drawQueuedVillagerLabels(ambient);
 
       if (el && storageTotals) {

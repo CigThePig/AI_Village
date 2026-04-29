@@ -568,11 +568,15 @@ function makeWaterBase(palette) {
   return c;
 }
 
+const WATER_OVERLAY_FRAME_COUNT = 6;
+
 function makeWaterOverlayFrames(palette) {
   const frames = [];
   const p = palette.water;
 
-  for (let f = 0; f < 4; f++) {
+  // Phase-shifted sine waves give a smoother shimmer than a linear ripple
+  // step, and 6 frames hide the loop discontinuity better than 4.
+  for (let f = 0; f < WATER_OVERLAY_FRAME_COUNT; f++) {
     const c = makeCanvas(TILE, TILE);
     const g = context2d(c);
     if (!g) {
@@ -584,12 +588,15 @@ function makeWaterOverlayFrames(palette) {
     g.strokeStyle = p.ripple;
     g.lineWidth = 1;
 
+    const phase = (f / WATER_OVERLAY_FRAME_COUNT) * Math.PI * 2;
     for (let i = 0; i < 3; i++) {
-      const y = 6 + i * 9 + f;
+      const baseY = 5 + i * 7;
+      const offset = Math.sin(phase + i * (Math.PI / 2)) * 1.4;
+      const y = baseY + offset;
       g.beginPath();
       g.moveTo(-2, y);
-      g.quadraticCurveTo(TILE * 0.35, y + 3, TILE * 0.7, y);
-      g.quadraticCurveTo(TILE * 0.88, y - 2, TILE + 2, y + 1);
+      g.quadraticCurveTo(TILE * 0.35, y + 2.4 + offset * 0.4, TILE * 0.7, y);
+      g.quadraticCurveTo(TILE * 0.88, y - 1.6 - offset * 0.3, TILE + 2, y + 0.8);
       g.stroke();
     }
 
