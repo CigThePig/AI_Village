@@ -15,12 +15,29 @@ function setRandomSource(value) {
   R = value;
 }
 
+// Stateless 32-bit integer hash for deterministic per-tile/per-id picks. Does
+// not touch the global R, so safe to call from render hot paths and bake steps.
+function hash2(x, y = 0, z = 0) {
+  let h = (x | 0) ^ Math.imul((y | 0), 0x85ebca77) ^ Math.imul((z | 0), 0xc2b2ae3d);
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+// Returns a fresh deterministic float-RNG closure seeded from `seed`. Used at
+// asset-bake time so per-variant noise is reproducible without disturbing R.
+function seededFrom(seed) {
+  return mulberry32((seed >>> 0) || 1);
+}
+
 export {
   R,
   clamp,
+  hash2,
   irnd,
   mulberry32,
   rnd,
+  seededFrom,
   setRandomSource,
   uid
 };
