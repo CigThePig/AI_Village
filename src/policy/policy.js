@@ -136,6 +136,33 @@ const DEFAULT_PROGRESSION = Object.freeze({
   tiers: DEFAULT_PROGRESS_TIERS
 });
 
+// Phase 1 — settlement layout templates. `archetypeWeights` and `terrainBias`
+// feed `chooseArchetype` in src/app/layout.js; `kindToSlotFamily` and
+// `slotCapacities` are the contract `findSlotForKind` consults to route a
+// building kind into a slot. Verbose archetype geometry (per-archetype slot
+// footprints) lives in layout.js — this block holds tuning knobs only.
+const DEFAULT_LAYOUT = Object.freeze({
+  archetypeWeights: { radial: 1, ribbon: 1, terrace: 1, courtyard: 1 },
+  terrainBias: { waterToRibbon: 2, slopeToTerrace: 2, openToCourtyard: 1.5 },
+  jitterAmplitude: 0.15,
+  kindToSlotFamily: {
+    campfire: ['hearth'],
+    storage: ['storage'],
+    hut: ['housing'],
+    hunterLodge: ['craft'],
+    farmplot: ['fields'],
+    well: ['wells', 'fields']
+  },
+  slotCapacities: {
+    hearth: 1,
+    storage: 1,
+    housing: 3,
+    craft: 2,
+    fields: 4,
+    wells: 1
+  }
+});
+
 export const policy = {
   state: null,
   sliders: { ...DEFAULT_SLIDERS },
@@ -168,5 +195,6 @@ export const policy = {
     hunger: { ...DEFAULT_HUNGER_THRESHOLDS },
     jobCreation: { ...DEFAULT_JOB_CREATION }
   },
-  progression: { ...DEFAULT_PROGRESSION }
+  progression: { ...DEFAULT_PROGRESSION },
+  layout: { ...DEFAULT_LAYOUT }
 };

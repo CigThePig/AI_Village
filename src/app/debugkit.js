@@ -158,6 +158,30 @@ export function createDebugKitBridge(opts) {
     } else if (Number.isFinite(getDayTime())) {
       snapshotTime = getDayTime();
     }
+    // Phase 1: shallow-copy layout for the slot overlay. The Map is converted
+    // to a plain object so the debug payload is JSON-serializable.
+    let layout = null;
+    if (world?.layout) {
+      const occ = world.layout.occupancy;
+      const occupancy = {};
+      if (occ && typeof occ.forEach === 'function') {
+        occ.forEach((value, key) => { occupancy[key] = value; });
+      }
+      layout = {
+        archetype: world.layout.archetype,
+        origin: world.layout.origin,
+        anchors: world.layout.anchors,
+        slots: world.layout.slots.map((s) => ({
+          id: s.id,
+          family: s.family,
+          footprint: s.footprint,
+          capacity: s.capacity,
+          kindAffinity: s.kindAffinity
+        })),
+        occupancy,
+        features: world.layout.features
+      };
+    }
     const villagerDetails = Array.isArray(villagers)
       ? villagers.map((v) => ({
           id: v.id,
@@ -185,6 +209,7 @@ export function createDebugKitBridge(opts) {
       villagers: villagerCount,
       lightingMode: LIGHTING?.mode ?? 'unknown',
       multiplyComposite: LIGHTING?.useMultiplyComposite === true,
+      layout,
       villagerDetails,
     };
   }

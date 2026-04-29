@@ -62,7 +62,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 7;
+const SAVE_VERSION = 8;
 const COARSE_SAVE_SIZE = 96;
 
 // Sequential save-format migrations: when loading a save with version `v`,
@@ -83,8 +83,18 @@ const SAVE_MIGRATIONS = new Map([
   // v6 -> v7: Phase 8 adds per-villager `restStartedAtNight` (saved as `rsn`).
   // Absent fields coerce to false at load time, matching pre-Phase-8 wake
   // behavior on the first post-load sleep — no-op migration.
-  [6, (data) => data]
+  [6, (data) => data],
+  // v7 -> v8: Phase 1 adds world.layout (archetype + slots + anchors). Layout
+  // is a pure function of seed+terrain and is recomputed at world-gen, so it
+  // is not serialized — the migration body is intentionally a no-op.
+  [7, (data) => data]
 ]);
+const LAYOUT_ARCHETYPES = Object.freeze({
+  RADIAL: 'radial',
+  RIBBON: 'ribbon',
+  TERRACE: 'terrace',
+  COURTYARD: 'courtyard'
+});
 const TILES = { GRASS:0, FOREST:1, ROCK:2, WATER:3, FERTILE:4, FARMLAND:5, SAND:6, SNOW:7, MEADOW:8, MARSH:9 };
 const ZONES = { NONE:0, FARM:1, CUT:2, MINE:4 };
 const WALKABLE = new Set([
@@ -198,6 +208,7 @@ export {
   HUNT_RETRY_COOLDOWN,
   ITEM,
   ITEM_COLORS,
+  LAYOUT_ARCHETYPES,
   LIGHT_VECTOR,
   LIGHT_VECTOR_LENGTH,
   LAYER_ORDER,

@@ -17,6 +17,7 @@ import {
   tileOccupiedByBuildingIn,
   validateFootprintPlacementIn
 } from './world.js';
+import { findSlotForKind, recomputeOccupancy } from './layout.js';
 import { clamp } from './rng.js';
 import { computeFamineSeverity } from '../ai/scoring.js';
 
@@ -132,68 +133,106 @@ export function createPlanner(opts) {
     return best;
   }
 
-  function findPlacementNear(kind, anchorX, anchorY, maxRadius = 18, context = {}) {
-    const world = state.world;
+  // Per-kind tile-scoring helpers, shared between the slot-aware fast path and
+  // the legacy radius search. Pulled out of findPlacementNear so both paths
+  // tie-break with the exact same weights — preserves the progression-tier
+  // order acceptance criterion in Phase 1.
+  function wildlifeDensity(x, y, radius = 6) {
     const animals = state.units.animals;
+    if (!Array.isArray(animals) || animals.length === 0) return 0;
+    let score = 0;
+    for (const a of animals) {
+      if (!a || a.state === 'dead') continue;
+      const dist = Math.abs(a.x - x) + Math.abs(a.y - y);
+      if (dist > radius) continue;
+      score += Math.max(0, radius - dist + 1);
+    }
+    return score;
+  }
+
+  function nearbyZoneScore(zone, x, y, radius = 3) {
+    const world = state.world;
+    if (!world?.zone) return 0;
+    let count = 0;
+    for (let yy = y - radius; yy <= y + radius; yy++) {
+      for (let xx = x - radius; xx <= x + radius; xx++) {
+        if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
+        const i = yy * GRID_W + xx;
+        if (world.zone[i] === zone) count++;
+      }
+    }
+    return count;
+  }
+
+  function resourceDensity(resource, x, y, radius = 2) {
+    const world = state.world;
+    if (!world) return 0;
+    const source = resource === 'wood' ? world.trees : world.rocks;
+    if (!source) return 0;
+    let score = 0;
+    for (let yy = y - radius; yy <= y + radius; yy++) {
+      for (let xx = x - radius; xx <= x + radius; xx++) {
+        if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
+        const i = yy * GRID_W + xx;
+        score += Math.max(0, source[i] || 0);
+      }
+    }
+    return score;
+  }
+
+  function fertileScore(x, y, radius = 1) {
+    const world = state.world;
+    if (!world?.tiles) return 0;
+    let score = 0;
+    for (let yy = y - radius; yy <= y + radius; yy++) {
+      for (let xx = x - radius; xx <= x + radius; xx++) {
+        if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
+        const tile = world.tiles[yy * GRID_W + xx];
+        if (tile === TILES.FERTILE || tile === TILES.MEADOW) score += 2;
+        else if (tile === TILES.GRASS) score += 1;
+      }
+    }
+    return score;
+  }
+
+  function perKindBonus(kind, cx, cy) {
+    let score = 0;
+    if (kind === 'hut') {
+      score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * -0.3;
+      score += nearbyZoneScore(ZONES.CUT, cx, cy, 3) * -0.1;
+    } else if (kind === 'farmplot') {
+      score += nearbyZoneScore(ZONES.FARM, cx, cy, 3) * 1.8;
+      score += fertileScore(cx, cy, 2) * 0.6;
+    } else if (kind === 'well') {
+      score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * 2.2;
+      score += fertileScore(cx, cy, 1) * 0.2;
+    } else if (kind === 'storage') {
+      score += nearbyZoneScore(ZONES.CUT, cx, cy, 4) * 1.1;
+      score += nearbyZoneScore(ZONES.MINE, cx, cy, 4) * 1.1;
+      score += resourceDensity('wood', cx, cy, 2) * 0.05;
+      score += resourceDensity('stone', cx, cy, 2) * 0.06;
+    } else if (kind === 'hunterLodge') {
+      score += wildlifeDensity(cx, cy, 6) * 0.45;
+      score += resourceDensity('wood', cx, cy, 2) * 0.08;
+      score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * -0.2;
+    }
+    return score;
+  }
+
+  // Phase 1 — slot-aware placement.
+  //
+  // When world.layout exists, route the placement into the slot family the
+  // kind belongs to (campfire→hearth, hut→housing-*, farmplot→fields-*, etc).
+  // Tiles inside the slot footprint are scored with the same per-kind bonuses
+  // as before, plus a slot-center distance term. If the slot is full or no
+  // tile inside it is buildable+reachable, fall back to the legacy radius
+  // search so progression isn't blocked on edge cases.
+  function legacyFindPlacementNear(kind, anchorX, anchorY, maxRadius = 18, context = {}) {
     const fp = getFootprint(kind);
     let best = null, bestScore = -Infinity;
     const anchorTx = Math.round(anchorX);
     const anchorTy = Math.round(anchorY);
     let reachableFound = false;
-
-    const wildlifeDensity = (x, y, radius = 6) => {
-      if (!Array.isArray(animals) || animals.length === 0) return 0;
-      let score = 0;
-      for (const a of animals) {
-        if (!a || a.state === 'dead') continue;
-        const dist = Math.abs(a.x - x) + Math.abs(a.y - y);
-        if (dist > radius) continue;
-        score += Math.max(0, radius - dist + 1);
-      }
-      return score;
-    };
-
-    const nearbyZoneScore = (zone, x, y, radius = 3) => {
-      if (!world?.zone) return 0;
-      let count = 0;
-      for (let yy = y - radius; yy <= y + radius; yy++) {
-        for (let xx = x - radius; xx <= x + radius; xx++) {
-          if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
-          const i = yy * GRID_W + xx;
-          if (world.zone[i] === zone) count++;
-        }
-      }
-      return count;
-    };
-
-    const resourceDensity = (resource, x, y, radius = 2) => {
-      if (!world) return 0;
-      const source = resource === 'wood' ? world.trees : world.rocks;
-      if (!source) return 0;
-      let score = 0;
-      for (let yy = y - radius; yy <= y + radius; yy++) {
-        for (let xx = x - radius; xx <= x + radius; xx++) {
-          if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
-          const i = yy * GRID_W + xx;
-          score += Math.max(0, source[i] || 0);
-        }
-      }
-      return score;
-    };
-
-    const fertileScore = (x, y, radius = 1) => {
-      if (!world?.tiles) return 0;
-      let score = 0;
-      for (let yy = y - radius; yy <= y + radius; yy++) {
-        for (let xx = x - radius; xx <= x + radius; xx++) {
-          if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
-          const tile = world.tiles[yy * GRID_W + xx];
-          if (tile === TILES.FERTILE || tile === TILES.MEADOW) score += 2;
-          else if (tile === TILES.GRASS) score += 1;
-        }
-      }
-      return score;
-    };
 
     for (let r = 0; r <= maxRadius; r++) {
       const minX = Math.max(0, Math.floor(anchorX - r));
@@ -206,31 +245,7 @@ export function createPlanner(opts) {
           const cx = x + (fp.w - 1) / 2;
           const cy = y + (fp.h - 1) / 2;
           const baseDist = Math.abs(cx - anchorX) + Math.abs(cy - anchorY);
-          let score = -baseDist;
-
-          if (kind === 'hut') {
-            score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * -0.3;
-            score += nearbyZoneScore(ZONES.CUT, cx, cy, 3) * -0.1;
-          }
-          if (kind === 'farmplot') {
-            score += nearbyZoneScore(ZONES.FARM, cx, cy, 3) * 1.8;
-            score += fertileScore(cx, cy, 2) * 0.6;
-          }
-          if (kind === 'well') {
-            score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * 2.2;
-            score += fertileScore(cx, cy, 1) * 0.2;
-          }
-          if (kind === 'storage') {
-            score += nearbyZoneScore(ZONES.CUT, cx, cy, 4) * 1.1;
-            score += nearbyZoneScore(ZONES.MINE, cx, cy, 4) * 1.1;
-            score += resourceDensity('wood', cx, cy, 2) * 0.05;
-            score += resourceDensity('stone', cx, cy, 2) * 0.06;
-          }
-          if (kind === 'hunterLodge') {
-            score += wildlifeDensity(cx, cy, 6) * 0.45;
-            score += resourceDensity('wood', cx, cy, 2) * 0.08;
-            score += nearbyZoneScore(ZONES.FARM, cx, cy, 4) * -0.2;
-          }
+          let score = -baseDist + perKindBonus(kind, cx, cy);
 
           if (score > bestScore - 4) {
             const path = pathfind(anchorTx, anchorTy, Math.round(cx), Math.round(cy), Math.max(140, maxRadius * 8));
@@ -252,10 +267,61 @@ export function createPlanner(opts) {
     if (!reachableFound && maxRadius < Math.max(GRID_W, GRID_H)) {
       const nextRadius = Math.min(Math.max(GRID_W, GRID_H), maxRadius + 8);
       if (nextRadius > maxRadius) {
-        return findPlacementNear(kind, anchorX, anchorY, nextRadius, { ...context, expanded: true });
+        return legacyFindPlacementNear(kind, anchorX, anchorY, nextRadius, { ...context, expanded: true });
       }
     }
     return reachableFound ? best : null;
+  }
+
+  function placeInSlot(kind, slot, anchorX, anchorY) {
+    const fp = getFootprint(kind);
+    const sx = slot.footprint.x;
+    const sy = slot.footprint.y;
+    const sw = slot.footprint.w;
+    const sh = slot.footprint.h;
+    const minX = Math.max(0, sx);
+    const maxX = Math.min(GRID_W - fp.w, sx + sw - fp.w);
+    const minY = Math.max(0, sy);
+    const maxY = Math.min(GRID_H - fp.h, sy + sh - fp.h);
+    if (minX > maxX || minY > maxY) return null;
+    const slotCx = sx + sw / 2;
+    const slotCy = sy + sh / 2;
+    const anchorTx = Math.round(anchorX);
+    const anchorTy = Math.round(anchorY);
+
+    let best = null, bestScore = -Infinity;
+    let reachable = false;
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (validateFootprintPlacement(kind, x, y) !== null) continue;
+        const cx = x + (fp.w - 1) / 2;
+        const cy = y + (fp.h - 1) / 2;
+        const slotDist = Math.abs(cx - slotCx) + Math.abs(cy - slotCy);
+        let score = -slotDist + perKindBonus(kind, cx, cy);
+        const path = pathfind(anchorTx, anchorTy, Math.round(cx), Math.round(cy), 200);
+        if (!path) continue;
+        reachable = true;
+        score -= path.length * 0.35;
+        if (score > bestScore) { bestScore = score; best = { x, y }; }
+      }
+    }
+    return reachable ? best : null;
+  }
+
+  function findPlacementNear(kind, anchorX, anchorY, maxRadius = 18, context = {}) {
+    const layout = state.world?.layout;
+    if (layout) {
+      const slot = findSlotForKind(layout, kind);
+      if (slot) {
+        const placed = placeInSlot(kind, slot, anchorX, anchorY);
+        if (placed) {
+          const used = layout.occupancy.get(slot.id) || 0;
+          layout.occupancy.set(slot.id, used + 1);
+          return placed;
+        }
+      }
+    }
+    return legacyFindPlacementNear(kind, anchorX, anchorY, maxRadius, context);
   }
 
   function ensureZoneCoverage(zone, targetTiles, anchor, radius = 0) {
@@ -605,6 +671,12 @@ export function createPlanner(opts) {
     const villagers = state.units.villagers;
     const animals = state.units.animals;
     if (!world) return false;
+    // Phase 1: rebuild slot occupancy from the live buildings list before
+    // running placement logic, so claims survive across save/load and stay in
+    // sync if a building is destroyed elsewhere.
+    if (world.layout) {
+      recomputeOccupancy(world.layout, state.units.buildings, policy?.layout);
+    }
     const anchor = findPrimaryAnchor();
     const villagerCount = Math.max(1, villagers.length || 0);
     let placed = false;
@@ -1061,5 +1133,7 @@ export function createPlanner(opts) {
     // Phase 11 (B13): exposed for targeted resource-bookkeeping tests.
     _applyProgressionPlanner: applyProgressionPlanner,
     _progressionMemory: progressionMemory,
+    // Phase 1: exposed so tests can validate slot-aware placement directly.
+    _findPlacementNear: findPlacementNear,
   };
 }

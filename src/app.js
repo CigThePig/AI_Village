@@ -31,6 +31,7 @@ import { createJobsSystem } from './app/jobs.js';
 import { createAnimalsSystem } from './app/animals.js';
 import { createNocturnalSystem } from './app/nocturnal.js';
 import { createDebugKitBridge } from './app/debugkit.js';
+import { buildLayout, findSlotForKind } from './app/layout.js';
 import { createMaterials } from './app/materials.js';
 import { CHILDHOOD_TICKS, createPopulation } from './app/population.js';
 import { STARVE_THRESH, createVillagerAI } from './app/villagerAI.js';
@@ -364,6 +365,10 @@ function generateWorldBase(seed){
     emitters: []
   };
   buildHillshadeQ(nextWorld);
+  // Phase 1: stamp settlement archetype + named slots before any building is
+  // placed. Layout is a pure function of seed+terrain (no Math.random) and is
+  // recomputed on load rather than persisted, so save migration is a no-op.
+  nextWorld.layout = buildLayout(seed, nextWorld, policy.layout);
   world = nextWorld;
   gameState.world = nextWorld;
   resetLightmapCache();
@@ -435,8 +440,17 @@ function newWorld(seed=Date.now()|0, opts={}){
   const campFp=getFootprint('campfire');
   const campMaxX=Math.max(0, GRID_W-campFp.w);
   const campMaxY=Math.max(0, GRID_H-campFp.h);
-  const campStartX=clamp(Math.round(GRID_W*0.5 - campFp.w*0.5), 0, campMaxX);
-  const campStartY=clamp(Math.round(GRID_H*0.5 - campFp.h*0.5), 0, campMaxY);
+  // Phase 1: seed the campfire from the hearth slot when a layout exists, so
+  // the settlement origin honors the chosen archetype. Fall back to the
+  // map-center heuristic only if the layout is missing (e.g., minimal test
+  // worlds that bypass generateWorldBase()).
+  const hearthSlot = findSlotForKind(world.layout, 'campfire');
+  const campStartX = hearthSlot
+    ? clamp(hearthSlot.footprint.x, 0, campMaxX)
+    : clamp(Math.round(GRID_W*0.5 - campFp.w*0.5), 0, campMaxX);
+  const campStartY = hearthSlot
+    ? clamp(hearthSlot.footprint.y, 0, campMaxY)
+    : clamp(Math.round(GRID_H*0.5 - campFp.h*0.5), 0, campMaxY);
   const campPos=findNearestStartSpot('campfire', campStartX, campStartY) || {x:campStartX, y:campStartY};
   const campfire=addBuilding('campfire',campPos.x,campPos.y,{built:1});
 
