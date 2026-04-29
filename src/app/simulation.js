@@ -178,3 +178,27 @@ export function createTimeOfDay(deps) {
 
   return { ambientAt, isNightTime };
 }
+
+// Phase 9 (B4/S7): seasonal growth/hunger multipliers.
+// Seasons match world.season encoding: 0=Spring, 1=Summer, 2=Autumn, 3=Winter.
+export const SEASON_GROWTH_BASE = Object.freeze([1.0, 1.2, 0.8, 0.3]);
+export const SEASON_HUNGER_BASE = Object.freeze([1.0, 0.95, 1.0, 1.15]);
+// Only the last 15% of a season cross-fades into the next so the season's
+// base multiplier dominates the middle. A full-season linear blend would
+// average winter to ~0.65 and break the "~3x slower in winter" target.
+export const SEASON_BLEND_WIDTH = 0.15;
+
+export function seasonalGrowthMultiplier(season, seasonProgress = 0) {
+  const s = ((season | 0) % 4 + 4) % 4;
+  const p = clamp(Number.isFinite(seasonProgress) ? seasonProgress : 0, 0, 1);
+  const base = SEASON_GROWTH_BASE[s];
+  if (p <= 1 - SEASON_BLEND_WIDTH) return base;
+  const next = SEASON_GROWTH_BASE[(s + 1) % 4];
+  const t = (p - (1 - SEASON_BLEND_WIDTH)) / SEASON_BLEND_WIDTH;
+  return base + (next - base) * t;
+}
+
+export function seasonalHungerMultiplier(season) {
+  const s = ((season | 0) % 4 + 4) % 4;
+  return SEASON_HUNGER_BASE[s];
+}

@@ -6,7 +6,8 @@ import {
   isDeepNight,
   isNightAmbient,
   moodMotivation,
-  moodThought
+  moodThought,
+  seasonalHungerMultiplier
 } from './simulation.js';
 import { DAY_LENGTH, HUNT_RANGE, HUNT_RETRY_COOLDOWN } from './constants.js';
 import { BUILDINGS } from './world.js';
@@ -145,7 +146,9 @@ export function createVillagerTick(opts) {
     if (v.hydrationBuffTicks > 0) v.hydrationBuffTicks--;
     const hydratedBuff = (v.hydrationBuffTicks || 0) > 0;
     const dehydrated = v.hydration < HYDRATION_LOW;
-    const hungerRate = (resting ? HUNGER_RATE * REST_HUNGER_MULT : HUNGER_RATE) * (hydratedBuff ? HYDRATION_HUNGER_MULT : (dehydrated ? HYDRATION_DEHYDRATED_PENALTY : 1));
+    // Phase 9 (B4/S7): winter raises drain ~15%, summer dips slightly.
+    const seasonalHungerMult = seasonalHungerMultiplier(state?.world?.season ?? 0);
+    const hungerRate = (resting ? HUNGER_RATE * REST_HUNGER_MULT : HUNGER_RATE) * (hydratedBuff ? HYDRATION_HUNGER_MULT : (dehydrated ? HYDRATION_DEHYDRATED_PENALTY : 1)) * seasonalHungerMult;
     v.hunger += hungerRate;
 
     const tileX = v.x | 0;
