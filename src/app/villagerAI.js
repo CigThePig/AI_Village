@@ -29,6 +29,29 @@ export const SOCIAL_COOLDOWN_TICKS = DAY_LENGTH * 0.2;
 export const STORAGE_IDLE_BASE = 70;
 export const STORAGE_IDLE_COOLDOWN = DAY_LENGTH * 0.12;
 
+// Single source of truth for rest duration (audit S3). Both villagerTick.js
+// and onArrive.js use this so the in-state clamp and the on-arrive seed can
+// never drift apart again.
+export function restDurationTicks(energy) {
+  const e = Number.isFinite(energy) ? energy : 0;
+  return REST_BASE_TICKS + Math.round(Math.max(0, 1 - e) * REST_EXTRA_PER_ENERGY);
+}
+
+// Night-anchored sleep predicate (audit S1). Pure function so tests can
+// mirror it without instantiating the full villager-tick state machine.
+// Critical active states ('building', 'hunt') and urgentFood override the
+// night pull; the 0.30 hard floor still always sleeps.
+export function wantsToSleep(v, { nightNow, deepNight, urgentFood } = {}) {
+  if (urgentFood) return false;
+  const energy = Number.isFinite(v?.energy) ? v.energy : 1;
+  const criticalState = v?.state === 'building' || v?.state === 'hunt';
+  if (energy < 0.30) return true;
+  if (criticalState) return false;
+  if (deepNight) return true;
+  if (nightNow && energy < 0.65) return true;
+  return false;
+}
+
 export function createVillagerAI(opts) {
   const {
     state,

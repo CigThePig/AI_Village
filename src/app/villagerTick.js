@@ -3,6 +3,7 @@ import {
   addJobExperience,
   applySkillGain,
   isDawnAmbient,
+  isDeepNight,
   isNightAmbient,
   moodMotivation,
   moodThought
@@ -12,13 +13,13 @@ import { BUILDINGS } from './world.js';
 import { CHILDHOOD_TICKS } from './population.js';
 import {
   HYDRATION_BUFF_TICKS,
-  REST_BASE_TICKS,
-  REST_EXTRA_PER_ENERGY,
   SOCIAL_BASE_TICKS,
   SOCIAL_COOLDOWN_TICKS,
   STARVE_THRESH,
   STORAGE_IDLE_BASE,
-  STORAGE_IDLE_COOLDOWN
+  STORAGE_IDLE_COOLDOWN,
+  restDurationTicks,
+  wantsToSleep
 } from './villagerAI.js';
 
 // Tick-only knobs (decay rates / per-frame deltas) live next to the function
@@ -250,16 +251,22 @@ export function createVillagerTick(opts) {
       if (urgentFood) {
         endBuildingStay(v);
         v.state = 'idle';
+        v.restStartedAtNight = false;
       } else {
-        const minRest = REST_BASE_TICKS + Math.round(Math.max(0, 1 - v.energy) * REST_EXTRA_PER_ENERGY * 0.35);
+        // Audit S3: unified with the on-arrive seed via restDurationTicks.
+        const minRest = restDurationTicks(v.energy);
         if (v.restTimer < minRest) v.restTimer = minRest;
         v.restTimer = Math.max(0, v.restTimer - 1);
-        if (v.restTimer <= 0 || v.energy >= 0.995) {
+        // Audit S2: a villager who fell asleep at night also wakes at dawn,
+        // even if the rest timer hasn't expired.
+        const wokeAtDawn = !!v.restStartedAtNight && !nightNow;
+        if (v.restTimer <= 0 || v.energy >= 0.995 || wokeAtDawn) {
           endBuildingStay(v);
           v.state = 'idle';
           v.restTimer = 0;
+          v.restStartedAtNight = false;
           v.happy = clamp(v.happy + REST_FINISH_MOOD, 0, 1);
-          v.thought = moodThought(v, 'Rested');
+          v.thought = moodThought(v, wokeAtDawn ? 'Up with the dawn' : 'Rested');
         } else {
           const active = getBuildingById(v.activeBuildingId);
           if (active) noteBuildingActivity(active, 'rest');
@@ -413,6 +420,14 @@ export function createVillagerTick(opts) {
     const fatigueFlag = !!blackboard?.energy?.fatigue;
     const effectiveRest = fatigueFlag ? restThreshold + restFatigueBoost : restThreshold;
     if (v.energy < effectiveRest) { if (goRest(v)) return; }
+    // Audit S1: night-anchored sleep. Pulls idle villagers to bed at night so
+    // day/night has felt meaning. Sits before hydrate/social so sleep wins
+    // when a villager wants to be in bed.
+    if (v.state === 'idle' && !v.targetJob
+        && wantsToSleep(v, { nightNow, deepNight: isDeepNight(dayTime), urgentFood })) {
+      v._fellAsleepAtNight = nightNow;
+      if (goRest(v)) return;
+    }
     if (v.state === 'idle' && !urgentFood) {
       if (tryHydrateAtWell(v)) return;
     }

@@ -21,10 +21,9 @@ import {
 import {
   FOOD_HUNGER_RECOVERY,
   HYDRATION_BUFF_TICKS,
-  REST_BASE_TICKS,
-  REST_EXTRA_PER_ENERGY,
   SOCIAL_BASE_TICKS,
   STORAGE_IDLE_BASE,
+  restDurationTicks,
 } from './villagerAI.js';
 
 export function createOnArrive(opts) {
@@ -523,11 +522,16 @@ export function createOnArrive(opts) {
       v.state = 'idle';
     }
     else if (v.state === 'rest') {
-      const baseRest = REST_BASE_TICKS + Math.round(Math.max(0, 1 - v.energy) * REST_EXTRA_PER_ENERGY);
+      // Audit S3: unified with the in-state clamp via restDurationTicks.
+      const baseRest = restDurationTicks(v.energy);
       const b = v.targetBuilding || getBuildingById(v.activeBuildingId) || buildingAt(cx, cy);
       if (b) setActiveBuilding(v, b);
       if (b) noteBuildingActivity(b, 'rest');
       if (v.restTimer < baseRest) v.restTimer = baseRest;
+      // Audit S1: stamped by villagerTick when night-anchored sleep was the
+      // trigger. Lets the resting block wake the villager at dawn.
+      v.restStartedAtNight = !!v._fellAsleepAtNight;
+      v._fellAsleepAtNight = false;
       v.state = 'resting';
       v.thought = moodThought(v, 'Resting');
     }
