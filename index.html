@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-<title>AI Village — Pixel Edition v3 (Mobile)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
+<meta name="theme-color" content="#0b0d12"/>
+<title>AI Village</title>
 <link rel="stylesheet" href="styles.css">
 <!-- Enable the DebugKit overlay by visiting the page with ?debug=1 or setting localStorage.debug to true. -->
 <script src="bootstrap.js" defer></script>
@@ -13,52 +14,61 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="version">
-  AI Village v3.1 (diag)
+
+<div class="hud-top" id="hud-top">
+  <div class="resources" id="stats" role="status" aria-live="polite">
+    <span class="res res--food"><span class="res__icon" aria-hidden="true">🍞</span><span id="food">0</span></span>
+    <span class="res res--wood"><span class="res__icon" aria-hidden="true">🪵</span><span id="wood">0</span></span>
+    <span class="res res--stone"><span class="res__icon" aria-hidden="true">🪨</span><span id="stone">0</span></span>
+    <span class="res res--pelt"><span class="res__icon" aria-hidden="true">🦊</span><span id="pelt">0</span></span>
+    <span class="res res--pop"><span class="res__icon" aria-hidden="true">👥</span><span id="pop">0</span></span>
+  </div>
 </div>
 
-  <div class="hud-top">
-    <div class="pill pill-stats" id="stats">
-      <div class="stat">🍞 <span id="food">0</span><small>food</small></div>
-      <div class="stat">🪵 <span id="wood">0</span><small>wood</small></div>
-      <div class="stat">🪨 <span id="stone">0</span><small>stone</small></div>
-      <div class="stat">🦊 <span id="pelt">0</span><small>pelts</small></div>
-      <div class="stat">👥 <span id="pop">0</span><small>pop</small></div>
-    </div>
-    <div class="pill pill-controls">
-      <button class="btn" id="btnPause">⏸</button>
-      <button class="btn" id="btnSpeed">1×</button>
-      <button class="btn" id="btnPrior">Priorities</button>
-      <button class="btn" id="btnSave">💾</button>
-      <button class="btn" id="btnNew">🗺️ New</button>
-    </div>
-  </div>
+<nav class="hud-dock" id="hud-dock" aria-label="Controls">
+  <button class="dock-btn" id="btnPause" aria-label="Pause">⏸</button>
+  <button class="dock-btn" id="btnSpeed" aria-label="Speed">1×</button>
+  <button class="dock-btn dock-btn--primary" id="btnMenu" aria-label="Menu">☰</button>
+</nav>
 
-<div class="sheet" id="sheetPrior">
+<div class="sheet" id="sheetMenu" role="dialog" aria-labelledby="sheetMenuTitle" aria-hidden="true">
   <div class="sheet-handle" aria-hidden="true"></div>
-  <h3>Village Priorities <button class="sheet-close" aria-label="Close">✕</button></h3>
-  <div class="priorities-columns">
-    <div class="priorities-column">
-      <div class="priorities-label">Food</div>
-      <input type="range" id="prioFood" class="slider" min="0" max="100" value="70">
-    </div>
-    <div class="priorities-column">
-      <div class="priorities-label">Build</div>
-      <input type="range" id="prioBuild" class="slider" min="0" max="100" value="50">
-    </div>
-    <div class="priorities-column">
-      <div class="priorities-label">Explore</div>
-      <input type="range" id="prioExplore" class="slider" min="0" max="100" value="30">
-    </div>
+  <h3 id="sheetMenuTitle">Menu <button class="sheet-close" aria-label="Close">✕</button></h3>
+  <div class="menu-grid">
+    <button class="menu-item" id="btnPrior"><span class="menu-item__icon" aria-hidden="true">⚖️</span><span class="menu-item__label">Priorities</span></button>
+    <button class="menu-item" id="btnSave"><span class="menu-item__icon" aria-hidden="true">💾</span><span class="menu-item__label">Save</span></button>
+    <button class="menu-item" id="btnNew"><span class="menu-item__icon" aria-hidden="true">🗺️</span><span class="menu-item__label">New world</span></button>
+    <button class="menu-item" id="btnHelp"><span class="menu-item__icon" aria-hidden="true">❓</span><span class="menu-item__label">Help</span></button>
   </div>
 </div>
 
-<div id="help">
-  <div class="help-title">Pixel Edition v3 — Quickstart</div>
-  - Pinch to <b>zoom</b>, drag with one finger to <b>pan</b>.<br/>
-  - Villagers now decide which buildings and zones to add; focus on priorities.<br/>
-  - If you saw a blank screen previously, this build fixes camera scaling.<br/>
-  <button class="btn" id="btnHelpClose">Got it</button>
+<div class="sheet" id="sheetPrior" role="dialog" aria-labelledby="sheetPriorTitle" aria-hidden="true">
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <h3 id="sheetPriorTitle">Priorities <button class="sheet-close" aria-label="Close">✕</button></h3>
+  <div class="priorities">
+    <label class="prio">
+      <span class="prio__label">🍞 Food</span>
+      <input type="range" id="prioFood" class="slider" min="0" max="100" value="70">
+    </label>
+    <label class="prio">
+      <span class="prio__label">🛠️ Build</span>
+      <input type="range" id="prioBuild" class="slider" min="0" max="100" value="50">
+    </label>
+    <label class="prio">
+      <span class="prio__label">🧭 Explore</span>
+      <input type="range" id="prioExplore" class="slider" min="0" max="100" value="30">
+    </label>
+  </div>
+</div>
+
+<div class="help-card" id="help" hidden>
+  <div class="help-card__title">Welcome to AI Village</div>
+  <ul class="help-card__list">
+    <li>Pinch to zoom, drag with one finger to pan.</li>
+    <li>Tap <b>☰</b> to save, start a new world, or tune Priorities.</li>
+    <li>Villagers decide where to build — guide them with priorities, not direct orders.</li>
+  </ul>
+  <button class="btn btn--primary" id="btnHelpClose">Got it</button>
 </div>
 
 <script type="module" src="./src/main.js"></script>

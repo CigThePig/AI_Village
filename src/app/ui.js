@@ -23,10 +23,7 @@ export function createUISystem(deps) {
 
   const host = document.createElement('div');
   host.id = 'toastHost';
-  host.style.cssText = `
-    position:fixed; top:72px; left:50%; transform:translateX(-50%);
-    display:flex; flex-direction:column; gap:8px; z-index:5000; pointer-events:none;
-  `;
+  host.className = 'toast-host';
   document.body.appendChild(host);
 
   const Toast = (() => {
@@ -44,12 +41,6 @@ export function createUISystem(deps) {
       const node = document.createElement('div');
       node.className = 'toast';
       node.textContent = text;
-      node.style.cssText = `
-        background: rgba(20,24,33,0.96);
-        border:1px solid rgba(255,255,255,0.12);
-        color:#e9f1ff; font-weight:700; font-size:14px;
-        border-radius:12px; padding:10px 14px; box-shadow:0 6px 18px rgba(0,0,0,.35);
-      `;
       host.appendChild(node);
       setTimeout(() => {
         node.style.transition = 'opacity .2s ease, transform .2s ease';
@@ -74,13 +65,6 @@ export function createUISystem(deps) {
       if (root) {
         root.setAttribute('data-mode', nextMode);
       }
-
-      const modeButtons = document.querySelectorAll('[data-mode]');
-      modeButtons.forEach((btn) => {
-        const active = btn.dataset.mode === nextMode;
-        btn.classList.toggle('active', active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
     }
 
     if (typeof canvas !== 'undefined' && canvas && canvas.style) {
@@ -94,16 +78,25 @@ export function createUISystem(deps) {
     const node = document.getElementById(id);
     if (!node) return;
     node.setAttribute('data-open', open ? 'true' : 'false');
+    node.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+
+  function closeAllSheets() {
+    toggleSheet('sheetMenu', false);
+    toggleSheet('sheetPrior', false);
   }
 
   const uiRefs = {
     btnPause: el('btnPause'),
     btnSpeed: el('btnSpeed'),
+    btnMenu: el('btnMenu'),
     btnPrior: el('btnPrior'),
     btnSave: el('btnSave'),
     btnNew: el('btnNew'),
+    btnHelp: el('btnHelp'),
     btnHelpClose: el('btnHelpClose'),
     help: el('help'),
+    sheetMenu: el('sheetMenu'),
     sheetPrior: el('sheetPrior'),
     prioFood: el('prioFood'),
     prioBuild: el('prioBuild'),
@@ -127,8 +120,15 @@ export function createUISystem(deps) {
     time.speedIdx = (time.speedIdx + 1) % SPEEDS.length;
     syncTimeButtons();
   }
+  function onMenuClick() {
+    if (!uiRefs.sheetMenu) return;
+    const open = uiRefs.sheetMenu.getAttribute('data-open') === 'true';
+    if (!open) toggleSheet('sheetPrior', false);
+    toggleSheet('sheetMenu', !open);
+  }
   function onPriorClick() {
     if (!uiRefs.sheetPrior) return;
+    toggleSheet('sheetMenu', false);
     const open = uiRefs.sheetPrior.getAttribute('data-open') === 'true';
     toggleSheet('sheetPrior', !open);
   }
@@ -136,21 +136,31 @@ export function createUISystem(deps) {
     if (!Storage.available) { Toast.show('Saving disabled in this context'); return; }
     saveGame();
     Toast.show('Saved.');
+    toggleSheet('sheetMenu', false);
   }
-  function onNewClick() { newWorld(); }
+  function onNewClick() {
+    newWorld();
+    toggleSheet('sheetMenu', false);
+  }
+  function onHelpOpenClick() {
+    toggleSheet('sheetMenu', false);
+    if (!uiRefs.help) return;
+    uiRefs.help.removeAttribute('hidden');
+  }
   function onHelpCloseClick() {
     if (!uiRefs.help) return;
-    uiRefs.help.style.display = 'none';
+    uiRefs.help.setAttribute('hidden', '');
     Storage.set('aiv_help_px3', '1');
+  }
+  function onSheetMenuClick(e) {
+    if (e.target.closest('.sheet-close')) toggleSheet('sheetMenu', false);
   }
   function onSheetPriorClick(e) {
     if (e.target.closest('.sheet-close')) toggleSheet('sheetPrior', false);
   }
   function onDocumentClick(e) {
-    const modeBtn = e.target.closest('[data-mode]');
-    if (modeBtn) { openMode(modeBtn.dataset.mode || 'inspect'); return; }
-    if (e.target.closest('.sheet') || e.target.closest('.pill-controls')) return;
-    toggleSheet('sheetPrior', false);
+    if (e.target.closest('.sheet') || e.target.closest('.hud-dock') || e.target.closest('.help-card')) return;
+    closeAllSheets();
   }
   function onKeyDown(e) {
     if ((e.key === 'l' || e.key === 'L') && e.altKey) {
@@ -167,10 +177,13 @@ export function createUISystem(deps) {
     if (uiListenersBound) return;
     safeOn(uiRefs.btnPause, 'click', onPauseClick);
     safeOn(uiRefs.btnSpeed, 'click', onSpeedClick);
+    safeOn(uiRefs.btnMenu, 'click', onMenuClick);
     safeOn(uiRefs.btnPrior, 'click', onPriorClick);
     safeOn(uiRefs.btnSave, 'click', onSaveClick);
     safeOn(uiRefs.btnNew, 'click', onNewClick);
+    safeOn(uiRefs.btnHelp, 'click', onHelpOpenClick);
     safeOn(uiRefs.btnHelpClose, 'click', onHelpCloseClick);
+    safeOn(uiRefs.sheetMenu, 'click', onSheetMenuClick);
     safeOn(uiRefs.sheetPrior, 'click', onSheetPriorClick);
     document.addEventListener('click', onDocumentClick);
     window.addEventListener('keydown', onKeyDown);
@@ -183,10 +196,13 @@ export function createUISystem(deps) {
     if (!uiListenersBound) return;
     safeOff(uiRefs.btnPause, 'click', onPauseClick);
     safeOff(uiRefs.btnSpeed, 'click', onSpeedClick);
+    safeOff(uiRefs.btnMenu, 'click', onMenuClick);
     safeOff(uiRefs.btnPrior, 'click', onPriorClick);
     safeOff(uiRefs.btnSave, 'click', onSaveClick);
     safeOff(uiRefs.btnNew, 'click', onNewClick);
+    safeOff(uiRefs.btnHelp, 'click', onHelpOpenClick);
     safeOff(uiRefs.btnHelpClose, 'click', onHelpCloseClick);
+    safeOff(uiRefs.sheetMenu, 'click', onSheetMenuClick);
     safeOff(uiRefs.sheetPrior, 'click', onSheetPriorClick);
     document.removeEventListener('click', onDocumentClick);
     window.removeEventListener('keydown', onKeyDown);
@@ -200,11 +216,6 @@ export function createUISystem(deps) {
   const activePointers = new Map();
   let primaryPointer = null;
   let pinch = null;
-
-  const dbg = document.createElement('div');
-  dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5000;color:#9cb2cc;font:12px system-ui;pointer-events:none';
-  document.body.appendChild(dbg);
-  const setDbg = (s) => dbg.textContent = s;
 
   function pointerScale() {
     const r = canvas.getBoundingClientRect();
@@ -224,7 +235,6 @@ export function createUISystem(deps) {
   function toTile(v) { return Math.floor(v); }
 
   function onPointerDown(e) {
-    setDbg(`down ${e.pointerType} mode=${ui.mode}`);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     canvas.setPointerCapture(e.pointerId);
     if (e.pointerType === 'touch' && activePointers.size === 2) {
