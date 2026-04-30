@@ -427,7 +427,7 @@ export function createRenderSystem(deps) {
     // Per-channel tint shifts the lightmap's neutral grey toward warm at
     // dawn/dusk and cool blue at night. The multiply composite carries the
     // tint across the whole scene, so this is the cheapest place to grade.
-    const tint = gradeLightmap(ambient);
+    const tint = gradeLightmap(ambient, targetWorld.dayTime);
     const data = img.data;
     for (let i = 0, p = 0; i < length; i++, p += 4) {
       const v = Math.max(0, Math.min(1, Lq[i]));
