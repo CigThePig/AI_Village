@@ -27,7 +27,7 @@ import {
 // that reads them. The shared villager-tuning constants (STARVE_*, REST_*,
 // HYDRATION_*, SOCIAL_*, STORAGE_IDLE_*, CHILDHOOD_TICKS) are now imported
 // from villagerAI.js / population.js so there's a single source of truth.
-const HUNGER_RATE = 0.00095;
+const HUNGER_RATE = 0.00035;
 const ENERGY_DRAIN_BASE = 0.0011;
 
 const REST_ENERGY_RECOVERY = 0.0024;
