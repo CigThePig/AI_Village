@@ -62,7 +62,7 @@ const GRID_W = coords.GRID_W;
 const GRID_H = coords.GRID_H;
 const GRID_SIZE = GRID_W * GRID_H;
 const SAVE_KEY = 'aiv_px_v3_save';
-const SAVE_VERSION = 8;
+const SAVE_VERSION = 9;
 const COARSE_SAVE_SIZE = 96;
 
 // Sequential save-format migrations: when loading a save with version `v`,
@@ -87,7 +87,12 @@ const SAVE_MIGRATIONS = new Map([
   // v7 -> v8: Phase 1 adds world.layout (archetype + slots + anchors). Layout
   // is a pure function of seed+terrain and is recomputed at world-gen, so it
   // is not serialized — the migration body is intentionally a no-op.
-  [7, (data) => data]
+  [7, (data) => data],
+  // v8 -> v9: Phase 2 adds world.farmPlots (rectangular farm plots packed
+  // inside the layout's `fields` slot). Old saves load with farmPlots
+  // defaulting to []; the next planZones tick re-buckets existing FARM zone
+  // tiles into fresh plots — no migration body needed.
+  [8, (data) => data]
 ]);
 const LAYOUT_ARCHETYPES = Object.freeze({
   RADIAL: 'radial',

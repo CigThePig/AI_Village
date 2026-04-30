@@ -64,6 +64,18 @@ export function createSaveSystem(deps) {
       growth: Array.from(world.growth),
       season: world.season,
       tSeason: world.tSeason,
+      // Phase 2: rectangular farm plots persisted alongside the FARM zone
+      // bitmap. Strip the lazy _byTile cache; render rebuilds it on demand.
+      farmPlots: Array.isArray(world.farmPlots)
+        ? world.farmPlots.map((p) => ({
+            id: p.id,
+            slotId: p.slotId,
+            x: p.x, y: p.y, w: p.w, h: p.h,
+            orientation: p.orientation,
+            abutsWells: !!p.abutsWells,
+            abutsNeighbor: !!p.abutsNeighbor
+          }))
+        : [],
       buildings,
       storageTotals,
       storageReserved,
@@ -169,6 +181,26 @@ export function createSaveSystem(deps) {
       applyArrayScaled(world.growth, growthData, upscaleFactor, 0);
       if (typeof d.season === 'number') world.season = d.season;
       if (typeof d.tSeason === 'number') world.tSeason = d.tSeason;
+      // Phase 2: restore rectangular farm plots. Drop entries that fall
+      // outside the regenerated grid (defensive — should not happen, but
+      // keeps the byTile cache safe). _byTile is rebuilt on first lookup.
+      const restoredPlots = Array.isArray(d.farmPlots) ? d.farmPlots : [];
+      world.farmPlots = [];
+      for (const src of restoredPlots) {
+        if (!src || !Number.isFinite(src.x) || !Number.isFinite(src.y)) continue;
+        if (!Number.isFinite(src.w) || !Number.isFinite(src.h)) continue;
+        if (src.x < 0 || src.y < 0 || src.x + src.w > GRID_W || src.y + src.h > GRID_H) continue;
+        world.farmPlots.push({
+          id: typeof src.id === 'string' ? src.id : 'plot-' + world.farmPlots.length,
+          slotId: typeof src.slotId === 'string' ? src.slotId : null,
+          x: src.x | 0, y: src.y | 0,
+          w: src.w | 0, h: src.h | 0,
+          orientation: src.orientation === 'vertical' ? 'vertical' : 'horizontal',
+          abutsWells: !!src.abutsWells,
+          abutsNeighbor: !!src.abutsNeighbor
+        });
+      }
+      world.farmPlots._byTile = null;
       refreshWaterRowMaskFromTiles();
       refreshZoneRowMask();
       markZoneOverlayDirty();

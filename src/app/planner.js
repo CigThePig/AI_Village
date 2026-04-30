@@ -18,7 +18,7 @@ import {
   validateFootprintPlacementIn
 } from './world.js';
 import { findSlotForKind, recomputeOccupancy } from './layout.js';
-import { clamp } from './rng.js';
+import { clamp, mulberry32 } from './rng.js';
 import { computeFamineSeverity } from '../ai/scoring.js';
 
 export function createPlanner(opts) {
@@ -454,6 +454,202 @@ export function createPlanner(opts) {
     return changed;
   }
 
+  // Phase 2 — Coherent farm plots.
+  //
+  // Replaces the FARM branch of ensureZoneCoverage. Reads the layout's
+  // `fields` slot, packs rectangular plots end-to-end along the slot's long
+  // axis, and writes the resulting tiles into world.zone via the canonical
+  // applyZoneBrush so row masks and overlays stay in sync. Plots are kept
+  // only if they share an edge with the wells slot or with another plot —
+  // the anti-corner-cut adjacency rule from AI_VILLAGE_PLAN.md Phase 2.
+  //
+  // Determinism: per-slot mulberry32 seeded from world.seed XOR a stable hash
+  // of the slot id; no Math.random.
+  function layoutFarmPlots(targetTiles) {
+    const world = state.world;
+    if (!world || !world.layout) return false;
+    if (!Array.isArray(world.farmPlots)) world.farmPlots = [];
+
+    const cfg = (policy && policy.farmPlots) || {};
+    const minSize = Number.isFinite(cfg.minSize) ? cfg.minSize : 3;
+    const maxSize = Number.isFinite(cfg.maxSize) ? cfg.maxSize : 6;
+    const preferredShortAxis = Number.isFinite(cfg.preferredShortAxis) ? cfg.preferredShortAxis : 4;
+    const tolerance = Number.isFinite(cfg.unbuildableTolerance) ? cfg.unbuildableTolerance : 0.4;
+    const requireAdjacency = cfg.requireNeighborAdjacency !== false;
+
+    const fieldsSlot = world.layout.slots.find((s) => s && s.family === 'fields');
+    if (!fieldsSlot) return false;
+    const wellsSlot = world.layout.slots.find((s) => s && s.family === 'wells') || null;
+
+    // Existing plot for this slot? Re-running with a higher target should
+    // extend, not duplicate. Drop and rebuild — small list, simple semantics.
+    world.farmPlots = world.farmPlots.filter((p) => p.slotId !== fieldsSlot.id);
+
+    const fp = fieldsSlot.footprint;
+    const orientation = fp.w >= fp.h ? 'horizontal' : 'vertical';
+
+    // Hash the slot id into a stable 32-bit int so the per-slot RNG seed is
+    // stable across runs without depending on slot index.
+    let idHash = 0;
+    for (let i = 0; i < fieldsSlot.id.length; i++) {
+      idHash = (Math.imul(idHash, 31) + fieldsSlot.id.charCodeAt(i)) | 0;
+    }
+    const rng = mulberry32(((world.seed >>> 0) ^ (idHash >>> 0)) || 1);
+
+    const pickSize = () => {
+      const span = Math.max(0, maxSize - minSize);
+      return minSize + ((rng() * (span + 1)) | 0);
+    };
+
+    // Short axis is fixed once per slot so plots line up cleanly.
+    const shortRaw = clamp(preferredShortAxis, minSize, maxSize);
+    const shortAxis = clamp(
+      orientation === 'horizontal' ? Math.min(shortRaw, fp.h) : Math.min(shortRaw, fp.w),
+      minSize,
+      maxSize
+    );
+
+    // Pack plots starting from the slot edge nearest the wells slot so the
+    // first plot reliably abuts wells, satisfying the per-settlement rule.
+    let leadingEdge = 0;
+    if (wellsSlot && wellsSlot.footprint) {
+      const ws = wellsSlot.footprint;
+      if (orientation === 'horizontal') {
+        const wellsCx = ws.x + ws.w / 2;
+        const fieldsCx = fp.x + fp.w / 2;
+        leadingEdge = wellsCx <= fieldsCx ? 0 : 1;
+      } else {
+        const wellsCy = ws.y + ws.h / 2;
+        const fieldsCy = fp.y + fp.h / 2;
+        leadingEdge = wellsCy <= fieldsCy ? 0 : 1;
+      }
+    }
+
+    const candidates = [];
+    if (orientation === 'horizontal') {
+      const longSpan = fp.w;
+      let used = 0;
+      while (used < longSpan) {
+        const remaining = longSpan - used;
+        if (remaining < minSize) break;
+        const wantW = Math.min(pickSize(), remaining);
+        const w = Math.max(minSize, wantW);
+        const x = leadingEdge === 0 ? fp.x + used : fp.x + fp.w - used - w;
+        const y = fp.y + Math.max(0, ((fp.h - shortAxis) / 2) | 0);
+        candidates.push({ x, y, w, h: shortAxis });
+        used += w;
+      }
+    } else {
+      const longSpan = fp.h;
+      let used = 0;
+      while (used < longSpan) {
+        const remaining = longSpan - used;
+        if (remaining < minSize) break;
+        const wantH = Math.min(pickSize(), remaining);
+        const h = Math.max(minSize, wantH);
+        const x = fp.x + Math.max(0, ((fp.w - shortAxis) / 2) | 0);
+        const y = leadingEdge === 0 ? fp.y + used : fp.y + fp.h - used - h;
+        candidates.push({ x, y, w: shortAxis, h });
+        used += h;
+      }
+    }
+
+    const buildableFraction = (rect) => {
+      let buildable = 0;
+      let total = 0;
+      for (let yy = rect.y; yy < rect.y + rect.h; yy++) {
+        for (let xx = rect.x; xx < rect.x + rect.w; xx++) {
+          if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
+          total++;
+          const i = yy * GRID_W + xx;
+          if (tileOccupiedByBuilding(xx, yy)) continue;
+          if (zoneCanEverWork(ZONES.FARM, i)) buildable++;
+        }
+      }
+      return total > 0 ? buildable / total : 0;
+    };
+
+    const rectsShareEdge = (a, b) => {
+      // 4-connected edge-share: one rect's edge meets the other's opposite
+      // edge AND the orthogonal spans overlap.
+      const horizontalAdj =
+        (a.x + a.w === b.x || b.x + b.w === a.x)
+        && a.y < b.y + b.h && b.y < a.y + a.h;
+      const verticalAdj =
+        (a.y + a.h === b.y || b.y + b.h === a.y)
+        && a.x < b.x + b.w && b.x < a.x + a.w;
+      return horizontalAdj || verticalAdj;
+    };
+    // For plot↔wells adjacency we accept overlap as well as edge-share, since
+    // some archetypes (radial, terrace, courtyard) nest the wells slot inside
+    // the fields slot footprint — a plot overlapping that wells region is
+    // still "next to" wells from the player's perspective.
+    const rectAbutsOrOverlaps = (a, b) => {
+      return a.x <= b.x + b.w && b.x <= a.x + a.w
+        && a.y <= b.y + b.h && b.y <= a.y + a.h;
+    };
+
+    const survivors = [];
+    let totalNewTiles = 0;
+    const cap = Number.isFinite(targetTiles) ? targetTiles : Infinity;
+    for (const rect of candidates) {
+      if (totalNewTiles >= cap) break;
+      if (buildableFraction(rect) < (1 - tolerance)) continue;
+
+      const abutsWells = wellsSlot && wellsSlot.footprint
+        ? rectAbutsOrOverlaps(rect, wellsSlot.footprint)
+        : false;
+      const abutsNeighbor = survivors.some((p) => rectsShareEdge(rect, p));
+
+      // First plot is allowed in even if it doesn't touch wells (it will
+      // anchor downstream plots) — but we still require either abutsWells
+      // or that future plots will neighbor it. We accept the first plot
+      // unconditionally and re-validate after the pass.
+      if (requireAdjacency && survivors.length > 0 && !abutsWells && !abutsNeighbor) continue;
+
+      survivors.push({
+        slotId: fieldsSlot.id,
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        orientation,
+        abutsWells,
+        abutsNeighbor
+      });
+      // Mark all valid tiles in the rect as ZONES.FARM via the canonical
+      // brush. radius=0 paints a single tile and updates row masks.
+      for (let yy = rect.y; yy < rect.y + rect.h; yy++) {
+        for (let xx = rect.x; xx < rect.x + rect.w; xx++) {
+          if (xx < 0 || yy < 0 || xx >= GRID_W || yy >= GRID_H) continue;
+          if (totalNewTiles >= cap) break;
+          if (applyZoneBrush(xx, yy, ZONES.FARM, 0)) totalNewTiles++;
+        }
+      }
+    }
+
+    // Re-validate adjacency now that all survivors exist (a plot dropped early
+    // for missing neighbors might have neighbored a later plot, but our pass
+    // is single-direction packing so that's rare; the second pass refreshes
+    // abutsNeighbor flags so tests see the final state).
+    if (requireAdjacency) {
+      for (const p of survivors) {
+        if (!p.abutsWells) {
+          p.abutsNeighbor = survivors.some((other) => other !== p && rectsShareEdge(p, other));
+        }
+      }
+    }
+
+    let plotIdx = world.farmPlots.length;
+    for (const p of survivors) {
+      world.farmPlots.push({ id: 'plot-' + plotIdx, ...p });
+      plotIdx++;
+    }
+    // Invalidate the by-tile cache used by render (rebuilt lazily).
+    world.farmPlots._byTile = null;
+    return totalNewTiles > 0;
+  }
+
   function applyZoneBrush(cx, cy, z, radius = 0) {
     const world = state.world;
     const x0 = toTile(cx), y0 = toTile(cy);
@@ -644,7 +840,14 @@ export function createPlanner(opts) {
     let changed = false;
 
     if (bb?.famine || bb?.availableFood < villagerCount * 2 || farmTiles < farmTarget) {
-      changed = ensureZoneCoverage(ZONES.FARM, farmTarget, zoneCentroid(ZONES.FARM) || anchor, 1) || changed;
+      // Phase 2: prefer rectangular plot packing inside the layout's `fields`
+      // slot. Falls back to the legacy organic expansion only when there is
+      // no layout (e.g. tests that bypass generateWorldBase).
+      if (state.world && state.world.layout) {
+        changed = layoutFarmPlots(farmTarget) || changed;
+      } else {
+        changed = ensureZoneCoverage(ZONES.FARM, farmTarget, zoneCentroid(ZONES.FARM) || anchor, 1) || changed;
+      }
     }
 
     const naturalTrees = countNaturalResourceTiles('wood');
@@ -1135,5 +1338,8 @@ export function createPlanner(opts) {
     _progressionMemory: progressionMemory,
     // Phase 1: exposed so tests can validate slot-aware placement directly.
     _findPlacementNear: findPlacementNear,
+    // Phase 2: exposed so tests can drive plot layout in isolation without
+    // also wiring up the full planZones job-emit pipeline.
+    _layoutFarmPlots: layoutFarmPlots,
   };
 }

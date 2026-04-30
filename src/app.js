@@ -369,6 +369,10 @@ function generateWorldBase(seed){
   // placed. Layout is a pure function of seed+terrain (no Math.random) and is
   // recomputed on load rather than persisted, so save migration is a no-op.
   nextWorld.layout = buildLayout(seed, nextWorld, policy.layout);
+  // Phase 2: rectangular farm plots. Populated lazily by `layoutFarmPlots()`
+  // when planZones first runs; persisted directly so reloaded worlds keep the
+  // same plot rectangles without recomputing.
+  nextWorld.farmPlots = [];
   world = nextWorld;
   gameState.world = nextWorld;
   resetLightmapCache();

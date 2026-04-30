@@ -743,13 +743,22 @@
     layoutSlotsInput,
     el('span', { text: ' Show slots' })
   ]);
+  // Phase 2 — companion toggle for the rectangular farm plot overlay.
+  const layoutPlotsInput = el('input', { type: 'checkbox' });
+  const layoutPlotsLabel = el('label', { className: 'dbg-shade-label' }, [
+    layoutPlotsInput,
+    el('span', { text: ' Show plots' })
+  ]);
   const layoutRefreshBtn = el('button', null, 'Refresh');
   const layoutStateLabel = el('span', { className: 'dbg-shade-state', text: 'Layout: (press Refresh)' });
   const layoutSection = createSection('dbgLayoutSection', 'Settlement Layout', narrowLayout);
-  layoutSection.body.append(layoutSlotsLabel, layoutRefreshBtn, layoutStateLabel);
+  layoutSection.body.append(layoutSlotsLabel, layoutPlotsLabel, layoutRefreshBtn, layoutStateLabel);
 
   layoutSlotsInput.addEventListener('change', () => {
     win.AIV_DEBUG_SLOTS = !!layoutSlotsInput.checked;
+  });
+  layoutPlotsInput.addEventListener('change', () => {
+    win.AIV_DEBUG_PLOTS = !!layoutPlotsInput.checked;
   });
 
   function refreshLayoutState() {
@@ -768,8 +777,10 @@
       const occ = layout.occupancy || {};
       const occTotal = Object.keys(occ).reduce((sum, k) => sum + (Number(occ[k]) || 0), 0);
       const features = layout.features || {};
+      const plotCount = Array.isArray(snap.farmPlots) ? snap.farmPlots.length : 0;
       layoutStateLabel.textContent = `Layout: ${layout.archetype || '?'} · slots=${slotCount} (occ=${occTotal})`
-        + ` · water=${features.dominantWaterSide || '-'} slope=${features.slope ?? 0}`;
+        + ` · water=${features.dominantWaterSide || '-'} slope=${features.slope ?? 0}`
+        + ` · plots=${plotCount}`;
     } catch (err) {
       layoutStateLabel.textContent = 'Layout: refresh failed';
       add('ERROR', 'Layout refresh failed', fmt(err));

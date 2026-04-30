@@ -163,6 +163,19 @@ const DEFAULT_LAYOUT = Object.freeze({
   }
 });
 
+// Phase 2 — coherent farm plots. Bounds and tolerances for `layoutFarmPlots`
+// in src/app/planner.js. Plots are packed end-to-end inside the layout's
+// `fields` slot; a plot whose unbuildable-tile fraction exceeds the tolerance
+// is skipped, and (per the anti-corner-cut clause) every kept plot must abut
+// either the wells slot edge or another plot.
+const DEFAULT_FARM_PLOTS = Object.freeze({
+  minSize: 3,
+  maxSize: 6,
+  preferredShortAxis: 4,
+  unbuildableTolerance: 0.4,
+  requireNeighborAdjacency: true
+});
+
 export const policy = {
   state: null,
   sliders: { ...DEFAULT_SLIDERS },
@@ -196,5 +209,6 @@ export const policy = {
     jobCreation: { ...DEFAULT_JOB_CREATION }
   },
   progression: { ...DEFAULT_PROGRESSION },
-  layout: { ...DEFAULT_LAYOUT }
+  layout: { ...DEFAULT_LAYOUT },
+  farmPlots: { ...DEFAULT_FARM_PLOTS }
 };

@@ -409,6 +409,27 @@ export function tileInsideSlot(slot, x, y) {
   return x >= fp.x && x < fp.x + fp.w && y >= fp.y && y < fp.y + fp.h;
 }
 
+// Phase 2 — render uses this to decide whether (x, y) sits inside a farm plot
+// and, if so, which one. Plots are rectangles, list is small (≤ a few dozen),
+// so the linear scan is cheap; the lazy-built _byTile Map collapses repeated
+// lookups during a frame.
+export function findFarmPlotForTile(world, x, y) {
+  if (!world || !Array.isArray(world.farmPlots) || world.farmPlots.length === 0) return null;
+  const plots = world.farmPlots;
+  if (!plots._byTile) {
+    const map = new Map();
+    for (const p of plots) {
+      for (let yy = p.y; yy < p.y + p.h; yy++) {
+        for (let xx = p.x; xx < p.x + p.w; xx++) {
+          map.set(yy * GRID_W + xx, p);
+        }
+      }
+    }
+    plots._byTile = map;
+  }
+  return plots._byTile.get(y * GRID_W + x) || null;
+}
+
 // Walk the live buildings list and rebuild layout.occupancy from scratch.
 // Called once per planBuildings cycle so claims survive saves/loads (the
 // layout itself is recomputed at world-gen, not persisted).
