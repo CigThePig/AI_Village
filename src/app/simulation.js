@@ -3,8 +3,8 @@ import { DAYTIME_PORTION, NIGHTTIME_PORTION } from './environment.js';
 import { LIGHTING, clamp01 } from './lighting.js';
 import { clamp } from './rng.js';
 
-export const NIGHT_AMBIENT_THRESHOLD = 0.6;
-export const DAWN_AMBIENT_THRESHOLD = 0.68;
+export const NIGHT_AMBIENT_THRESHOLD = 0.42;
+export const DAWN_AMBIENT_THRESHOLD = 0.58;
 
 export const JOB_EXPERIENCE_MAP = Object.freeze({
   sow: 'farming',

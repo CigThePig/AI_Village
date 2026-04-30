@@ -21,17 +21,31 @@ function ensureBrowserStubs() {
 ensureBrowserStubs();
 
 const {
-  DAWN_DUSK_TINT,
+  DAWN_TINT,
+  DAY_TINT,
+  DEEP_NIGHT_TINT,
+  DUSK_TINT,
   NEUTRAL_TINT,
   NIGHT_TINT,
   gradeLightmap
 } = await import('../src/app/lighting.js');
+const { DAY_LENGTH } = await import('../src/app/constants.js');
 
-test('gradeLightmap returns night tint at deep night', () => {
+const morningTime = DAY_LENGTH * 0.25;
+const eveningTime = DAY_LENGTH * 0.75;
+
+test('gradeLightmap returns deep night tint at ambient 0', () => {
   const t = gradeLightmap(0);
-  assert.equal(t.r, NIGHT_TINT.r);
-  assert.equal(t.g, NIGHT_TINT.g);
-  assert.equal(t.b, NIGHT_TINT.b);
+  assert.equal(t.r, DEEP_NIGHT_TINT.r);
+  assert.equal(t.g, DEEP_NIGHT_TINT.g);
+  assert.equal(t.b, DEEP_NIGHT_TINT.b);
+});
+
+test('gradeLightmap returns night tint at the deep-night/night seam', () => {
+  const t = gradeLightmap(0.28);
+  assert.ok(Math.abs(t.r - NIGHT_TINT.r) < 1e-6);
+  assert.ok(Math.abs(t.g - NIGHT_TINT.g) < 1e-6);
+  assert.ok(Math.abs(t.b - NIGHT_TINT.b) < 1e-6);
 });
 
 test('gradeLightmap returns neutral at full daylight', () => {
@@ -41,32 +55,55 @@ test('gradeLightmap returns neutral at full daylight', () => {
   assert.equal(t.b, NEUTRAL_TINT.b);
 });
 
-test('gradeLightmap reaches dawn/dusk warm tint near ambient 0.55', () => {
-  const t = gradeLightmap(0.55);
-  assert.equal(t.r, DAWN_DUSK_TINT.r);
-  assert.equal(t.g, DAWN_DUSK_TINT.g);
-  assert.equal(t.b, DAWN_DUSK_TINT.b);
+test('gradeLightmap reaches dawn warm tint at ambient 0.42 in morning', () => {
+  const t = gradeLightmap(0.42, morningTime);
+  assert.ok(Math.abs(t.r - DAWN_TINT.r) < 1e-6, `r ${t.r}`);
+  assert.ok(Math.abs(t.g - DAWN_TINT.g) < 1e-6, `g ${t.g}`);
+  assert.ok(Math.abs(t.b - DAWN_TINT.b) < 1e-6, `b ${t.b}`);
 });
 
-test('gradeLightmap blends night → neutral around ambient 0.4', () => {
-  const t = gradeLightmap(0.4);
-  // At ambient = 0.4 the night→neutral lerp lands on neutral.
-  assert.ok(Math.abs(t.r - NEUTRAL_TINT.r) < 1e-6, `r ${t.r}`);
-  assert.ok(Math.abs(t.g - NEUTRAL_TINT.g) < 1e-6, `g ${t.g}`);
-  assert.ok(Math.abs(t.b - NEUTRAL_TINT.b) < 1e-6, `b ${t.b}`);
+test('gradeLightmap reaches dusk warm tint at ambient 0.42 in evening', () => {
+  const t = gradeLightmap(0.42, eveningTime);
+  assert.ok(Math.abs(t.r - DUSK_TINT.r) < 1e-6, `r ${t.r}`);
+  assert.ok(Math.abs(t.g - DUSK_TINT.g) < 1e-6, `g ${t.g}`);
+  assert.ok(Math.abs(t.b - DUSK_TINT.b) < 1e-6, `b ${t.b}`);
 });
 
-test('gradeLightmap warm tint pulls red above blue', () => {
-  // Sanity check on the dawn/dusk tint shape: red dominates, blue attenuates.
-  const t = gradeLightmap(0.55);
-  assert.ok(t.r > t.b, `expected r=${t.r} > b=${t.b}`);
-  assert.ok(t.r > t.g, `expected r=${t.r} > g=${t.g}`);
+test('gradeLightmap reaches day tint at ambient 0.62', () => {
+  const t = gradeLightmap(0.62, morningTime);
+  assert.ok(Math.abs(t.r - DAY_TINT.r) < 1e-6, `r ${t.r}`);
+  assert.ok(Math.abs(t.g - DAY_TINT.g) < 1e-6, `g ${t.g}`);
+  assert.ok(Math.abs(t.b - DAY_TINT.b) < 1e-6, `b ${t.b}`);
+});
+
+test('gradeLightmap warm tint pulls red above blue at the warm shoulder', () => {
+  const morn = gradeLightmap(0.5, morningTime);
+  const eve = gradeLightmap(0.5, eveningTime);
+  for (const t of [morn, eve]) {
+    assert.ok(t.r > t.b, `expected r=${t.r} > b=${t.b}`);
+    assert.ok(t.r > t.g, `expected r=${t.r} > g=${t.g}`);
+  }
+});
+
+test('dusk reads warmer/redder than dawn', () => {
+  const dawn = gradeLightmap(0.42, morningTime);
+  const dusk = gradeLightmap(0.42, eveningTime);
+  // Dusk drops green and blue further than dawn, so r/g and r/b ratios are higher.
+  assert.ok(dusk.b < dawn.b, `dusk b=${dusk.b} should be < dawn b=${dawn.b}`);
+  assert.ok(dusk.g < dawn.g, `dusk g=${dusk.g} should be < dawn g=${dawn.g}`);
 });
 
 test('gradeLightmap night tint pulls blue above red', () => {
   const t = gradeLightmap(0);
   assert.ok(t.b > t.r, `expected b=${t.b} > r=${t.r}`);
   assert.ok(t.b > t.g, `expected b=${t.b} > g=${t.g}`);
+});
+
+test('deep night is bluer than the night shoulder', () => {
+  const deep = gradeLightmap(0);
+  const night = gradeLightmap(0.28);
+  assert.ok(deep.r < night.r, `deep r=${deep.r} should be < night r=${night.r}`);
+  assert.ok(deep.g < night.g, `deep g=${deep.g} should be < night g=${night.g}`);
 });
 
 test('gradeLightmap clamps invalid input', () => {
@@ -82,9 +119,18 @@ test('gradeLightmap clamps invalid input', () => {
 
 test('gradeLightmap returns a tint per channel in [0, 1]', () => {
   for (let a = 0; a <= 1; a += 0.05) {
-    const t = gradeLightmap(a);
-    for (const ch of ['r', 'g', 'b']) {
-      assert.ok(t[ch] >= 0 && t[ch] <= 1, `${ch} at a=${a} = ${t[ch]} out of [0,1]`);
+    for (const dt of [null, morningTime, eveningTime]) {
+      const t = gradeLightmap(a, dt);
+      for (const ch of ['r', 'g', 'b']) {
+        assert.ok(t[ch] >= 0 && t[ch] <= 1, `${ch} at a=${a} dt=${dt} = ${t[ch]} out of [0,1]`);
+      }
     }
   }
+});
+
+test('gradeLightmap defaults to dawn tint when dayTime is missing', () => {
+  const noTime = gradeLightmap(0.42);
+  assert.ok(Math.abs(noTime.r - DAWN_TINT.r) < 1e-6);
+  assert.ok(Math.abs(noTime.g - DAWN_TINT.g) < 1e-6);
+  assert.ok(Math.abs(noTime.b - DAWN_TINT.b) < 1e-6);
 });
