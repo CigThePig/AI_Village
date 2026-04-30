@@ -1148,7 +1148,7 @@ function boot(){
     openMode('inspect');            // UI init
     if(!Storage.get('aiv_help_px3')){
       const helpEl = el('help');
-      if (helpEl) helpEl.style.display='block';
+      if (helpEl) helpEl.removeAttribute('hidden');
     }
   } catch (e){
     reportFatal(e);
