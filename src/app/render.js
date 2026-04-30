@@ -35,6 +35,14 @@ import {
 import { findFarmPlotForTile } from './layout.js';
 import { isNightAmbient } from './simulation.js';
 
+function buildingVisualCenter(b) {
+  const fp = getFootprint(b?.kind);
+  return {
+    x: (b?.x || 0) + ((fp?.w || 1) * 0.5),
+    y: (b?.y || 0) + ((fp?.h || 1) * 0.5),
+  };
+}
+
 export function createRenderSystem(deps) {
   const {
     getCam,
@@ -1101,9 +1109,22 @@ export function createRenderSystem(deps) {
       litBox(15, 11 - flame, 2, 8 + flame, '#ff6b2d', 0.9);
       litBox(16, 16, 2, 5, '#fff1a8', 0.85);
 
-      g.globalAlpha *= 0.28 + activityPulse * 0.25;
-      box(9, 9, 14, 14, '#ffb347');
-      g.globalAlpha = 1;
+      const glowCx = gx + 16 * s;
+      const glowCy = gy + 16 * s;
+      const glowR = (8 + activityPulse * 3) * s;
+      const oldAlpha = g.globalAlpha;
+
+      const glow = g.createRadialGradient(glowCx, glowCy, 0, glowCx, glowCy, glowR);
+      glow.addColorStop(0, `rgba(255,190,82,${0.30 + activityPulse * 0.18})`);
+      glow.addColorStop(0.55, `rgba(255,130,48,${0.12 + activityPulse * 0.10})`);
+      glow.addColorStop(1, 'rgba(255,100,35,0)');
+
+      g.fillStyle = glow;
+      g.beginPath();
+      g.arc(glowCx, glowCy, glowR, 0, Math.PI * 2);
+      g.fill();
+
+      g.globalAlpha = oldAlpha;
 
       g.globalAlpha = 0.25;
       box(13, 7 - Math.sin(tick * 0.05) * 2, 2, 2, '#d8d0c0');
@@ -1656,7 +1677,7 @@ export function createRenderSystem(deps) {
       // ride alongside it.
       for (const b of buildings) {
         if (b.kind === 'campfire') {
-          const center = buildingCenter(b);
+          const center = buildingVisualCenter(b);
           const gx = tileToPxX(center.x, cam);
           const gy = tileToPxY(center.y, cam);
           const r = (24 + 4 * Math.sin(tick * 0.2)) * cam.z;
@@ -1670,15 +1691,15 @@ export function createRenderSystem(deps) {
             ctx.globalAlpha = 0.25 + 0.15 * Math.random();
             ctx.fillStyle = 'rgba(255,210,150,0.85)';
             for (let i = 0; i < 2; i++) {
-              const emberX = gx + (12 + Math.random() * 8) * cam.z + (Math.random() * 2 - 1) * cam.z;
-              const emberY = gy + (4 - Math.random() * 10) * cam.z;
+              const emberX = gx + (Math.random() * 10 - 5) * cam.z;
+              const emberY = gy + (-2 - Math.random() * 10) * cam.z;
               ctx.beginPath();
               ctx.arc(emberX, emberY, Math.max(0.6, 1.1 * Math.random()) * cam.z, 0, Math.PI * 2);
               ctx.fill();
             }
             ctx.restore();
           }
-          drawSmokeWisps(b, gx, gy - 6 * cam.z, tick, cam);
+          drawSmokeWisps(b, gx, gy - 8 * cam.z, tick, cam);
         } else if (b.kind === 'hut' && b.built >= 1) {
           const fp = getFootprint(b.kind);
           const offsetX = Math.floor((ENTITY_TILE_PX - fp.w * TILE) * cam.z * 0.5);
